@@ -1,0 +1,593 @@
+openapi: 3.1.0
+info:
+  title: Bluesky Direct Device Control + Monitoring Service
+  version: 1.0.0
+  description: |
+    A4-coordinated device commanding plus real-time EPICS PV monitoring
+    via WebSocket, on a single port (default 8003).
+
+    > **Canonical spec**: the service exposes its own auto-generated spec at
+    > `/openapi.json` (interactive at `/docs`). This YAML file documents the
+    > original control endpoints but **does not** enumerate the merged
+    > monitoring endpoints (`/api/v1/pvs/*`, `/api/v1/devices*`, `/ws/pv/monitor`,
+    > `/api/v1/pv-socket`, `/api/v1/device-socket`, `/api/v1/control-socket`).
+    > For those, fetch `/openapi.json` at runtime.
+
+    **Low Fidelity Channel** (`/api/v1/pv/set`):
+    - Fire-and-forget mode for rapid PV writes (motor jogging)
+    - Put-completion mode when confirmation is required
+
+    **High Fidelity Channel** (`/api/v1/device/execute`):
+    - Always returns confirmed results
+    - For Ophyd device method invocation (set, move, trigger, etc.)
+
+    Authorization: handled by upstream middleware; this service performs no
+    auth enforcement.
+
+servers:
+  - url: /
+
+paths:
+  # =============================================================================
+  # Health & Stats
+  # =============================================================================
+  /health:
+    get:
+      operationId: health_check
+      summary: Health Check
+      description: |
+        Health check endpoint.
+        
+        Returns: Service health status
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/v1/stats:
+    get:
+      operationId: get_stats
+      summary: Get Stats
+      description: |
+        Get service statistics.
+        
+        Returns: Service statistics
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: string
+
+  # =============================================================================
+  # PV Operations (Low Fidelity Channel)
+  # =============================================================================
+  /api/v1/pv/set:
+    post:
+      operationId: set_pv
+      summary: Set PV
+      description: |
+        Set EPICS PV value with coordination check (Low Fidelity Channel).
+        
+        This is the "low fidelity" command channel with two modes:
+        
+        - **Fire-and-forget** (`wait=false`, default): Issues PV write and returns 
+          immediately. Client should monitor PV readback for feedback. Ideal for 
+          motor jogging and simple signal adjustments.
+        
+        - **Put-completion** (`wait=true`): Waits for EPICS put-completion callback 
+          and returns confirmed result. Use when confirmation is required.
+        
+        This endpoint implements the A4 coordination requirement by checking with 
+        SVC-001 (Experiment Execution Service) before allowing the command.
+      parameters:
+        - name: authorization
+          in: header
+          required: false
+          schema:
+            type: string
+            nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PVSetRequest"
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PVSetResponse"
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPValidationError"
+        "423":
+          description: Device is locked by active plan
+        "503":
+          description: Coordination check failed
+        "500":
+          description: Operation failed
+
+  /api/v1/pv/{pv_name}/value:
+    get:
+      operationId: get_pv_value
+      summary: Get PV Value
+      description: |
+        Get current PV value (read-only, no coordination check).
+      parameters:
+        - name: pv_name
+          in: path
+          required: true
+          description: EPICS PV name
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: string
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPValidationError"
+
+  # =============================================================================
+  # Device Operations (High Fidelity Channel)
+  # =============================================================================
+  /api/v1/device/execute:
+    post:
+      operationId: execute_device_method
+      summary: Execute Device Method
+      description: |
+        Execute Ophyd device method with coordination check (High Fidelity Channel).
+        
+        This is the "high fidelity" command channel - consistent single path that 
+        ALWAYS returns a confirmed result. Unlike the PV channel, there is no 
+        fire-and-forget mode.
+        
+        Use this channel when:
+        - Confirmation of operation completion is required
+        - Invoking Ophyd device methods (set, move, trigger, etc.)
+        
+        This endpoint implements the A4 coordination requirement by checking with 
+        SVC-001 before allowing device commands.
+      parameters:
+        - name: authorization
+          in: header
+          required: false
+          schema:
+            type: string
+            nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCommandRequest"
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceCommandResponse"
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPValidationError"
+        "423":
+          description: Device is locked by active plan
+        "503":
+          description: Coordination check failed
+        "500":
+          description: Operation failed
+
+  /api/v1/device/{device_name}/stop:
+    post:
+      operationId: stop_device
+      summary: Stop Device
+      description: |
+        Stop a device (as-ophyd-api compatible).
+        
+        Calls the stop() method on the device if available. This is typically 
+        used to abort a motor move or other ongoing operation.
+      parameters:
+        - name: device_name
+          in: path
+          required: true
+          description: Name of the device to stop
+          schema:
+            type: string
+        - name: authorization
+          in: header
+          required: false
+          schema:
+            type: string
+            nullable: true
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceCommandResponse"
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPValidationError"
+        "423":
+          description: Device is locked by active plan
+        "500":
+          description: Stop operation failed
+
+  /api/v1/device/{device_path}:
+    post:
+      operationId: access_nested_device
+      summary: Access Nested Device
+      description: |
+        Access nested device component (ophyd-websocket compatible).
+        
+        Supports paths like:
+        - `motor1`
+        - `motor1.user_readback`
+        - `detector.image.array_size`
+      parameters:
+        - name: device_path
+          in: path
+          required: true
+          description: Dot-separated device component path
+          schema:
+            type: string
+        - name: authorization
+          in: header
+          required: false
+          schema:
+            type: string
+            nullable: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NestedDeviceRequest"
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NestedDeviceResponse"
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPValidationError"
+
+  /api/v1/device/{device_path}/value:
+    get:
+      operationId: get_nested_device_value
+      summary: Get Nested Device Value
+      description: |
+        Get nested device component value (read-only, no coordination check).
+        
+        Supports paths like `motor1.user_readback`.
+      parameters:
+        - name: device_path
+          in: path
+          required: true
+          description: Dot-separated device component path
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: string
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HTTPValidationError"
+
+# =============================================================================
+# Components
+# =============================================================================
+components:
+  schemas:
+    # -------------------------------------------------------------------------
+    # Enums
+    # -------------------------------------------------------------------------
+    CommandMode:
+      type: string
+      description: Command execution mode for PV writes.
+      enum:
+        - put-completion
+        - fire-and-forget
+
+    # -------------------------------------------------------------------------
+    # Health
+    # -------------------------------------------------------------------------
+    HealthResponse:
+      type: object
+      description: Health check response.
+      properties:
+        status:
+          type: string
+          description: Service health status
+          default: healthy
+        timestamp:
+          type: string
+          format: date-time
+          description: Health check timestamp
+        coordination_service_available:
+          type: boolean
+          description: Coordination service reachable
+        active_subscriptions:
+          type: integer
+          description: Number of active PV subscriptions
+        connected_pvs:
+          type: integer
+          description: Number of connected PVs
+        websocket_connections:
+          type: integer
+          description: Number of active WebSocket connections
+      additionalProperties: false
+
+    # -------------------------------------------------------------------------
+    # PV Operations (Low Fidelity Channel)
+    # -------------------------------------------------------------------------
+    PVSetRequest:
+      type: object
+      description: |
+        Request to set a PV value (Low Fidelity Channel).
+        
+        Two modes available:
+        - `wait=true` (put-completion): Waits for write confirmation
+        - `wait=false` (fire-and-forget): Issues write immediately, ideal for 
+          motor jogging where client monitors PV readback updates
+      required:
+        - pv_name
+        - value
+      properties:
+        pv_name:
+          type: string
+          description: EPICS PV name
+        value:
+          description: Value to set
+        wait:
+          type: boolean
+          description: |
+            Wait for put completion. False=fire-and-forget (monitor PV updates), 
+            True=wait for confirmation
+          default: false
+        timeout:
+          type: number
+          minimum: 0
+          nullable: true
+          description: Timeout in seconds (only used when wait=True)
+      additionalProperties: false
+
+    PVSetResponse:
+      type: object
+      description: |
+        Response from PV set operation (Low Fidelity Channel).
+        
+        The mode field indicates which channel was used:
+        - `put-completion`: Write confirmed, success reflects actual result
+        - `fire-and-forget`: Write issued, success indicates write was sent (not confirmed)
+      properties:
+        pv_name:
+          type: string
+          description: EPICS PV name
+        success:
+          type: boolean
+          description: Whether set operation succeeded (or was issued for fire-and-forget)
+        value_set:
+          description: Value that was set
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of operation
+        coordination_checked:
+          type: boolean
+          description: Whether coordination was checked
+        mode:
+          $ref: "#/components/schemas/CommandMode"
+        message:
+          type: string
+          nullable: true
+          description: Status message or error
+      additionalProperties: false
+
+    # -------------------------------------------------------------------------
+    # Device Operations (High Fidelity Channel)
+    # -------------------------------------------------------------------------
+    DeviceCommandRequest:
+      type: object
+      description: |
+        Request to execute a device method (High Fidelity Channel).
+        
+        This is the high-fidelity channel that always returns a result.
+        
+        Use when:
+        - Confirmation of operation completion is required
+        - Invoking Ophyd device methods (set, move, trigger, etc.)
+        
+        The `use_put` option (as-ophyd-api compatible):
+        - `use_put=false` (default): Uses ophyd's set() method which returns a 
+          Status object and waits for the operation to complete (e.g., motor done moving)
+        - `use_put=true`: Uses ophyd's put() method which writes the value and 
+          returns immediately without waiting for completion. Faster for rapid adjustments.
+      required:
+        - device_name
+        - method
+      properties:
+        device_name:
+          type: string
+          description: Ophyd device name
+        method:
+          type: string
+          description: Method to execute (set, read, trigger, etc.)
+        args:
+          type: array
+          items: {}
+          description: Positional arguments
+        kwargs:
+          type: object
+          additionalProperties: {}
+          description: Keyword arguments
+        timeout:
+          type: number
+          minimum: 0
+          nullable: true
+          description: Timeout in seconds
+        use_put:
+          type: boolean
+          default: false
+          description: |
+            Use put() instead of set(). put() returns immediately without 
+            waiting for completion (e.g., motor done moving). Useful for 
+            rapid jogging where you don't need confirmation.
+      additionalProperties: false
+
+    DeviceCommandResponse:
+      type: object
+      description: |
+        Response from device command execution (High Fidelity Channel).
+        
+        This response indicates the result of the operation. When `use_put=true`, 
+        the response returns immediately after issuing the command. When 
+        `use_put=false` (default), the response waits for operation completion.
+      properties:
+        device_name:
+          type: string
+          description: Ophyd device name
+        method:
+          type: string
+          description: Method executed
+        success:
+          type: boolean
+          description: Whether command succeeded
+        result:
+          description: Command result
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of operation
+        coordination_checked:
+          type: boolean
+          description: Whether coordination was checked
+        message:
+          type: string
+          nullable: true
+          description: Status message or error
+        use_put:
+          type: boolean
+          default: false
+          description: |
+            Whether put() was used instead of set(). True means command 
+            returned without waiting for completion.
+      additionalProperties: false
+
+    # -------------------------------------------------------------------------
+    # Nested Device Access
+    # -------------------------------------------------------------------------
+    NestedDeviceRequest:
+      type: object
+      description: Request to access nested device component (device_path comes from URL).
+      properties:
+        method:
+          type: string
+          default: read
+          description: Method to execute (read, set, trigger, etc.)
+        value:
+          nullable: true
+          description: Value to set (for set method)
+        timeout:
+          type: number
+          nullable: true
+          description: Timeout in seconds
+      additionalProperties: false
+
+    NestedDeviceResponse:
+      type: object
+      description: Response from nested device access.
+      properties:
+        device_path:
+          type: string
+          description: Full device path
+        method:
+          type: string
+          description: Method executed
+        success:
+          type: boolean
+          description: Whether operation succeeded
+        result:
+          description: Result value
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp
+        message:
+          type: string
+          nullable: true
+          description: Status message or error
+      additionalProperties: false
+
+    # -------------------------------------------------------------------------
+    # Validation Errors
+    # -------------------------------------------------------------------------
+    ValidationError:
+      type: object
+      required:
+        - loc
+        - msg
+        - type
+      properties:
+        loc:
+          type: array
+          items:
+            oneOf:
+              - type: string
+              - type: integer
+          description: Error location
+        msg:
+          type: string
+          description: Error message
+        type:
+          type: string
+          description: Error type
+        input:
+          description: Input that caused the error
+        ctx:
+          type: object
+          description: Error context
+
+    HTTPValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationError"
