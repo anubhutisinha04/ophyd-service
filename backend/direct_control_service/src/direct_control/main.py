@@ -10,6 +10,7 @@ environment variables (pyepics reads EPICS_CA_* env vars at import time).
 """
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -44,10 +45,34 @@ from .registry_client import RegistryClient, RegistryValidationError
 logger = structlog.get_logger(__name__)
 
 
+def _maybe_export_openapi(app: FastAPI) -> None:
+    """If OPHYD_SERVICE_OPENAPI_EXPORT_PATH is set, dump the schema there.
+
+    Used by docker-compose to publish the schema onto the shared-schema volume
+    for the frontend's codegen watcher. A no-op in local dev unless the env var is set.
+    """
+    path = os.environ.get("OPHYD_SERVICE_OPENAPI_EXPORT_PATH")
+    if not path:
+        return
+    try:
+        import json
+        from pathlib import Path as _Path
+
+        out = _Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(app.openapi(), indent=2) + "\n")
+        logger.info("Exported OpenAPI schema", path=str(out))
+    except Exception as exc:
+        # Non-fatal: the service still starts if the shared volume is unwritable.
+        logger.warning("Failed to export OpenAPI schema", path=path, error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize clients and managers on startup, clean up on shutdown."""
     logger.info("Starting Direct Device Control + Monitoring Service")
+
+    _maybe_export_openapi(app)
 
     settings = Settings()
 

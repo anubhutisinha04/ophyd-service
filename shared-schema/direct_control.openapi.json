@@ -1,0 +1,1069 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Bluesky Direct Device Control + Monitoring",
+    "description": "Device commanding with A4 coordination checks, plus real-time EPICS PV monitoring via WebSocket.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health Check",
+        "description": "Combined health check: coordination availability and monitoring stats.",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/stats": {
+      "get": {
+        "summary": "Get Stats",
+        "operationId": "get_stats_api_v1_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pv/set": {
+      "post": {
+        "summary": "Set Pv",
+        "description": "Set EPICS PV value with coordination check (Low Fidelity Channel).\n\nTwo modes:\n- wait=False (fire-and-forget, default): Issues write, returns immediately.\n- wait=True (put-completion): Waits for EPICS put-completion callback.\n\nRaises 404 if PV not in registry, 423 if device locked, 503 if\ncoordination service unavailable.",
+        "operationId": "set_pv_api_v1_pv_set_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PVSetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PVSetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pv/{pv_name}/value": {
+      "get": {
+        "summary": "Get Pv Value From Controller",
+        "description": "One-shot CA get via DeviceController (no subscription).\n\nExposes the pyepics caget / ca.get knobs as query params. Returns a\ntiled-style envelope: JSON by default with `shape`/`dtype`/`ndim`/\n`nbytes` alongside the value; `Accept: application/octet-stream` (or\n`?format=binary`) returns raw bytes with the same metadata in\n`X-PV-*` headers.",
+        "operationId": "get_pv_value_from_controller_api_v1_pv__pv_name__value_get",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pv Name"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override Accept header. 'json' or 'binary' (octet-stream).",
+              "title": "Format"
+            },
+            "description": "Override Accept header. 'json' or 'binary' (octet-stream)."
+          },
+          {
+            "name": "as_string",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Return the string representation (e.g. enum label)",
+              "default": false,
+              "title": "As String"
+            },
+            "description": "Return the string representation (e.g. enum label)"
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Max waveform elements to return",
+              "title": "Count"
+            },
+            "description": "Max waveform elements to return"
+          },
+          {
+            "name": "as_numpy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Return arrays as numpy.ndarray (JSON-serialized to list)",
+              "default": true,
+              "title": "As Numpy"
+            },
+            "description": "Return arrays as numpy.ndarray (JSON-serialized to list)"
+          },
+          {
+            "name": "use_monitor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Use cached monitor value. Default false matches the one-shot semantics of this endpoint; set true to share a monitor with any existing subscription (note: pyepics auto-installs a permanent CA monitor the first time this is true for a PV).",
+              "default": false,
+              "title": "Use Monitor"
+            },
+            "description": "Use cached monitor value. Default false matches the one-shot semantics of this endpoint; set true to share a monitor with any existing subscription (note: pyepics auto-installs a permanent CA monitor the first time this is true for a PV)."
+          },
+          {
+            "name": "timeout",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "exclusiveMinimum": 0.0,
+              "description": "CA get timeout in seconds",
+              "default": 5.0,
+              "title": "Timeout"
+            },
+            "description": "CA get timeout in seconds"
+          },
+          {
+            "name": "connection_timeout",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "exclusiveMinimum": 0.0,
+              "description": "CA connection timeout in seconds",
+              "default": 5.0,
+              "title": "Connection Timeout"
+            },
+            "description": "CA connection timeout in seconds"
+          },
+          {
+            "name": "ftype",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Force non-native DBR type (power user)",
+              "title": "Ftype"
+            },
+            "description": "Force non-native DBR type (power user)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/{pv_name}/value": {
+      "get": {
+        "summary": "Get Monitored Pv Value",
+        "description": "Get current value of a PV from the monitoring subscription cache.\n\nSubscribes to the PV if not already subscribed. Returns the same\ntiled-style envelope as the one-shot endpoint plus the monitor's\nfull metadata (connected, alarm, limits, units, access flags).",
+        "operationId": "get_monitored_pv_value_api_v1_pvs__pv_name__value_get",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pv Name"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override Accept header. 'json' or 'binary' (octet-stream).",
+              "title": "Format"
+            },
+            "description": "Override Accept header. 'json' or 'binary' (octet-stream)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/connected": {
+      "get": {
+        "summary": "Get Connected Pvs",
+        "description": "List PVs currently connected in the monitoring subsystem.",
+        "operationId": "get_connected_pvs_api_v1_pvs_connected_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Get Connected Pvs Api V1 Pvs Connected Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/device/execute": {
+      "post": {
+        "summary": "Execute Device Method",
+        "description": "Execute Ophyd device method with coordination check (High Fidelity Channel).\n\nAlways returns a confirmed result. Use when confirmation is required.\nRaises 404/423/503/500 on various failure modes.",
+        "operationId": "execute_device_method_api_v1_device_execute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/device/{device_name}/stop": {
+      "post": {
+        "summary": "Stop Device",
+        "description": "Stop a device (calls the device's stop() method with coordination check).",
+        "operationId": "stop_device_api_v1_device__device_name__stop_post",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices": {
+      "get": {
+        "summary": "List Devices",
+        "description": "List available devices (proxied from configuration service).",
+        "operationId": "list_devices_api_v1_devices_get",
+        "parameters": [
+          {
+            "name": "device_class",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by ophyd class name",
+              "title": "Device Class"
+            },
+            "description": "Filter by ophyd class name"
+          },
+          {
+            "name": "readable",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by Readable",
+              "title": "Readable"
+            },
+            "description": "Filter by Readable"
+          },
+          {
+            "name": "movable",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by Movable",
+              "title": "Movable"
+            },
+            "description": "Filter by Movable"
+          },
+          {
+            "name": "flyable",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by Flyable",
+              "title": "Flyable"
+            },
+            "description": "Filter by Flyable"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_name}": {
+      "get": {
+        "summary": "Get Device",
+        "description": "Get device metadata (proxied from configuration service).",
+        "operationId": "get_device_api_v1_devices__device_name__get",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_name}/bundle": {
+      "get": {
+        "summary": "Get Device Bundle",
+        "description": "Get hierarchical device component tree for building control UIs.",
+        "operationId": "get_device_bundle_api_v1_devices__device_name__bundle_get",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/device/{device_path}": {
+      "post": {
+        "summary": "Access Nested Device",
+        "description": "Access nested device component (e.g. motor1.user_readback).\n\nCoordination-checked for writes; 404/423/503/500 on failure modes.",
+        "operationId": "access_nested_device_api_v1_device__device_path__post",
+        "parameters": [
+          {
+            "name": "device_path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Path"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/NestedDeviceRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NestedDeviceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/device/{device_path}/value": {
+      "get": {
+        "summary": "Get Nested Device Value",
+        "description": "Get nested device component value (read-only, no coordination check).",
+        "operationId": "get_nested_device_value_api_v1_device__device_path__value_get",
+        "parameters": [
+          {
+            "name": "device_path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CommandMode": {
+        "type": "string",
+        "enum": [
+          "put-completion",
+          "fire-and-forget"
+        ],
+        "title": "CommandMode",
+        "description": "Command execution mode for PV writes."
+      },
+      "DeviceCommandRequest": {
+        "properties": {
+          "device_name": {
+            "type": "string",
+            "title": "Device Name"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "args": {
+            "items": {},
+            "type": "array",
+            "title": "Args"
+          },
+          "kwargs": {
+            "type": "object",
+            "title": "Kwargs"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout"
+          },
+          "use_put": {
+            "type": "boolean",
+            "title": "Use Put",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "device_name",
+          "method"
+        ],
+        "title": "DeviceCommandRequest",
+        "description": "Request to execute a device method (High Fidelity Channel).\n\nuse_put=False (default): ophyd set() waits for completion.\nuse_put=True: ophyd put() returns immediately."
+      },
+      "DeviceCommandResponse": {
+        "properties": {
+          "device_name": {
+            "type": "string",
+            "title": "Device Name"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "result": {
+            "title": "Result"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "coordination_checked": {
+            "type": "boolean",
+            "title": "Coordination Checked"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "use_put": {
+            "type": "boolean",
+            "title": "Use Put",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "device_name",
+          "method",
+          "success",
+          "timestamp",
+          "coordination_checked"
+        ],
+        "title": "DeviceCommandResponse",
+        "description": "Response from device command execution."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "healthy"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "coordination_service_available": {
+            "type": "boolean",
+            "title": "Coordination Service Available"
+          },
+          "active_subscriptions": {
+            "type": "integer",
+            "title": "Active Subscriptions",
+            "default": 0
+          },
+          "connected_pvs": {
+            "type": "integer",
+            "title": "Connected Pvs",
+            "default": 0
+          },
+          "websocket_connections": {
+            "type": "integer",
+            "title": "Websocket Connections",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "timestamp",
+          "coordination_service_available"
+        ],
+        "title": "HealthResponse",
+        "description": "Health check response for the merged service."
+      },
+      "NestedDeviceRequest": {
+        "properties": {
+          "method": {
+            "type": "string",
+            "title": "Method",
+            "default": "read"
+          },
+          "value": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NestedDeviceRequest",
+        "description": "Request to access nested device component."
+      },
+      "NestedDeviceResponse": {
+        "properties": {
+          "device_path": {
+            "type": "string",
+            "title": "Device Path"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "result": {
+            "title": "Result"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "device_path",
+          "method",
+          "success",
+          "timestamp"
+        ],
+        "title": "NestedDeviceResponse",
+        "description": "Response from nested device access."
+      },
+      "PVSetRequest": {
+        "properties": {
+          "pv_name": {
+            "type": "string",
+            "title": "Pv Name",
+            "description": "EPICS PV name"
+          },
+          "value": {
+            "title": "Value",
+            "description": "Value to set"
+          },
+          "wait": {
+            "type": "boolean",
+            "title": "Wait",
+            "description": "Block the CA thread until put completion",
+            "default": false
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout",
+            "description": "Put timeout in seconds (used with wait=True or use_complete=True)"
+          },
+          "connection_timeout": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Timeout",
+            "description": "Max seconds to wait for CA connection (pyepics default 5s)"
+          },
+          "use_complete": {
+            "type": "boolean",
+            "title": "Use Complete",
+            "description": "If True, wait for put via pyepics put-callback instead of blocking a CA thread. Overrides `wait` (always waits) but frees the worker.",
+            "default": false
+          },
+          "ftype": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ftype",
+            "description": "Force non-native DBR type (power-user knob; leave null for native)"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pv_name",
+          "value"
+        ],
+        "title": "PVSetRequest",
+        "description": "Request to set a PV value (Low Fidelity Channel).\n\nCompletion modes:\n- wait=False, use_complete=False (default): fire-and-forget \u2014 issue write, return.\n- wait=True,  use_complete=False: block a CA thread until put finishes.\n- use_complete=True: put-with-callback \u2014 CA thread is freed; service polls\n  for completion via the pyepics put-callback mechanism. Preferred for\n  long puts over HTTP because no worker thread is held.\n\n`connection_timeout` bounds how long we wait to establish CA connection;\nseparate from `timeout` which bounds the put itself.\n\n`ftype` forces a non-native DBR type on the wire (rare, e.g. when an IOC\nexpects CHAR waveforms represented differently). Leave None for native."
+      },
+      "PVSetResponse": {
+        "properties": {
+          "pv_name": {
+            "type": "string",
+            "title": "Pv Name"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "value_set": {
+            "title": "Value Set"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "coordination_checked": {
+            "type": "boolean",
+            "title": "Coordination Checked"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/CommandMode"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pv_name",
+          "success",
+          "value_set",
+          "timestamp",
+          "coordination_checked",
+          "mode"
+        ],
+        "title": "PVSetResponse",
+        "description": "Response from PV set operation."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

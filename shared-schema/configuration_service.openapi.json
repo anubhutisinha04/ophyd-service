@@ -1,0 +1,3739 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Configuration Service",
+    "description": "Device/PV registry for Bluesky Remote Architecture (SVC-004). Plans are managed by Experiment Execution Service.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Health Check",
+        "description": "Health check endpoint.",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Readiness Check",
+        "description": "Readiness check endpoint.",
+        "operationId": "readiness_check_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices": {
+      "get": {
+        "tags": [
+          "Device Registry"
+        ],
+        "summary": "List Devices",
+        "description": "Query available devices from registry",
+        "operationId": "list_devices_api_v1_devices_get",
+        "parameters": [
+          {
+            "name": "device_label",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DeviceLabel"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by device type",
+              "title": "Device Label"
+            },
+            "description": "Filter by device type"
+          },
+          {
+            "name": "pattern",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Glob pattern for name matching",
+              "title": "Pattern"
+            },
+            "description": "Glob pattern for name matching"
+          },
+          {
+            "name": "ophyd_class",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by ophyd device class name",
+              "title": "Ophyd Class"
+            },
+            "description": "Filter by ophyd device class name"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Response List Devices Api V1 Devices Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Device Management"
+        ],
+        "summary": "Create Runtime Device",
+        "description": "Add a new device to the registry at runtime",
+        "operationId": "create_device_api_v1_devices_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices-info": {
+      "get": {
+        "tags": [
+          "Device Registry"
+        ],
+        "summary": "Get All Devices Info",
+        "description": "Get detailed metadata for all devices (ophyd-websocket compatible)",
+        "operationId": "get_all_devices_info_api_v1_devices_info_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/DeviceMetadata"
+                  },
+                  "type": "object",
+                  "title": "Response Get All Devices Info Api V1 Devices Info Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/classes": {
+      "get": {
+        "tags": [
+          "Device Registry"
+        ],
+        "summary": "List Device Classes",
+        "description": "Get list of unique ophyd device classes (as-ophyd-api compatible)",
+        "operationId": "get_device_classes_api_v1_devices_classes_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Get Device Classes Api V1 Devices Classes Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/types": {
+      "get": {
+        "tags": [
+          "Device Registry"
+        ],
+        "summary": "List Device Types",
+        "description": "Get list of device type categories",
+        "operationId": "get_device_labels_api_v1_devices_types_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Get Device Labels Api V1 Devices Types Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/instantiation": {
+      "get": {
+        "tags": [
+          "Device Instantiation"
+        ],
+        "summary": "List Device Instantiation Specs",
+        "description": "Get all device instantiation specifications for remote device creation",
+        "operationId": "list_device_instantiations_api_v1_devices_instantiation_get",
+        "parameters": [
+          {
+            "name": "active_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Only return active devices",
+              "default": true,
+              "title": "Active Only"
+            },
+            "description": "Only return active devices"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/DeviceInstantiationSpec"
+                  },
+                  "title": "Response List Device Instantiations Api V1 Devices Instantiation Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/history": {
+      "get": {
+        "tags": [
+          "Device Management"
+        ],
+        "summary": "Device Audit Log",
+        "description": "List device change history (audit log of all mutations)",
+        "operationId": "list_device_history_api_v1_devices_history_get",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to a specific device",
+              "title": "Device Name"
+            },
+            "description": "Filter to a specific device"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 10000,
+              "minimum": 1,
+              "description": "Max entries to return",
+              "default": 1000,
+              "title": "Limit"
+            },
+            "description": "Max entries to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceAuditEntry"
+                  },
+                  "title": "Response List Device History Api V1 Devices History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/changes": {
+      "get": {
+        "tags": [
+          "Device Management"
+        ],
+        "summary": "Device Registry Delta",
+        "description": "Return device-state changes after a given audit cursor. Intended for clients (like bluesky-queueserver) that cache device state and need to keep it fresh without re-fetching the full registry. Each device is reported at most once with its current state. If reset_occurred is true, the caller should discard local state and re-fetch /devices-info; likewise if service_epoch differs from a previously-observed value.",
+        "operationId": "get_device_changes_api_v1_devices_changes_get",
+        "parameters": [
+          {
+            "name": "since_version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Return changes with audit id greater than this value",
+              "default": 0,
+              "title": "Since Version"
+            },
+            "description": "Return changes with audit id greater than this value"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceChangesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/lock": {
+      "post": {
+        "tags": [
+          "Device Locking"
+        ],
+        "summary": "Lock Devices (Bulk Atomic)",
+        "description": "Acquire locks on multiple devices atomically (all-or-nothing).\n\nWhen a device is locked, all PVs belonging to that device are implicitly\nlocked. Direct Control checks PV/device status before every write operation\nand will refuse to command locked PVs.\n\nLocks are held for the duration of a Bluesky plan (minutes to hours).\nEE sends unlock when the plan completes, fails, or is aborted.",
+        "operationId": "lock_devices_api_v1_devices_lock_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceLockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceLockResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "One or more devices already locked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceLockConflictResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "One or more devices not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceLockConflictResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more devices are disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceLockConflictResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/unlock": {
+      "post": {
+        "tags": [
+          "Device Locking"
+        ],
+        "summary": "Unlock Devices",
+        "description": "Release locks on devices. Only the item_id that acquired the lock can\nrelease it. Use force-unlock for admin override.",
+        "operationId": "unlock_devices_api_v1_devices_unlock_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceUnlockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceUnlockResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/force-unlock": {
+      "post": {
+        "tags": [
+          "Device Locking"
+        ],
+        "summary": "Force Unlock Devices (Admin)",
+        "description": "Emergency endpoint to clear stale locks regardless of ownership.\n\nUse when EE crashes mid-plan and locks are orphaned. Requires ADMIN\nrole when AuthZ middleware is enabled.",
+        "operationId": "force_unlock_devices_api_v1_devices_force_unlock_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceForceUnlockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceUnlockResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_name}/status": {
+      "get": {
+        "tags": [
+          "Device Locking"
+        ],
+        "summary": "Get Device Availability",
+        "description": "Combined availability check: lock state + enabled/disabled.\n\nA device is available only when it is both enabled and unlocked.",
+        "operationId": "get_device_status_api_v1_devices__device_name__status_get",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_name}/enable": {
+      "patch": {
+        "tags": [
+          "Device Management"
+        ],
+        "summary": "Enable Device",
+        "description": "Enable a device so it will be instantiated by remote services",
+        "operationId": "enable_device_api_v1_devices__device_name__enable_patch",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_name}/disable": {
+      "patch": {
+        "tags": [
+          "Device Management"
+        ],
+        "summary": "Disable Device",
+        "description": "Disable a device so it will not be instantiated by remote services",
+        "operationId": "disable_device_api_v1_devices__device_name__disable_patch",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_name}": {
+      "get": {
+        "tags": [
+          "Device Registry"
+        ],
+        "summary": "Get Device Metadata",
+        "description": "Get detailed metadata for specific device including PV mappings",
+        "operationId": "get_device_api_v1_devices__device_name__get",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceMetadata"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Device Management"
+        ],
+        "summary": "Update Device",
+        "description": "Update an existing device's metadata and/or instantiation spec",
+        "operationId": "update_device_api_v1_devices__device_name__put",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Device Management"
+        ],
+        "summary": "Delete Device",
+        "description": "Remove a device from the registry",
+        "operationId": "delete_device_api_v1_devices__device_name__delete",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_name}/pvs": {
+      "get": {
+        "tags": [
+          "PV Registry"
+        ],
+        "summary": "Get Device PVs",
+        "description": "Get all PVs owned by a device, mapped by component name",
+        "operationId": "get_device_pvs_api_v1_devices__device_name__pvs_get",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Device Pvs Api V1 Devices  Device Name  Pvs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_name}/instantiation": {
+      "get": {
+        "tags": [
+          "Device Instantiation"
+        ],
+        "summary": "Get Device Instantiation Spec",
+        "description": "Get instantiation specification for a specific device",
+        "operationId": "get_device_instantiation_api_v1_devices__device_name__instantiation_get",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceInstantiationSpec"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/registry/reset": {
+      "post": {
+        "tags": [
+          "Registry Admin"
+        ],
+        "summary": "Reset Registry",
+        "description": "Wipe the device DB and re-seed from profile collection",
+        "operationId": "reset_registry_api_v1_registry_reset_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCRUDResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/registry/clear": {
+      "post": {
+        "tags": [
+          "Registry Admin"
+        ],
+        "summary": "Clear Registry",
+        "description": "Wipe all devices without re-seeding. The next restart will re-seed from the profile.",
+        "operationId": "clear_registry_api_v1_registry_clear_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCRUDResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/registry/export": {
+      "get": {
+        "tags": [
+          "Registry Admin"
+        ],
+        "summary": "Export Registry",
+        "description": "Export the device registry in a portable format (happi)",
+        "operationId": "export_registry_api_v1_registry_export_get",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Export format (currently only 'happi')",
+              "default": "happi",
+              "title": "Format"
+            },
+            "description": "Export format (currently only 'happi')"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs": {
+      "post": {
+        "tags": [
+          "Standalone PVs"
+        ],
+        "summary": "Register Standalone PV",
+        "description": "Register a standalone PV not associated with any ophyd device",
+        "operationId": "create_standalone_pv_api_v1_pvs_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandalonePVCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StandalonePVCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "PV Registry"
+        ],
+        "summary": "List PVs",
+        "description": "Query available PVs from loaded devices",
+        "operationId": "list_pvs_api_v1_pvs_get",
+        "parameters": [
+          {
+            "name": "pattern",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Glob pattern for PV name matching",
+              "title": "Pattern"
+            },
+            "description": "Glob pattern for PV name matching"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Pvs Api V1 Pvs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/standalone": {
+      "get": {
+        "tags": [
+          "Standalone PVs"
+        ],
+        "summary": "List Standalone PVs",
+        "description": "List all registered standalone PVs with optional label filtering",
+        "operationId": "list_standalone_pvs_api_v1_pvs_standalone_get",
+        "parameters": [
+          {
+            "name": "labels",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated labels to filter by",
+              "title": "Labels"
+            },
+            "description": "Comma-separated labels to filter by"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StandalonePV"
+                  },
+                  "title": "Response List Standalone Pvs Api V1 Pvs Standalone Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/labels": {
+      "get": {
+        "tags": [
+          "Standalone PVs"
+        ],
+        "summary": "List Standalone PV Labels",
+        "description": "Get all unique labels across registered standalone PVs",
+        "operationId": "list_standalone_pv_labels_api_v1_pvs_labels_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response List Standalone Pv Labels Api V1 Pvs Labels Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/standalone/{pv_name}": {
+      "put": {
+        "tags": [
+          "Standalone PVs"
+        ],
+        "summary": "Update Standalone PV",
+        "description": "Update a registered standalone PV",
+        "operationId": "update_standalone_pv_api_v1_pvs_standalone__pv_name__put",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pv Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StandalonePVUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StandalonePVCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Standalone PVs"
+        ],
+        "summary": "Delete Standalone PV",
+        "description": "Remove a registered standalone PV",
+        "operationId": "delete_standalone_pv_api_v1_pvs_standalone__pv_name__delete",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pv Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StandalonePVCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/detailed": {
+      "get": {
+        "tags": [
+          "PV Registry"
+        ],
+        "summary": "Get Detailed PV Information",
+        "description": "Get PVs organized by device with signal path information",
+        "operationId": "get_pvs_detailed_api_v1_pvs_detailed_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Pvs Detailed Api V1 Pvs Detailed Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/lookup": {
+      "get": {
+        "tags": [
+          "PV Registry"
+        ],
+        "summary": "Lookup Device PVs by PV Name",
+        "description": "Given a PV, find the owning device and return all PVs for that device",
+        "operationId": "lookup_device_pvs_by_pv_api_v1_pvs_lookup_get",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "PV name to look up",
+              "title": "Pv Name"
+            },
+            "description": "PV name to look up"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Lookup Device Pvs By Pv Api V1 Pvs Lookup Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/status": {
+      "get": {
+        "tags": [
+          "Device Locking"
+        ],
+        "summary": "Get PV Availability",
+        "description": "Check whether a PV can be commanded (caput).\n\nResolves PV to its owning device and returns the device's lock and\nenabled state. Standalone PVs (not bound to a device) are always\navailable. This is the primary endpoint Direct Control calls before\nevery write operation.",
+        "operationId": "get_pv_status_api_v1_pvs_status_get",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "EPICS PV name to check",
+              "title": "Pv Name"
+            },
+            "description": "EPICS PV name to check"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PVStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/{pv_name}": {
+      "get": {
+        "tags": [
+          "PV Registry"
+        ],
+        "summary": "Get PV Metadata",
+        "description": "Get detailed metadata for specific PV",
+        "operationId": "get_pv_api_v1_pvs__pv_name__get",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pv Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PVMetadata"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_path}/component": {
+      "get": {
+        "tags": [
+          "Device Components"
+        ],
+        "summary": "Get Nested Device Component",
+        "description": "Look up nested device component by dot-separated path",
+        "operationId": "get_nested_device_component_api_v1_devices__device_path__component_get",
+        "parameters": [
+          {
+            "name": "device_path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NestedDeviceComponent"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{device_name}/components": {
+      "get": {
+        "tags": [
+          "Device Components"
+        ],
+        "summary": "List Device Components",
+        "description": "List all components of a device",
+        "operationId": "list_device_components_api_v1_devices__device_name__components_get",
+        "parameters": [
+          {
+            "name": "device_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Name"
+            }
+          },
+          {
+            "name": "max_depth",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Maximum component depth (0 = all, 1 = top-level only)",
+              "title": "Max Depth"
+            },
+            "description": "Maximum component depth (0 = all, 1 = top-level only)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NestedDeviceComponent"
+                  },
+                  "title": "Response List Device Components Api V1 Devices  Device Name  Components Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/metadata": {
+      "get": {
+        "tags": [
+          "Metadata"
+        ],
+        "summary": "List Metadata Entries",
+        "description": "List all stored metadata key-value entries",
+        "operationId": "list_metadata_api_v1_metadata_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MetadataEntry"
+                  },
+                  "type": "array",
+                  "title": "Response List Metadata Api V1 Metadata Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/metadata/{key}": {
+      "get": {
+        "tags": [
+          "Metadata"
+        ],
+        "summary": "Get Metadata Entry",
+        "description": "Get a single metadata entry by key",
+        "operationId": "get_metadata_api_v1_metadata__key__get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetadataEntry"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Metadata"
+        ],
+        "summary": "Create Metadata Entry",
+        "description": "Create a new metadata key-value entry (409 if key exists)",
+        "operationId": "create_metadata_api_v1_metadata__key__post",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetadataWriteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetadataCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Metadata"
+        ],
+        "summary": "Create or Update Metadata Entry",
+        "description": "Upsert a metadata key-value entry",
+        "operationId": "upsert_metadata_api_v1_metadata__key__put",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetadataWriteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetadataCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Metadata"
+        ],
+        "summary": "Delete Metadata Entry",
+        "description": "Delete a metadata key-value entry",
+        "operationId": "delete_metadata_api_v1_metadata__key__delete",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetadataCRUDResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DeviceAuditEntry": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "Auto-incrementing audit log entry ID"
+          },
+          "device_name": {
+            "type": "string",
+            "title": "Device Name",
+            "description": "Device name (or '*' for registry-wide ops)"
+          },
+          "operation": {
+            "type": "string",
+            "title": "Operation",
+            "description": "Operation (seed/add/update/delete/reset)"
+          },
+          "timestamp": {
+            "type": "number",
+            "title": "Timestamp",
+            "description": "Unix timestamp"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details",
+            "description": "Optional JSON details"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "device_name",
+          "operation",
+          "timestamp"
+        ],
+        "title": "DeviceAuditEntry",
+        "description": "Entry in the device audit log (append-only change history)."
+      },
+      "DeviceCRUDResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "description": "Whether the operation succeeded"
+          },
+          "device_name": {
+            "type": "string",
+            "title": "Device Name",
+            "description": "Name of the device"
+          },
+          "operation": {
+            "type": "string",
+            "title": "Operation",
+            "description": "Operation performed (create/update/delete)"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable status message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "device_name",
+          "operation",
+          "message"
+        ],
+        "title": "DeviceCRUDResponse",
+        "description": "Response model for device CRUD operations."
+      },
+      "DeviceChangeEntry": {
+        "properties": {
+          "device_name": {
+            "type": "string",
+            "title": "Device Name",
+            "description": "Device name"
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "upsert",
+              "delete"
+            ],
+            "title": "Op",
+            "description": "Either 'upsert' or 'delete'"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "description": "Audit log id of the change that produced this state"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "spec": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceInstantiationSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_name",
+          "op",
+          "version"
+        ],
+        "title": "DeviceChangeEntry",
+        "description": "One device's current state, reported in a delta response.\n\n``op`` is \"upsert\" if the device currently exists (create or update), or\n\"delete\" if it no longer exists. For \"upsert\", ``metadata`` and ``spec``\nreflect the current state; for \"delete\" both are null."
+      },
+      "DeviceChangesResponse": {
+        "properties": {
+          "current_version": {
+            "type": "integer",
+            "title": "Current Version",
+            "description": "Latest audit log id at query time"
+          },
+          "service_epoch": {
+            "type": "string",
+            "title": "Service Epoch",
+            "description": "Stable service-instance identifier"
+          },
+          "reset_occurred": {
+            "type": "boolean",
+            "title": "Reset Occurred",
+            "description": "True if a registry-wide reset happened in the range"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceChangeEntry"
+            },
+            "type": "array",
+            "title": "Changes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "current_version",
+          "service_epoch",
+          "reset_occurred"
+        ],
+        "title": "DeviceChangesResponse",
+        "description": "Delta response: every device whose state changed after ``since_version``.\n\nIf ``reset_occurred`` is true, a registry-wide reset happened in the\nrequested range and the caller should discard its local state and\nre-fetch the full registry instead of applying ``changes`` incrementally.\n``service_epoch`` is a stable identifier that changes only on manual\nre-seed or DB wipe; if it differs from the value the caller saw last,\ntreat the cursor as invalid."
+      },
+      "DeviceCreateRequest": {
+        "properties": {
+          "metadata": {
+            "$ref": "#/components/schemas/DeviceMetadata",
+            "description": "Device metadata"
+          },
+          "instantiation_spec": {
+            "$ref": "#/components/schemas/DeviceInstantiationSpec",
+            "description": "Device instantiation specification"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metadata",
+          "instantiation_spec"
+        ],
+        "title": "DeviceCreateRequest",
+        "description": "Request model for creating a runtime device.",
+        "example": {
+          "instantiation_spec": {
+            "args": [
+              "NEW:MOTOR"
+            ],
+            "device_class": "ophyd.EpicsMotor",
+            "kwargs": {
+              "name": "new_motor"
+            },
+            "name": "new_motor"
+          },
+          "metadata": {
+            "device_label": "motor",
+            "is_movable": true,
+            "is_readable": true,
+            "name": "new_motor",
+            "ophyd_class": "EpicsMotor",
+            "pvs": {
+              "user_readback": "NEW:MOTOR.RBV",
+              "user_setpoint": "NEW:MOTOR"
+            }
+          }
+        }
+      },
+      "DeviceForceUnlockRequest": {
+        "properties": {
+          "device_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Device Names",
+            "description": "Devices to force-unlock"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Reason for force-unlock (for audit log)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_names",
+          "reason"
+        ],
+        "title": "DeviceForceUnlockRequest",
+        "description": "Request model for administrative force-unlock.",
+        "example": {
+          "device_names": [
+            "sample_x"
+          ],
+          "reason": "EE crashed during rel_scan, clearing stale locks"
+        }
+      },
+      "DeviceInstantiationSpec": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Device name from profile collection"
+          },
+          "device_class": {
+            "type": "string",
+            "title": "Device Class",
+            "description": "Fully qualified class path (e.g., 'ophyd.EpicsMotor', 'ophyd.EpicsScaler')"
+          },
+          "args": {
+            "items": {},
+            "type": "array",
+            "title": "Args",
+            "description": "Positional arguments for device constructor (e.g., ['BL01:DET1:'])"
+          },
+          "kwargs": {
+            "type": "object",
+            "title": "Kwargs",
+            "description": "Keyword arguments for device constructor (e.g., {'name': 'det1'})"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active",
+            "description": "Whether this device should be instantiated",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "device_class"
+        ],
+        "title": "DeviceInstantiationSpec",
+        "description": "Device instantiation specification for remote device creation.\n\nThis model contains all information needed to recreate a device instance\nin another service (e.g., Experiment Execution Service). By providing\nthe class path and constructor arguments, remote services can dynamically\nimport and instantiate identical device objects.\n\nThis enables Configuration Service to be the single source of truth for\ndevice definitions, ensuring PV names and configurations are consistent\nacross all services.",
+        "example": {
+          "active": true,
+          "args": [
+            "BL01:DET1:"
+          ],
+          "device_class": "ophyd.EpicsScaler",
+          "kwargs": {
+            "name": "det1"
+          },
+          "name": "det1"
+        }
+      },
+      "DeviceInstantiationSpecUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Device name from profile collection"
+          },
+          "device_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Class",
+            "description": "Fully qualified class path (e.g., 'ophyd.EpicsMotor', 'ophyd.EpicsScaler')"
+          },
+          "args": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Args",
+            "description": "Positional arguments for device constructor (e.g., ['BL01:DET1:'])"
+          },
+          "kwargs": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kwargs",
+            "description": "Keyword arguments for device constructor (e.g., {'name': 'det1'})"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active",
+            "description": "Whether this device should be instantiated"
+          }
+        },
+        "type": "object",
+        "title": "DeviceInstantiationSpecUpdate"
+      },
+      "DeviceLabel": {
+        "type": "string",
+        "enum": [
+          "motor",
+          "detector",
+          "signal",
+          "flyer",
+          "readable",
+          "device"
+        ],
+        "title": "DeviceLabel",
+        "description": "Device classification derived from ophyd/ophyd-async class hierarchy.\n\nEach value maps directly to a concrete base class in ophyd or ophyd-async:\n  MOTOR     \u2014 ophyd.EpicsMotor, ophyd_async.epics.motor.Motor\n  DETECTOR  \u2014 ophyd.areadetector.DetectorBase, ophyd_async.core.StandardDetector\n  SIGNAL    \u2014 ophyd.Signal/EpicsSignal, ophyd_async.core.Signal\n  FLYER     \u2014 ophyd.FlyerInterface, ophyd_async.core.StandardFlyer\n  READABLE  \u2014 ophyd_async.core.StandardReadable (readable but not motor/detector)\n  DEVICE    \u2014 ophyd.Device, ophyd_async.core.Device (generic base)"
+      },
+      "DeviceLockConflict": {
+        "properties": {
+          "device_name": {
+            "type": "string",
+            "title": "Device Name",
+            "description": "Device name"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why the lock failed (not_found, disabled, already_locked)"
+          },
+          "locked_by_plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked By Plan",
+            "description": "Plan holding the lock"
+          },
+          "locked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked At",
+            "description": "ISO timestamp of lock acquisition"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_name",
+          "reason"
+        ],
+        "title": "DeviceLockConflict",
+        "description": "A single device that could not be locked."
+      },
+      "DeviceLockConflictResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable error message"
+          },
+          "conflicting_devices": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceLockConflict"
+            },
+            "type": "array",
+            "title": "Conflicting Devices",
+            "description": "Devices that caused the conflict"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "DeviceLockConflictResponse",
+        "description": "Response model for lock conflict (409/404/422)."
+      },
+      "DeviceLockRequest": {
+        "properties": {
+          "device_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Device Names",
+            "description": "Devices to lock"
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "Queue item ID holding the lock"
+          },
+          "plan_name": {
+            "type": "string",
+            "title": "Plan Name",
+            "description": "Name of the plan acquiring devices"
+          },
+          "locked_by_service": {
+            "type": "string",
+            "title": "Locked By Service",
+            "description": "Service requesting the lock",
+            "default": "experiment_execution"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_names",
+          "item_id",
+          "plan_name"
+        ],
+        "title": "DeviceLockRequest",
+        "description": "Request model for acquiring device locks (bulk atomic).",
+        "example": {
+          "device_names": [
+            "sample_x",
+            "det1"
+          ],
+          "item_id": "550e8400-e29b-41d4-a716-446655440000",
+          "locked_by_service": "experiment_execution",
+          "plan_name": "count"
+        }
+      },
+      "DeviceLockResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "description": "Whether locks were acquired"
+          },
+          "locked_devices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Locked Devices",
+            "description": "Devices that were locked"
+          },
+          "locked_pvs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Locked Pvs",
+            "description": "PVs implicitly locked"
+          },
+          "lock_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lock Id",
+            "description": "Lock group identifier"
+          },
+          "registry_version": {
+            "type": "integer",
+            "title": "Registry Version",
+            "description": "Lock version counter"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "registry_version"
+        ],
+        "title": "DeviceLockResponse",
+        "description": "Response model for successful lock acquisition."
+      },
+      "DeviceMetadata": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Device name from profile collection"
+          },
+          "device_label": {
+            "$ref": "#/components/schemas/DeviceLabel",
+            "description": "Classification of device"
+          },
+          "ophyd_class": {
+            "type": "string",
+            "title": "Ophyd Class",
+            "description": "Ophyd device class name"
+          },
+          "module": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Module",
+            "description": "Python module containing the device class"
+          },
+          "is_movable": {
+            "type": "boolean",
+            "title": "Is Movable",
+            "description": "Implements Movable protocol",
+            "default": false
+          },
+          "is_flyable": {
+            "type": "boolean",
+            "title": "Is Flyable",
+            "description": "Implements Flyable protocol",
+            "default": false
+          },
+          "is_readable": {
+            "type": "boolean",
+            "title": "Is Readable",
+            "description": "Implements Readable protocol",
+            "default": false
+          },
+          "is_triggerable": {
+            "type": "boolean",
+            "title": "Is Triggerable",
+            "description": "Implements Triggerable protocol (has trigger)",
+            "default": false
+          },
+          "is_stageable": {
+            "type": "boolean",
+            "title": "Is Stageable",
+            "description": "Implements Stageable protocol (has stage/unstage)",
+            "default": false
+          },
+          "is_configurable": {
+            "type": "boolean",
+            "title": "Is Configurable",
+            "description": "Implements Configurable protocol (has read_configuration/describe_configuration)",
+            "default": false
+          },
+          "is_pausable": {
+            "type": "boolean",
+            "title": "Is Pausable",
+            "description": "Implements Pausable protocol (has pause/resume)",
+            "default": false
+          },
+          "is_stoppable": {
+            "type": "boolean",
+            "title": "Is Stoppable",
+            "description": "Implements Stoppable protocol (has stop)",
+            "default": false
+          },
+          "is_subscribable": {
+            "type": "boolean",
+            "title": "Is Subscribable",
+            "description": "Implements Subscribable protocol (has subscribe/clear_sub)",
+            "default": false
+          },
+          "is_checkable": {
+            "type": "boolean",
+            "title": "Is Checkable",
+            "description": "Implements Checkable protocol (has check_value)",
+            "default": false
+          },
+          "writes_external_assets": {
+            "type": "boolean",
+            "title": "Writes External Assets",
+            "description": "Writes external assets (has collect_asset_docs)",
+            "default": false
+          },
+          "pvs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Pvs",
+            "description": "Component name to PV mapping"
+          },
+          "hints": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hints",
+            "description": "Bluesky hints for plotting/display"
+          },
+          "read_attrs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Read Attrs",
+            "description": "Readable attributes"
+          },
+          "configuration_attrs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Configuration Attrs",
+            "description": "Configuration attributes"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent",
+            "description": "Parent device if this is a component"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labels",
+            "description": "Device labels for grouping (e.g., 'motors', 'detectors', 'baseline')"
+          },
+          "beamline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beamline",
+            "description": "Beamline identifier (from happi)"
+          },
+          "location_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Group",
+            "description": "Location grouping (from happi)"
+          },
+          "functional_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Functional Group",
+            "description": "Functional grouping (from happi)"
+          },
+          "documentation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documentation",
+            "description": "Device documentation/description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "device_label",
+          "ophyd_class"
+        ],
+        "title": "DeviceMetadata",
+        "description": "Device metadata model.\n\nRepresents device information loaded from profile collections.\nMaps to ProvidesDeviceRegistry.get_device() return type.\n\nCompatible with ophyd/ophyd-async device introspection and profile collection formats.",
+        "example": {
+          "configuration_attrs": [
+            "velocity",
+            "acceleration"
+          ],
+          "device_label": "motor",
+          "hints": {
+            "fields": [
+              "sample_x"
+            ]
+          },
+          "is_checkable": true,
+          "is_configurable": true,
+          "is_flyable": false,
+          "is_movable": true,
+          "is_pausable": false,
+          "is_readable": true,
+          "is_stageable": true,
+          "is_stoppable": true,
+          "is_subscribable": true,
+          "is_triggerable": true,
+          "module": "ophyd.epics_motor",
+          "name": "sample_x",
+          "ophyd_class": "EpicsMotor",
+          "pvs": {
+            "user_readback": "BL01:SAMPLE:X.RBV",
+            "user_setpoint": "BL01:SAMPLE:X",
+            "velocity": "BL01:SAMPLE:X.VELO"
+          },
+          "read_attrs": [
+            "user_readback",
+            "user_setpoint"
+          ],
+          "writes_external_assets": false
+        }
+      },
+      "DeviceMetadataUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Device name from profile collection"
+          },
+          "device_label": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceLabel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Classification of device"
+          },
+          "ophyd_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ophyd Class",
+            "description": "Ophyd device class name"
+          },
+          "module": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Module",
+            "description": "Python module containing the device class"
+          },
+          "is_movable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Movable",
+            "description": "Implements Movable protocol"
+          },
+          "is_flyable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Flyable",
+            "description": "Implements Flyable protocol"
+          },
+          "is_readable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Readable",
+            "description": "Implements Readable protocol"
+          },
+          "is_triggerable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Triggerable",
+            "description": "Implements Triggerable protocol (has trigger)"
+          },
+          "is_stageable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Stageable",
+            "description": "Implements Stageable protocol (has stage/unstage)"
+          },
+          "is_configurable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Configurable",
+            "description": "Implements Configurable protocol (has read_configuration/describe_configuration)"
+          },
+          "is_pausable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Pausable",
+            "description": "Implements Pausable protocol (has pause/resume)"
+          },
+          "is_stoppable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Stoppable",
+            "description": "Implements Stoppable protocol (has stop)"
+          },
+          "is_subscribable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Subscribable",
+            "description": "Implements Subscribable protocol (has subscribe/clear_sub)"
+          },
+          "is_checkable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Checkable",
+            "description": "Implements Checkable protocol (has check_value)"
+          },
+          "writes_external_assets": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Writes External Assets",
+            "description": "Writes external assets (has collect_asset_docs)"
+          },
+          "pvs": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pvs",
+            "description": "Component name to PV mapping"
+          },
+          "hints": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hints",
+            "description": "Bluesky hints for plotting/display"
+          },
+          "read_attrs": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Attrs",
+            "description": "Readable attributes"
+          },
+          "configuration_attrs": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configuration Attrs",
+            "description": "Configuration attributes"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent",
+            "description": "Parent device if this is a component"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labels",
+            "description": "Device labels for grouping (e.g., 'motors', 'detectors', 'baseline')"
+          },
+          "beamline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beamline",
+            "description": "Beamline identifier (from happi)"
+          },
+          "location_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Group",
+            "description": "Location grouping (from happi)"
+          },
+          "functional_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Functional Group",
+            "description": "Functional grouping (from happi)"
+          },
+          "documentation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documentation",
+            "description": "Device documentation/description"
+          }
+        },
+        "type": "object",
+        "title": "DeviceMetadataUpdate"
+      },
+      "DeviceStatusResponse": {
+        "properties": {
+          "device_name": {
+            "type": "string",
+            "title": "Device Name",
+            "description": "Device name"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "description": "True only when enabled AND unlocked"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "description": "Whether the device is enabled for instantiation"
+          },
+          "lock_status": {
+            "type": "string",
+            "title": "Lock Status",
+            "description": "Lock state: 'locked' or 'unlocked'"
+          },
+          "locked_by_plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked By Plan",
+            "description": "Plan holding the lock"
+          },
+          "locked_by_item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked By Item",
+            "description": "Queue item ID holding the lock"
+          },
+          "locked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked At",
+            "description": "ISO timestamp of lock acquisition"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_name",
+          "available",
+          "enabled",
+          "lock_status"
+        ],
+        "title": "DeviceStatusResponse",
+        "description": "Combined device availability check (lock + enabled state)."
+      },
+      "DeviceUnlockRequest": {
+        "properties": {
+          "device_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Device Names",
+            "description": "Devices to unlock"
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "Queue item ID that holds the lock"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_names",
+          "item_id"
+        ],
+        "title": "DeviceUnlockRequest",
+        "description": "Request model for releasing device locks."
+      },
+      "DeviceUnlockResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "description": "Whether locks were released"
+          },
+          "unlocked_devices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unlocked Devices",
+            "description": "Devices that were unlocked"
+          },
+          "registry_version": {
+            "type": "integer",
+            "title": "Registry Version",
+            "description": "Lock version counter"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "registry_version"
+        ],
+        "title": "DeviceUnlockResponse",
+        "description": "Response model for unlock operations."
+      },
+      "DeviceUpdateRequest": {
+        "properties": {
+          "metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceMetadataUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Partial device metadata \u2014 only included fields are updated"
+          },
+          "instantiation_spec": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceInstantiationSpecUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Partial instantiation spec \u2014 only included fields are updated"
+          }
+        },
+        "type": "object",
+        "title": "DeviceUpdateRequest",
+        "description": "Request model for updating a device.\n\nSupports field-level partial updates: only the fields you include\nin ``metadata`` or ``instantiation_spec`` are changed.  Omitted fields\nkeep their current values.",
+        "example": {
+          "metadata": {
+            "documentation": "Sample X translation stage",
+            "labels": [
+              "motors",
+              "sample-stage"
+            ]
+          }
+        }
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "MetadataCRUDResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "description": "Whether the operation succeeded"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "description": "Metadata key"
+          },
+          "operation": {
+            "type": "string",
+            "title": "Operation",
+            "description": "Operation performed (create/update/delete)"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable status message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "key",
+          "operation",
+          "message"
+        ],
+        "title": "MetadataCRUDResponse",
+        "description": "Response model for metadata CRUD operations."
+      },
+      "MetadataEntry": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "description": "Unique string key"
+          },
+          "value": {
+            "type": "object",
+            "title": "Value",
+            "description": "Arbitrary JSON dictionary"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At",
+            "description": "Unix timestamp of creation"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At",
+            "description": "Unix timestamp of last update"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "value"
+        ],
+        "title": "MetadataEntry",
+        "description": "A stored metadata key-value entry."
+      },
+      "MetadataWriteRequest": {
+        "properties": {
+          "value": {
+            "type": "object",
+            "title": "Value",
+            "description": "Arbitrary JSON dictionary to store"
+          }
+        },
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "title": "MetadataWriteRequest",
+        "description": "Request model for creating or updating a metadata entry."
+      },
+      "NestedDeviceComponent": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Component name"
+          },
+          "device_path": {
+            "type": "string",
+            "title": "Device Path",
+            "description": "Full path to component"
+          },
+          "parent_device": {
+            "type": "string",
+            "title": "Parent Device",
+            "description": "Parent device name"
+          },
+          "component_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Component Type",
+            "description": "Component type"
+          },
+          "pv": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pv",
+            "description": "Associated EPICS PV"
+          },
+          "is_readable": {
+            "type": "boolean",
+            "title": "Is Readable",
+            "description": "Whether component is readable",
+            "default": true
+          },
+          "is_settable": {
+            "type": "boolean",
+            "title": "Is Settable",
+            "description": "Whether component is settable",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "device_path",
+          "parent_device"
+        ],
+        "title": "NestedDeviceComponent",
+        "description": "Information about a nested device component."
+      },
+      "PVAccessMode": {
+        "type": "string",
+        "enum": [
+          "read-only",
+          "read-write"
+        ],
+        "title": "PVAccessMode",
+        "description": "Access mode for standalone PVs."
+      },
+      "PVMetadata": {
+        "properties": {
+          "pv": {
+            "type": "string",
+            "title": "Pv",
+            "description": "EPICS PV name"
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected",
+            "description": "Connection status",
+            "default": false
+          },
+          "dtype": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dtype",
+            "description": "EPICS data type"
+          },
+          "units": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Units",
+            "description": "Engineering units"
+          },
+          "precision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precision",
+            "description": "Display precision"
+          },
+          "enum_strs": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enum Strs",
+            "description": "Enumeration strings for enum PVs"
+          },
+          "upper_ctrl_limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upper Ctrl Limit",
+            "description": "Upper control limit"
+          },
+          "lower_ctrl_limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower Ctrl Limit",
+            "description": "Lower control limit"
+          },
+          "device_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Name",
+            "description": "Owning device name if known"
+          },
+          "component_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Component Name",
+            "description": "Component name within device"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pv"
+        ],
+        "title": "PVMetadata",
+        "description": "EPICS PV metadata model.\n\nRepresents PV information from EPICS network discovery.\nMaps to ProvidesDeviceRegistry.get_pv_metadata() return type.",
+        "example": {
+          "component_name": "user_readback",
+          "connected": true,
+          "device_name": "sample_x",
+          "dtype": "double",
+          "lower_ctrl_limit": -100.0,
+          "precision": 3,
+          "pv": "BL01:SAMPLE:X.RBV",
+          "units": "mm",
+          "upper_ctrl_limit": 100.0
+        }
+      },
+      "PVProtocol": {
+        "type": "string",
+        "enum": [
+          "ca",
+          "pva"
+        ],
+        "title": "PVProtocol",
+        "description": "EPICS protocol for standalone PV access."
+      },
+      "PVStatusResponse": {
+        "properties": {
+          "pv_name": {
+            "type": "string",
+            "title": "Pv Name",
+            "description": "EPICS PV name"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "description": "True when owning device is enabled and unlocked (or standalone)"
+          },
+          "device_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Name",
+            "description": "Owning device name (null for standalone PVs)"
+          },
+          "device_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Enabled",
+            "description": "Whether the owning device is enabled"
+          },
+          "device_lock_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Lock Status",
+            "description": "Owning device lock state"
+          },
+          "locked_by_plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked By Plan",
+            "description": "Plan holding the lock on the owning device"
+          },
+          "locked_by_item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked By Item",
+            "description": "Queue item ID holding the lock"
+          },
+          "locked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked At",
+            "description": "ISO timestamp of lock acquisition"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pv_name",
+          "available"
+        ],
+        "title": "PVStatusResponse",
+        "description": "PV availability check (resolves PV to owning device lock state)."
+      },
+      "StandalonePV": {
+        "properties": {
+          "pv_name": {
+            "type": "string",
+            "title": "Pv Name",
+            "description": "EPICS PV name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Human-readable description"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/PVProtocol",
+            "description": "EPICS protocol",
+            "default": "ca"
+          },
+          "access_mode": {
+            "$ref": "#/components/schemas/PVAccessMode",
+            "description": "Access mode",
+            "default": "read-only"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labels",
+            "description": "Labels for RBAC grouping"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "Source of registration",
+            "default": "runtime"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By",
+            "description": "User who registered this PV"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At",
+            "description": "Unix timestamp of creation"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At",
+            "description": "Unix timestamp of last update"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pv_name"
+        ],
+        "title": "StandalonePV",
+        "description": "A standalone PV not associated with any ophyd device."
+      },
+      "StandalonePVCRUDResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "description": "Whether the operation succeeded"
+          },
+          "pv_name": {
+            "type": "string",
+            "title": "Pv Name",
+            "description": "PV name"
+          },
+          "operation": {
+            "type": "string",
+            "title": "Operation",
+            "description": "Operation performed (create/update/delete)"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable status message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "pv_name",
+          "operation",
+          "message"
+        ],
+        "title": "StandalonePVCRUDResponse",
+        "description": "Response model for standalone PV CRUD operations."
+      },
+      "StandalonePVCreateRequest": {
+        "properties": {
+          "pv_name": {
+            "type": "string",
+            "title": "Pv Name",
+            "description": "EPICS PV name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Human-readable description"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/PVProtocol",
+            "description": "EPICS protocol",
+            "default": "ca"
+          },
+          "access_mode": {
+            "$ref": "#/components/schemas/PVAccessMode",
+            "description": "Access mode",
+            "default": "read-only"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labels",
+            "description": "Labels for RBAC grouping"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pv_name"
+        ],
+        "title": "StandalonePVCreateRequest",
+        "description": "Request model for registering a standalone PV.",
+        "example": {
+          "access_mode": "read-only",
+          "description": "Storage ring beam current",
+          "labels": [
+            "machine",
+            "beam-diagnostics"
+          ],
+          "protocol": "ca",
+          "pv_name": "BL01:RING:CURRENT"
+        }
+      },
+      "StandalonePVUpdateRequest": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Human-readable description"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PVProtocol"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "EPICS protocol"
+          },
+          "access_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PVAccessMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Access mode"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labels",
+            "description": "Labels for RBAC grouping"
+          }
+        },
+        "type": "object",
+        "title": "StandalonePVUpdateRequest",
+        "description": "Request model for updating a standalone PV.\n\nAll fields optional.  Only fields included in the request body are\napplied; omitted fields keep their current values.",
+        "example": {
+          "description": "Updated: storage ring beam current (averaged)",
+          "labels": [
+            "machine",
+            "beam-diagnostics",
+            "averaging"
+          ]
+        }
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Health",
+      "description": "Service health and readiness checks"
+    },
+    {
+      "name": "Device Registry",
+      "description": "Query registered devices and their metadata"
+    },
+    {
+      "name": "Device Instantiation",
+      "description": "Device instantiation specifications for remote creation"
+    },
+    {
+      "name": "Device Management",
+      "description": "Runtime device CRUD operations (add/update/delete)"
+    },
+    {
+      "name": "Registry Admin",
+      "description": "Administrative operations (reset, export)"
+    },
+    {
+      "name": "Standalone PVs",
+      "description": "Register and manage standalone PVs not tied to ophyd devices"
+    },
+    {
+      "name": "Metadata",
+      "description": "Generic key-value metadata store for arbitrary JSON data"
+    },
+    {
+      "name": "PV Registry",
+      "description": "Query registered PVs from loaded devices"
+    },
+    {
+      "name": "Device Components",
+      "description": "Nested device component lookup and listing"
+    },
+    {
+      "name": "Device Locking",
+      "description": "Device lock management for experiment coordination (A4)"
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+# docker-compose for the ophyd-service monorepo.
+#
+# Four services, one shared-schema volume:
+#   ioc                   — caproto simulated IOC on EPICS CA (5064)
+#   configuration_service — device/PV registry, port 8004
+#   direct_control_service — WS/REST device commanding + PV monitoring, port 8003
+#   frontend              — Vite + React dev server, port 5173
+#
+# The backends dump their OpenAPI schemas into the shared-schema volume on
+# startup (via an env-gated lifespan hook); the frontend reads them on start
+# to generate TypeScript types before `vite` launches.
+#
+# Usage:
+#   docker compose up           # foreground, all four services
+#   docker compose up -d        # detached
+#   docker compose logs -f      # follow
+#   docker compose down         # stop + remove containers (volumes preserved)
+
+services:
+  ioc:
+    build:
+      context: ./ioc
+    # EPICS gateway clients need beacons/search on 5064/udp. Publish only to the
+    # compose network by default; expose to the host only if you need to run
+    # `caget`/`caput` from your workstation against the sim IOC.
+    # ports:
+    #   - "5064:5064/tcp"
+    #   - "5064:5064/udp"
+    #   - "5065:5065/udp"
+    healthcheck:
+      # No TCP port is bound until a client connects — use a process check instead.
+      test: ["CMD-SHELL", "pgrep -f caproto.ioc_examples.simple > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  configuration_service:
+    build:
+      context: ./backend/configuration_service
+    environment:
+      OPHYD_SERVICE_OPENAPI_EXPORT_PATH: /app/openapi/configuration_service.openapi.json
+      # Minimal defaults; override in an override file or .env for real configs.
+      CONFIG_PROFILE_PATH: /app/profile  # placeholder; real path mounted in a deployment
+    volumes:
+      - ./shared-schema:/app/openapi
+    ports:
+      - "8004:8004"
+
+  direct_control_service:
+    build:
+      context: ./backend/direct_control_service
+    environment:
+      OPHYD_SERVICE_OPENAPI_EXPORT_PATH: /app/openapi/direct_control.openapi.json
+      DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
+      # Skip the coordination check — no EE service running in compose.
+      DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
+      # pyepics reads these. Point it at the compose-network IOC; disable
+      # auto-addr so it doesn't broadcast on the host network.
+      EPICS_CA_ADDR_LIST: ioc
+      EPICS_CA_AUTO_ADDR_LIST: "NO"
+    volumes:
+      - ./shared-schema:/app/openapi
+    ports:
+      - "8003:8003"
+    depends_on:
+      configuration_service:
+        condition: service_healthy
+      ioc:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      # Where openapi-typescript reads the schemas from (see frontend/scripts/generate-types.sh).
+      SCHEMA_DIR: /app/schema
+    volumes:
+      - ./shared-schema:/app/schema:ro
+      # Keep node_modules inside the image; mount source for hot reload.
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+    ports:
+      - "5173:5173"
+    depends_on:
+      configuration_service:
+        condition: service_healthy
+      direct_control_service:
+        condition: service_healthy

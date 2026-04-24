@@ -27,4 +27,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:8003/health', timeout=2)" || exit 1
 
 # Run service
-CMD ["python", "-m", "cli", "--host", "0.0.0.0", "--port", "8003"]
+CMD ["bluesky-direct-control", "--host", "0.0.0.0", "--port", "8003"]

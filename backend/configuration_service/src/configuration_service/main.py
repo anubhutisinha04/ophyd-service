@@ -16,14 +16,17 @@ Architecture:
 - On restart: DB populated → load from DB; DB empty → seed from profile
 """
 
+import json
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import List, Optional, Dict, Any, Annotated, Type, TypeVar
+
+import structlog
 from fastapi import FastAPI, HTTPException, Depends, Query, status
-from pydantic import BaseModel, ValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import List, Optional, Dict, Any, Annotated, Type, TypeVar
-import structlog
-import json
+from pydantic import BaseModel, ValidationError
 from .models import (
     DeviceMetadata,
     DeviceInstantiationSpec,
@@ -70,6 +73,25 @@ structlog.configure(
     ]
 )
 logger = structlog.get_logger()
+
+
+def _maybe_export_openapi(app: FastAPI) -> None:
+    """If OPHYD_SERVICE_OPENAPI_EXPORT_PATH is set, dump the schema there.
+
+    Used by docker-compose to publish the schema onto the shared-schema volume
+    for the frontend's codegen watcher. A no-op in local dev unless the env var is set.
+    """
+    path = os.environ.get("OPHYD_SERVICE_OPENAPI_EXPORT_PATH")
+    if not path:
+        return
+    try:
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(app.openapi(), indent=2) + "\n")
+        logger.info("openapi_schema_exported", path=str(out))
+    except Exception as exc:
+        # Non-fatal: the service still starts if the shared volume is unwritable.
+        logger.warning("openapi_schema_export_failed", path=path, error=str(exc))
 
 
 _M = TypeVar("_M", bound=BaseModel)
@@ -183,6 +205,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Manage application lifecycle - load configuration at startup."""
+        _maybe_export_openapi(app)
         logger.info(
             "configuration_service_startup",
             profile_path=str(settings.profile_path),
