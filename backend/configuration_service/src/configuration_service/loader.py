@@ -77,6 +77,28 @@ def _infer_device_label(class_name: str, labels: Optional[List[str]] = None,
     return DeviceLabel.DEVICE
 
 
+def _resolve_happi_templates(value: Any, prefix: Optional[str],
+                             name: Optional[str]) -> Any:
+    """
+    Substitute happi's `{{prefix}}` and `{{name}}` placeholders.
+
+    Walks lists and dicts; leaves non-string scalars untouched. If `prefix`
+    is None and a `{{prefix}}` token is encountered, it stays literal — the
+    caller handles empty-pvs fallback.
+    """
+    if isinstance(value, str):
+        if prefix is not None:
+            value = value.replace("{{prefix}}", prefix)
+        if name is not None:
+            value = value.replace("{{name}}", name)
+        return value
+    if isinstance(value, list):
+        return [_resolve_happi_templates(v, prefix, name) for v in value]
+    if isinstance(value, dict):
+        return {k: _resolve_happi_templates(v, prefix, name) for k, v in value.items()}
+    return value
+
+
 def _derive_pvs_from_args(class_name: str, args: List[Any],
                           kwargs: Dict[str, Any]) -> Dict[str, str]:
     """
@@ -173,13 +195,18 @@ class HappiProfileLoader:
 
         caps = get_capabilities(class_name)
 
-        # Derive PVs from constructor args
-        args = entry.get("args", [])
-        kwargs = entry.get("kwargs", {})
+        # Resolve happi's {{prefix}} / {{name}} templates before deriving PVs
+        # or building the instantiation spec. Happi's own loader does this in
+        # happi.loader.from_container; we emulate it to stay faithful to the
+        # format. Without this, `args: ["{{prefix}}"]` collapses every entry
+        # onto the literal "{{prefix}}" PV name.
+        prefix = entry.get("prefix")
+        args = _resolve_happi_templates(entry.get("args", []), prefix, name)
+        kwargs = _resolve_happi_templates(entry.get("kwargs", {}), prefix, name)
+
         pvs = _derive_pvs_from_args(class_name, args, kwargs)
 
-        # Also check for prefix field (KREIOS happi uses this)
-        prefix = entry.get("prefix")
+        # Fallback: KREIOS-style happi entries have `prefix` but no args.
         if prefix and not pvs:
             pvs["prefix"] = prefix
 

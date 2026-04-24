@@ -1,0 +1,156 @@
+{
+  "spot": {
+    "_id": "spot",
+    "active": true,
+    "documentation": "Compound detector at mini:dot — components: det, img_sum, exp, shutter_open.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "localdevs.Spot",
+    "name": "spot",
+    "prefix": "mini:dot"
+  },
+  "pinhole": {
+    "_id": "pinhole",
+    "active": true,
+    "documentation": "Compound detector at mini:ph — components: det, exp.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "localdevs.Det",
+    "name": "pinhole",
+    "prefix": "mini:ph"
+  },
+  "motor_spotx": {
+    "_id": "motor_spotx",
+    "active": true,
+    "documentation": null,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "motor_spotx",
+    "prefix": "mini:dot:mtrx"
+  },
+  "motor_spoty": {
+    "_id": "motor_spoty",
+    "active": true,
+    "documentation": null,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "motor_spoty",
+    "prefix": "mini:dot:mtry"
+  },
+  "motor_ph": {
+    "_id": "motor_ph",
+    "active": true,
+    "documentation": null,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "motor_ph",
+    "prefix": "mini:ph:mtr"
+  },
+  "beam_current": {
+    "_id": "beam_current",
+    "active": true,
+    "documentation": null,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "beam_current",
+    "prefix": "mini:current"
+  },
+  "spot_det": {
+    "_id": "spot_det",
+    "active": true,
+    "documentation": "Leaf PV of compound `spot`. Explicit entry so registry.pvs covers it.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "spot_det",
+    "prefix": "mini:dot:det"
+  },
+  "spot_img_sum": {
+    "_id": "spot_img_sum",
+    "active": true,
+    "documentation": "Leaf PV of compound `spot`.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "spot_img_sum",
+    "prefix": "mini:dot:img_sum"
+  },
+  "spot_exp": {
+    "_id": "spot_exp",
+    "active": true,
+    "documentation": "Leaf PV of compound `spot`.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "spot_exp",
+    "prefix": "mini:dot:exp"
+  },
+  "spot_shutter_open": {
+    "_id": "spot_shutter_open",
+    "active": true,
+    "documentation": "Leaf PV of compound `spot`.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "spot_shutter_open",
+    "prefix": "mini:dot:shutter_open"
+  },
+  "pinhole_det": {
+    "_id": "pinhole_det",
+    "active": true,
+    "documentation": "Leaf PV of compound `pinhole`.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "pinhole_det",
+    "prefix": "mini:ph:det"
+  },
+  "pinhole_exp": {
+    "_id": "pinhole_exp",
+    "active": true,
+    "documentation": "Leaf PV of compound `pinhole`.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "pinhole_exp",
+    "prefix": "mini:ph:exp"
+  },
+  "motor_ph_vel": {
+    "_id": "motor_ph_vel",
+    "active": true,
+    "documentation": "Velocity setpoint for motor_ph.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "motor_ph_vel",
+    "prefix": "mini:ph:vel"
+  },
+  "motor_ph_tick_rate": {
+    "_id": "motor_ph_tick_rate",
+    "active": true,
+    "documentation": "Tick rate for motor_ph.",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.signal.EpicsSignal",
+    "name": "motor_ph_tick_rate",
+    "prefix": "mini:ph:mtr_tick_rate"
+  }
+}

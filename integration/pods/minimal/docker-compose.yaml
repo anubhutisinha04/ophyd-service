@@ -1,0 +1,64 @@
+# Minimal integration pod for ophyd-service.
+#
+# Three services, the smallest shape that exercises configuration_service +
+# direct_control_service against a simulated IOC end-to-end:
+#
+#   ioc                    — caproto mini_beamline on EPICS CA
+#   configuration_service  — device/PV registry, loaded from happi_db.json
+#                            (no CRUD seeding — happi is the source of truth)
+#   direct_control_service — WS/REST device commanding + PV monitoring
+#
+# Phase 2+ pods (random_walk / thermo / full stack / queueserver) will live
+# under sibling dirs: integration/pods/full/, integration/pods/with-queueserver/, etc.
+# This pod is for "does the vertical slice work?" smoke testing.
+#
+# Relative paths assume this file lives at integration/pods/minimal/, so
+# `../..` reaches integration/ and `../../..` reaches the ophyd-service root.
+#
+# Usage:
+#   docker compose up --build         # first time, or after edits
+#   docker compose down               # stop + remove
+#   docker compose logs -f direct_control_service
+
+services:
+  ioc:
+    build:
+      context: ../../ioc
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f caproto.ioc_examples.mini_beamline > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  configuration_service:
+    build:
+      context: ../../../backend/configuration_service
+    environment:
+      # Happi is the source of truth. The loader auto-detects happi_db.json
+      # under CONFIG_PROFILE_PATH; `happi` makes that explicit.
+      CONFIG_LOAD_STRATEGY: "happi"
+      CONFIG_PROFILE_PATH: "/profile"
+      # Default /var/lib/bluesky isn't writable by the non-root container user.
+      CONFIG_DB_PATH: "/tmp/config_service.db"
+    volumes:
+      - ../../happi:/profile:ro
+    ports:
+      - "8004:8004"
+
+  direct_control_service:
+    build:
+      context: ../../../backend/direct_control_service
+    environment:
+      DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
+      # No EE service in the pod; coordination check would 502 every call.
+      DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
+      # pyepics: point CA search at the compose-network IOC only.
+      EPICS_CA_ADDR_LIST: ioc
+      EPICS_CA_AUTO_ADDR_LIST: "NO"
+    ports:
+      - "8003:8003"
+    depends_on:
+      configuration_service:
+        condition: service_healthy
+      ioc:
+        condition: service_healthy

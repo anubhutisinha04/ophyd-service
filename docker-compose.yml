@@ -1,12 +1,15 @@
-# docker-compose for the ophyd-service BACKEND demo.
+# docker-compose for the ophyd-service BACKEND INNER LOOP.
 #
-# Four services, all backend-side:
+# Three services, all backend-side:
 #   ioc                    — caproto mini_beamline simulated IOC on EPICS CA (5064)
-#   configuration_service  — device/PV registry, port 8004
-#   seed_registry          — one-shot sidecar that POSTs mini_beamline PVs to
-#                            configuration_service so direct_control's
-#                            registry-validation gate lets reads/writes through
+#   configuration_service  — device/PV registry, port 8004 (happi-seeded)
 #   direct_control_service — WS/REST device commanding + PV monitoring, port 8003
+#
+# Shares integration/happi/happi_db.json with the integration pod so both
+# composes exercise the same device registry. If you want the richer
+# full-stack environment (tiled / databroker / queueserver / more IOCs), use
+# integration/pods/<name>/ instead. This file is for tight iteration on a
+# single backend.
 #
 # The frontend container is intentionally NOT defined here — that's the
 # frontend team's responsibility. Frontend contributors can add a
@@ -23,7 +26,7 @@
 services:
   ioc:
     build:
-      context: ./ioc
+      context: ./integration/ioc
     # EPICS gateway clients need beacons/search on 5064/udp. Publish only to the
     # compose network by default; uncomment to expose to the host for
     # `caget`/`caput` from your workstation.
@@ -43,30 +46,17 @@ services:
       context: ./backend/configuration_service
     environment:
       OPHYD_SERVICE_OPENAPI_EXPORT_PATH: "/app/openapi/configuration_service.openapi.json"
-      # `empty` starts with zero devices and accepts CRUD population — exactly
-      # what the seed_registry sidecar does. `mock` would inject sample
-      # devices (det1/sample_x/cam1) we don't want alongside our seeded PVs.
-      CONFIG_LOAD_STRATEGY: "empty"
+      # Happi is the canonical seeder — same mechanism the integration pod uses.
+      CONFIG_LOAD_STRATEGY: "happi"
+      CONFIG_PROFILE_PATH: "/profile"
       # Default db_path is /var/lib/bluesky, not writable by the non-root
       # container user. /tmp always is.
       CONFIG_DB_PATH: "/tmp/config_service.db"
     volumes:
       - ./shared-schema:/app/openapi
+      - ./integration/happi:/profile:ro
     ports:
       - "8004:8004"
-
-  # One-shot sidecar: POSTs the mini_beamline PV list to configuration_service
-  # so direct_control's registry-validation gate lets reads/writes through.
-  # For the demo only; a proper deployment would seed via profile files.
-  seed_registry:
-    image: curlimages/curl:8.10.1
-    entrypoint: ["sh", "/seed/seed-pvs.sh"]
-    volumes:
-      - ./seed:/seed:ro
-    depends_on:
-      configuration_service:
-        condition: service_healthy
-    restart: "no"
 
   direct_control_service:
     build:
@@ -89,5 +79,3 @@ services:
         condition: service_healthy
       ioc:
         condition: service_healthy
-      seed_registry:
-        condition: service_completed_successfully

@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+#
+# Exercise the HTTP endpoints on direct_control_service.
+#
+# Walks the public REST surface: health → list devices (seen through the
+# config-service registry) → PV reads (scalar, array, compound-leaf) → PV
+# write round-trip → device-path reads → error cases. WebSocket endpoints
+# are deliberately NOT covered here; a Python-based WS exerciser can be
+# added when needed.
+#
+# Assumes the minimal pod is up (ioc + configuration_service + direct_control)
+# with the happi db at integration/happi/happi_db.json as the registry.
+#
+# Usage:
+#   ./direct_control.sh
+#   DIRECT_URL=http://remote:8003 ./direct_control.sh
+#
+# Exit 0 on full pass; non-zero on any failure.
+
+set -euo pipefail
+
+DIRECT_URL="${DIRECT_URL:-http://localhost:8003}"
+
+if [ -t 1 ]; then
+    GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
+else
+    GREEN=''; RED=''; YELLOW=''; BOLD=''; RESET=''
+fi
+
+step()  { printf "\n${BOLD}== %s ==${RESET}\n" "$1"; }
+pass()  { printf "  ${GREEN}PASS${RESET}  %s\n" "$1"; }
+fail()  { printf "  ${RED}FAIL${RESET}  %s\n" "$1" >&2; exit 1; }
+note()  { printf "  ${YELLOW}NOTE${RESET}  %s\n" "$1"; }
+
+req() {
+    local method=$1 url=$2 body="${3:-}"
+    local -a args=(-s -o /tmp/exer_body -w "%{http_code}" -X "$method")
+    if [ -n "$body" ]; then
+        args+=(-H "Content-Type: application/json" -d "$body")
+    fi
+    curl "${args[@]}" "$url"
+}
+
+expect_status() {
+    local want=$1 got=$2 url=$3
+    if [ "$got" != "$want" ]; then
+        printf "    response body: %s\n" "$(cat /tmp/exer_body 2>/dev/null | head -c 400)"
+        fail "$url: expected HTTP $want, got $got"
+    fi
+}
+
+printf "${BOLD}direct_control exerciser${RESET}  target=${DIRECT_URL}\n"
+note "WebSocket endpoints are intentionally not exercised here (Phase 1 gap)."
+
+# ─── Health & stats ──────────────────────────────────────────────────────
+step "Health & service state"
+
+status=$(req GET "${DIRECT_URL}/health")
+expect_status 200 "$status" "/health"
+pass "/health"
+
+status=$(req GET "${DIRECT_URL}/api/v1/stats")
+expect_status 200 "$status" "/api/v1/stats"
+pass "/api/v1/stats"
+
+status=$(req GET "${DIRECT_URL}/api/v1/pvs/connected")
+expect_status 200 "$status" "/api/v1/pvs/connected"
+pass "/api/v1/pvs/connected"
+
+# ─── Registry view (pass-through to configuration_service) ───────────────
+step "Registry view"
+
+status=$(req GET "${DIRECT_URL}/api/v1/devices")
+expect_status 200 "$status" "/api/v1/devices"
+pass "/api/v1/devices"
+
+status=$(req GET "${DIRECT_URL}/api/v1/devices/beam_current")
+expect_status 200 "$status" "/api/v1/devices/beam_current"
+pass "/api/v1/devices/beam_current"
+
+status=$(req GET "${DIRECT_URL}/api/v1/devices/beam_current/bundle")
+expect_status 200 "$status" "/api/v1/devices/beam_current/bundle"
+pass "/api/v1/devices/beam_current/bundle"
+
+# ─── PV reads (HTTP) ─────────────────────────────────────────────────────
+step "PV reads"
+
+# scalar
+status=$(req GET "${DIRECT_URL}/api/v1/pv/mini:current/value")
+expect_status 200 "$status" "pv/mini:current"
+scalar_value=$(jq -r '.value' < /tmp/exer_body)
+pass "pv/mini:current  value=${scalar_value}"
+
+# motor position
+status=$(req GET "${DIRECT_URL}/api/v1/pv/mini:dot:mtrx/value")
+expect_status 200 "$status" "pv/mini:dot:mtrx"
+pass "pv/mini:dot:mtrx  value=$(jq -r '.value' < /tmp/exer_body)"
+
+# array PV (waveform)
+status=$(req GET "${DIRECT_URL}/api/v1/pv/mini:dot:det/value")
+expect_status 200 "$status" "pv/mini:dot:det (array)"
+shape=$(jq -r '.shape // "?"' < /tmp/exer_body)
+pass "pv/mini:dot:det  shape=${shape}"
+
+# compound-device leaf — exercises the happi option-(a) pattern
+status=$(req GET "${DIRECT_URL}/api/v1/pv/mini:dot:img_sum/value")
+expect_status 200 "$status" "pv/mini:dot:img_sum (compound leaf)"
+pass "pv/mini:dot:img_sum  value=$(jq -r '.value' < /tmp/exer_body)"
+
+# alternative /pvs/ pluralized path (mapped to the same handler)
+status=$(req GET "${DIRECT_URL}/api/v1/pvs/mini:current/value")
+expect_status 200 "$status" "/api/v1/pvs/mini:current/value"
+pass "/api/v1/pvs/mini:current/value"
+
+# ─── PV write + round-trip ───────────────────────────────────────────────
+step "PV write → readback round-trip"
+
+# Capture the current value so we can restore it at the end.
+status=$(req GET "${DIRECT_URL}/api/v1/pv/mini:dot:mtrx/value")
+expect_status 200 "$status" "pv/mini:dot:mtrx (pre-write)"
+original=$(jq -r '.value' < /tmp/exer_body)
+
+target=2.5
+status=$(req POST "${DIRECT_URL}/api/v1/pv/set" "{\"pv_name\":\"mini:dot:mtrx\",\"value\":${target}}")
+case "$status" in
+    20*) pass "POST /api/v1/pv/set  mini:dot:mtrx=${target}  HTTP $status" ;;
+    *) expect_status 200 "$status" "POST /api/v1/pv/set" ;;
+esac
+
+# give the IOC a tick to settle
+sleep 0.5
+
+status=$(req GET "${DIRECT_URL}/api/v1/pv/mini:dot:mtrx/value")
+expect_status 200 "$status" "pv/mini:dot:mtrx (readback)"
+observed=$(jq -r '.value' < /tmp/exer_body)
+
+# tolerance check (awk for portable float comparison)
+if awk -v o="$observed" -v t="$target" 'BEGIN{exit !(o-t <= 0.01 && t-o <= 0.01)}'; then
+    pass "readback observed=${observed} within tolerance of ${target}"
+else
+    fail "readback observed=${observed} != target=${target}"
+fi
+
+# restore
+status=$(req POST "${DIRECT_URL}/api/v1/pv/set" "{\"pv_name\":\"mini:dot:mtrx\",\"value\":${original}}")
+case "$status" in 20*) pass "restored mini:dot:mtrx to ${original}" ;; esac
+
+# ─── Device-path reads ───────────────────────────────────────────────────
+step "Device-path form"
+
+# The compound `spot` device should resolve via its components.
+status=$(req GET "${DIRECT_URL}/api/v1/device/spot.roi/value")
+case "$status" in
+    200) pass "/api/v1/device/spot.roi/value" ;;
+    404) note "/api/v1/device/spot.roi → 404 (components not exposed via device-path yet; compound-leaf must be read as PV directly)" ;;
+    *) note "/api/v1/device/spot.roi/value  HTTP $status" ;;
+esac
+
+# ─── Error cases ─────────────────────────────────────────────────────────
+step "Error handling"
+
+status=$(req GET "${DIRECT_URL}/api/v1/pv/does:not:exist/value")
+if [ "$status" = "404" ]; then
+    pass "unknown PV → HTTP 404"
+else
+    fail "unknown PV returned HTTP $status (expected 404)"
+fi
+
+status=$(req POST "${DIRECT_URL}/api/v1/pv/set" '{"pv_name":"does:not:exist","value":1.0}')
+case "$status" in
+    404) pass "set on unknown PV → HTTP 404" ;;
+    400|422) pass "set on unknown PV → HTTP $status (validation rejection)" ;;
+    *) fail "set on unknown PV returned HTTP $status (expected 404/400/422)" ;;
+esac
+
+# ─── Done ────────────────────────────────────────────────────────────────
+printf "\n${GREEN}${BOLD}direct_control: ALL CHECKS PASSED${RESET}\n"
