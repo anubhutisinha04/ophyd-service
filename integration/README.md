@@ -25,7 +25,9 @@ integration/
 | Surface | Use case |
 |---|---|
 | `ophyd-service/docker-compose.yml` (repo root) | **Inner loop.** 1 IOC + 2 backends, happi-seeded. Fast iteration on a single backend. |
-| `ophyd-service/integration/pods/<pod-name>/` | **Integration / demo.** Larger, realistic environments. Pick the pod that matches what you're testing. |
+| `ophyd-service/integration/pods/minimal/` | **Smoke test.** 1 IOC + 2 backends, no hot-reload. Quick "does the wiring still work?" |
+| `ophyd-service/integration/pods/full/` | **Integration / demo.** 5 IOCs + 2 backends, no hot-reload. More device shapes for end-to-end testing. |
+| `ophyd-service/integration/pods/dev/` | **Joint backend + frontend dev.** 2 IOCs + 2 backends in hot-reload + frontend dev server. |
 
 Both surfaces mount the same `integration/happi/happi_db.json` as the device registry source. Devices that have no live IOC in the chosen surface are still listed (the registry is a *catalog*); reads against them will fail at the CA layer.
 
@@ -50,6 +52,33 @@ docker compose up --build
 ```
 
 All five IOCs build from the same `integration/ioc/Dockerfile`; per-service `command:` overrides choose the caproto module + prefix. Health is gated on every IOC reaching `service_healthy`.
+
+### `pods/dev/`
+
+**The recommended environment for joint backend + frontend development.** Runs two IOCs (caproto `mini_beamline` + `fake_motor_record` for real motor records with `.RBV`/`.VAL`/`.VELO`/etc.), both backends in **uvicorn `--reload` hot-reload mode** with bind-mounted source, and a **`node:20` frontend container** running `npm run dev` against bind-mounted `frontend/`.
+
+```sh
+cd integration/pods/dev
+docker compose up --build
+```
+
+What's published to the host:
+
+| Port | Service | Notes |
+|---|---|---|
+| `5173` | frontend | vite dev server, HMR over WS |
+| `8003` | direct_control_service | uvicorn with `--reload` |
+| `8004` | configuration_service | uvicorn with `--reload`, happi-loaded |
+
+**Backend hot-reload:** edit anything under `backend/configuration_service/src/` or `backend/direct_control_service/src/` on the host — uvicorn detects within ~1s and restarts the worker. Confirmed by tailing `docker compose logs configuration_service`.
+
+**Frontend hot-reload:** edit anything under `frontend/src/` on the host — vite HMR pushes the change to the browser. (`CHOKIDAR_USEPOLLING=true` is set so file events propagate cleanly across the bind mount.)
+
+**Frontend node_modules isolation:** the container uses an anonymous volume on `/app/node_modules` so the host's modules don't bleed in. First `up` populates it via `npm install` (~9s); subsequent ups reuse the volume.
+
+**Frontend boundary respected:** this compose is provided by the backend team. The frontend container's behavior is fully controlled by `frontend/`'s own `package.json` + `vite.config.ts` — we don't override anything inside `frontend/`. The frontend team can swap node version, change scripts, add proxies, etc., without touching this compose file.
+
+The dev pod's registry has 44 devices (41 from base happi + 3 motor records: `motor1`, `motor2`, `motor3` at `sim:mtr1`/`sim:mtr2`/`sim:mtr3`).
 
 ## Shared assets
 

@@ -1,0 +1,157 @@
+# Dev-mode integration pod for ophyd-service.
+#
+# Purpose: a stable target the frontend team can develop against. Runs the
+# real backends in hot-reload mode against simulated IOCs, plus a frontend
+# dev-server container so the whole loop (edit → save → see in browser)
+# works without anyone hand-installing Python or Node dependencies.
+#
+# Stack:
+#   ioc                    — caproto.ioc_examples.mini_beamline
+#                            (mini:* — detectors, "motor"-shaped scalars)
+#   ioc_motor              — caproto.ioc_examples.fake_motor_record
+#                            (sim:mtr1, sim:mtr2, sim:mtr3 — REAL motor records
+#                             with .RBV / .VAL / .VELO / .ACCL / .DMOV / etc.)
+#   configuration_service  — uvicorn --reload, bind-mounts src/ from host
+#   direct_control_service — uvicorn --reload, bind-mounts src/ from host
+#   frontend               — node:20, runs `npm run dev` against bind-mounted
+#                            frontend/ source. Anonymous volume on
+#                            /app/node_modules so host's modules don't bleed in.
+#
+# Backend hot-reload:  edit anything under backend/<svc>/src/, uvicorn picks
+# it up and restarts within ~1s.
+#
+# Frontend hot-reload: edit anything under frontend/src/, vite HMR pushes
+# the change to the browser.
+#
+# Host ports published:
+#   8003 — direct_control_service
+#   8004 — configuration_service
+#   5173 — frontend (vite default)
+#
+# Usage:
+#   docker compose up --build       (first time, also rebuilds on dep changes)
+#   docker compose up -d            (subsequent up; reuses images)
+#   docker compose down             (stop + remove)
+#   docker compose logs -f frontend
+#
+# Notes:
+# - Frontend boundary: this compose is provided by the backend team. The
+#   frontend container's behavior is fully controlled by frontend/'s own
+#   package.json + vite config — we don't override anything inside frontend/.
+# - All five containers must be on the same docker network so direct-control
+#   can reach the IOCs by service name. Compose does this automatically.
+
+x-ioc-base: &ioc-base
+  build:
+    context: ../../ioc
+
+services:
+  ioc:
+    <<: *ioc-base
+    command: ["python", "-m", "caproto.ioc_examples.mini_beamline", "--list-pvs", "--interfaces", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f caproto.ioc_examples.mini_beamline > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  ioc_motor:
+    <<: *ioc-base
+    command: ["python", "-m", "caproto.ioc_examples.fake_motor_record", "--list-pvs", "--interfaces", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f caproto.ioc_examples.fake_motor_record > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  configuration_service:
+    build:
+      context: ../../../backend/configuration_service
+    # Override the entry-point CMD so we get uvicorn --reload.
+    # `--reload-dir /app/src` keeps the watch tight on our source only.
+    command:
+      - python
+      - -m
+      - uvicorn
+      - configuration_service.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8004"
+      - --reload
+      - --reload-dir
+      - /app/src
+    environment:
+      CONFIG_LOAD_STRATEGY: "happi"
+      CONFIG_PROFILE_PATH: "/profile"
+      CONFIG_DB_PATH: "/tmp/config_service.db"
+    volumes:
+      # Bind-mount live source over the COPY'd source. The image's
+      # `pip install -e .` registered /app/src in site-packages, so imports
+      # resolve to the live tree.
+      - ../../../backend/configuration_service/src:/app/src
+      - ../../happi:/profile:ro
+    ports:
+      - "8004:8004"
+
+  direct_control_service:
+    build:
+      context: ../../../backend/direct_control_service
+    command:
+      - python
+      - -m
+      - uvicorn
+      - direct_control.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8003"
+      - --reload
+      - --reload-dir
+      - /app/src
+    environment:
+      DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
+      DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
+      EPICS_CA_ADDR_LIST: "ioc ioc_motor"
+      EPICS_CA_AUTO_ADDR_LIST: "NO"
+    volumes:
+      - ../../../backend/direct_control_service/src:/app/src
+    ports:
+      - "8003:8003"
+    depends_on:
+      configuration_service:
+        condition: service_healthy
+      ioc:
+        condition: service_healthy
+      ioc_motor:
+        condition: service_healthy
+
+  frontend:
+    image: node:20-bookworm-slim
+    working_dir: /app
+    command:
+      - sh
+      - -c
+      # `npm ci` installs from package-lock.json deterministically and
+      # NEVER modifies the lock file (vs `npm install` which can rewrite it).
+      # Important here: the lock is bind-mounted from the frontend team's
+      # working tree; we don't want our container to silently change it.
+      - "npm ci --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+    environment:
+      # Vite reads CHOKIDAR_USEPOLLING=true to fall back to polling on file
+      # systems that don't propagate inotify events well (some bind-mounts).
+      # Linux native bind-mounts usually don't need it, but it's cheap insurance.
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ../../../frontend:/app
+      # Anonymous volume on /app/node_modules so the container's installed
+      # modules aren't shadowed by the host's. First `up` populates it via
+      # `npm install`; subsequent ups reuse it.
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      configuration_service:
+        condition: service_healthy
+      direct_control_service:
+        condition: service_started

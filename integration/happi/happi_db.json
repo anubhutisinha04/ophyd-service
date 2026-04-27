@@ -288,5 +288,39 @@
     "_id": "random_walk_v_x", "active": true, "documentation": "Walk position for random_walk_v.",
     "args": ["{{prefix}}"], "kwargs": {"name": "{{name}}"}, "type": "OphydItem",
     "device_class": "ophyd.signal.EpicsSignal", "name": "random_walk_v_x", "prefix": "random_walk:vert-x"
+  },
+
+  "motor1": {
+    "_id": "motor1",
+    "active": true,
+    "documentation": "Real EPICS motor record (caproto.ioc_examples.fake_motor_record).",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.EpicsMotor",
+    "name": "motor1",
+    "prefix": "sim:mtr1"
+  },
+  "motor2": {
+    "_id": "motor2",
+    "active": true,
+    "documentation": "Real EPICS motor record (caproto.ioc_examples.fake_motor_record).",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.EpicsMotor",
+    "name": "motor2",
+    "prefix": "sim:mtr2"
+  },
+  "motor3": {
+    "_id": "motor3",
+    "active": true,
+    "documentation": "Real EPICS motor record (caproto.ioc_examples.fake_motor_record).",
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.EpicsMotor",
+    "name": "motor3",
+    "prefix": "sim:mtr3"
   }
 }
