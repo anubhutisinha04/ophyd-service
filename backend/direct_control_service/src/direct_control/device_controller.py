@@ -19,6 +19,7 @@ from .models import (
     CommandMode,
     ControlError,
     DeviceLockedError,
+    PVNotFoundError,
 )
 from .config import Settings
 
@@ -352,45 +353,52 @@ class DeviceController:
         timeout: float = 5.0,
         connection_timeout: float = 5.0,
         ftype: Optional[int] = None,
-    ) -> Optional[Any]:
+    ) -> Any:
         """
         Get current PV value (read-only, no coordination check needed).
 
         Exposes pyepics caget/ca.get knobs so clients can trade off freshness,
         representation, and transport. `ftype=None` uses the native DBR type;
         setting `ftype` forces a non-native type on the wire (rare).
+
+        Raises PVNotFoundError if the PV can't be reached (connection failure,
+        caget timeout returning None). Callers should map to an HTTP status —
+        no silent None-return fallback.
         """
-        try:
-            if ftype is None:
-                return await asyncio.to_thread(
-                    caget,
-                    pv_name,
-                    as_string=as_string,
-                    count=count,
-                    as_numpy=as_numpy,
-                    use_monitor=use_monitor,
-                    timeout=timeout,
-                    connection_timeout=connection_timeout,
+        if ftype is None:
+            value = await asyncio.to_thread(
+                caget,
+                pv_name,
+                as_string=as_string,
+                count=count,
+                as_numpy=as_numpy,
+                use_monitor=use_monitor,
+                timeout=timeout,
+                connection_timeout=connection_timeout,
+            )
+            if value is None:
+                raise PVNotFoundError(
+                    f"PV {pv_name}: caget returned no value (connection or timeout)"
                 )
+            return value
 
-            # Combine connect + ca.get into one executor hop.
-            def _ftype_get() -> Optional[Any]:
-                pv = get_pv(pv_name, timeout=connection_timeout, connect=True)
-                if not pv.connected:
-                    return None
-                return ca.get(
-                    pv.chid,
-                    ftype=ftype,
-                    count=count,
-                    timeout=timeout,
-                    as_string=as_string,
-                    as_numpy=as_numpy,
+        # Combine connect + ca.get into one executor hop.
+        def _ftype_get() -> Any:
+            pv = get_pv(pv_name, timeout=connection_timeout, connect=True)
+            if not pv.connected:
+                raise PVNotFoundError(
+                    f"PV {pv_name}: not connected (timeout {connection_timeout}s)"
                 )
+            return ca.get(
+                pv.chid,
+                ftype=ftype,
+                count=count,
+                timeout=timeout,
+                as_string=as_string,
+                as_numpy=as_numpy,
+            )
 
-            return await asyncio.to_thread(_ftype_get)
-        except Exception as e:
-            logger.error("get_pv_error", pv_name=pv_name, error=str(e))
-            return None
+        return await asyncio.to_thread(_ftype_get)
 
     async def access_nested_device(
         self,

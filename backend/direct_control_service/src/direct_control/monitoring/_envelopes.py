@@ -11,7 +11,10 @@ import json
 from datetime import datetime
 from typing import Any, Optional
 
+import structlog
 from fastapi import WebSocket
+
+logger = structlog.get_logger(__name__)
 
 
 class WebSocketResponseTooLarge(Exception):
@@ -124,11 +127,15 @@ async def heartbeat_loop(ws: WebSocket, interval: float) -> None:
             await asyncio.sleep(interval)
             try:
                 await send_event(ws, "heartbeat")
-            except Exception:  # noqa: BLE001
+            except Exception as send_err:  # noqa: BLE001
+                logger.info("heartbeat_send_failed", error=str(send_err))
                 try:
                     await ws.close(code=1001, reason="Heartbeat send failed")
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as close_err:  # noqa: BLE001
+                    logger.warning(
+                        "heartbeat_close_after_send_failure_failed",
+                        error=str(close_err),
+                    )
                 return
     except asyncio.CancelledError:
         return

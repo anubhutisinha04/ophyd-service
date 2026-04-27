@@ -16,6 +16,10 @@ These protocols enable:
 from datetime import datetime
 from typing import Any, Callable, List, Optional, Protocol, runtime_checkable
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 from .models import (
     CoordinationStatus,
     DeviceCommandRequest,
@@ -345,5 +349,9 @@ class MockPVMonitor:
         for cb in self._callbacks.get(pv_name, []):
             try:
                 cb(update)
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                # Asyncio callback fan-out: one bad callback shouldn't kill
+                # the rest, but the failure must be visible.
+                logger.warning(
+                    "mock_pv_callback_error", pv_name=pv_name, error=str(e)
+                )

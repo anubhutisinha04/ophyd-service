@@ -106,6 +106,17 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # Strategies that read from disk require a profile path. Fail at parse
+    # rather than letting it propagate to a late RuntimeError in loader.py.
+    effective_strategy = "mock" if args.use_mock_data else args.load_strategy
+    if effective_strategy in ("auto", "happi", "bits") and not args.profile_path:
+        parser.error(
+            f"--profile-path (or env CONFIG_PROFILE_PATH) is required for "
+            f"--load-strategy={effective_strategy}. Use --load-strategy=empty "
+            f"(populate via CRUD) or --load-strategy=mock (sample data) if you "
+            f"don't have a profile collection directory."
+        )
+
     # Set environment variables for service configuration (matches config.py CONFIG_ prefix)
     if args.profile_path:
         os.environ["CONFIG_PROFILE_PATH"] = args.profile_path

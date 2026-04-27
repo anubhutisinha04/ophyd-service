@@ -71,6 +71,7 @@ class PVMonitorManager:
             if pv_name not in self._signals:
                 logger.info("subscribing_to_pv", pv_name=pv_name)
 
+                signal = None
                 try:
                     signal = (
                         EpicsSignalRO(pv_name, name=pv_name)
@@ -83,17 +84,16 @@ class PVMonitorManager:
                         logger.error("pv_connection_failed", pv_name=pv_name)
                         raise PVNotFoundError(f"PV {pv_name} connection timeout")
 
+                    # Read initial value FIRST. If this fails (e.g. dtype
+                    # mismatch in _signal_to_pv_value), bail before
+                    # registering — leaving _signals populated with no
+                    # buffer would silently break later get_value() calls.
+                    initial_value = self._signal_to_pv_value(pv_name, signal)
+
                     self._signals[pv_name] = signal
                     self._connection_status[pv_name] = True
-
-                    try:
-                        initial_value = self._signal_to_pv_value(pv_name, signal)
-                        self._latest_values[pv_name] = initial_value
-                        self._buffers[pv_name].append(initial_value)
-                    except Exception as e:
-                        logger.warning(
-                            "initial_value_read_failed", pv_name=pv_name, error=str(e)
-                        )
+                    self._latest_values[pv_name] = initial_value
+                    self._buffers[pv_name].append(initial_value)
 
                     signal.subscribe(
                         lambda value, timestamp=None, **kwargs: self._handle_value_update(
@@ -110,6 +110,14 @@ class PVMonitorManager:
 
                 except Exception as e:
                     logger.error("pv_subscription_error", pv_name=pv_name, error=str(e))
+                    if signal is not None:
+                        try:
+                            signal.destroy()
+                        except Exception as destroy_err:  # noqa: BLE001
+                            logger.warning(
+                                "pv_signal_destroy_failed_on_subscribe_error",
+                                pv_name=pv_name, error=str(destroy_err),
+                            )
                     raise PVNotFoundError(f"PV {pv_name} subscription failed: {e}")
 
             if callback:

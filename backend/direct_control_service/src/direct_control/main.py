@@ -452,18 +452,20 @@ async def get_pv_value_from_controller(
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    value = await device_controller.get_pv_value(
-        pv_name,
-        as_string=as_string,
-        count=count,
-        as_numpy=as_numpy,
-        use_monitor=use_monitor,
-        timeout=timeout,
-        connection_timeout=connection_timeout,
-        ftype=ftype,
-    )
-    if value is None:
-        raise HTTPException(status_code=404, detail=f"PV {pv_name} not found or not available")
+    try:
+        value = await device_controller.get_pv_value(
+            pv_name,
+            as_string=as_string,
+            count=count,
+            as_numpy=as_numpy,
+            use_monitor=use_monitor,
+            timeout=timeout,
+            connection_timeout=connection_timeout,
+            ftype=ftype,
+        )
+    except PVNotFoundError as e:
+        logger.warning("pv_not_found", pv_name=pv_name, error=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
 
     return _build_value_response(
         request,
