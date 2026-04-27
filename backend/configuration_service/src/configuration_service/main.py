@@ -52,9 +52,6 @@ from .models import (
     StandalonePVCreateRequest,
     StandalonePVUpdateRequest,
     StandalonePVCRUDResponse,
-    MetadataEntry,
-    MetadataWriteRequest,
-    MetadataCRUDResponse,
 )
 from .protocols import ConfigurationState
 from .loader import create_loader
@@ -62,7 +59,6 @@ from .config import Settings
 from .device_registry_store import DeviceRegistryStore
 from .standalone_pv_store import StandalonePVStore
 from .lock_manager import DeviceLockManager
-from .metadata_store import MetadataStore
 
 # Configure structured logging
 structlog.configure(
@@ -199,9 +195,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     # Container for device lock manager (in-memory, ephemeral)
     lock_manager_container: Dict[str, DeviceLockManager] = {}
 
-    # Container for generic metadata store
-    metadata_store_container: Dict[str, MetadataStore] = {}
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Manage application lifecycle - load configuration at startup."""
@@ -264,16 +257,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             except Exception as e:
                 logger.error("standalone_pv_store_init_failed", error=str(e))
 
-        # Initialize metadata store (uses same DB file)
-        if settings.device_change_history_enabled:
-            try:
-                meta_store = MetadataStore(settings.db_path)
-                meta_store.initialize()
-                metadata_store_container["store"] = meta_store
-                logger.info("metadata_store_enabled", db_path=str(settings.db_path))
-            except Exception as e:
-                logger.error("metadata_store_init_failed", error=str(e))
-
         # Initialize device lock manager (in-memory, ephemeral)
         lock_manager_container["manager"] = DeviceLockManager()
         logger.info("device_lock_manager_initialized")
@@ -281,8 +264,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         yield
 
         # Cleanup
-        if "store" in metadata_store_container:
-            metadata_store_container["store"].close()
         if "store" in standalone_pv_container:
             standalone_pv_container["store"].close()
         if "store" in registry_store_container:
@@ -292,7 +273,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         registry_store_container.clear()
         standalone_pv_container.clear()
         lock_manager_container.clear()
-        metadata_store_container.clear()
 
     openapi_tags = [
         {"name": "Health", "description": "Service health and readiness checks"},
@@ -301,7 +281,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         {"name": "Device Management", "description": "Runtime device CRUD operations (add/update/delete)"},
         {"name": "Registry Admin", "description": "Administrative operations (reset, export)"},
         {"name": "Standalone PVs", "description": "Register and manage standalone PVs not tied to ophyd devices"},
-        {"name": "Metadata", "description": "Generic key-value metadata store for arbitrary JSON data"},
         {"name": "PV Registry", "description": "Query registered PVs from loaded devices"},
         {"name": "Device Components", "description": "Nested device component lookup and listing"},
         {"name": "Device Locking", "description": "Device lock management for experiment coordination (A4)"},
@@ -371,18 +350,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return lock_manager_container["manager"]
 
     LockManagerDep = Annotated[DeviceLockManager, Depends(get_lock_manager)]
-
-    # Metadata store dependency
-    def get_metadata_store() -> MetadataStore:
-        """Get metadata store for dependency injection."""
-        if "store" not in metadata_store_container:
-            raise HTTPException(
-                status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail="Metadata store not enabled. Set CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=true."
-            )
-        return metadata_store_container["store"]
-
-    MetadataStoreDep = Annotated[MetadataStore, Depends(get_metadata_store)]
 
     # ===== Health Endpoints =====
 
@@ -1827,121 +1794,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ))
 
         return components
-
-    # ===== Metadata Endpoints =====
-
-    @app.get(
-        "/api/v1/metadata",
-        response_model=List[MetadataEntry],
-        summary="List Metadata Entries",
-        description="List all stored metadata key-value entries",
-        tags=["Metadata"],
-    )
-    async def list_metadata(
-        meta_store: MetadataStoreDep,
-    ) -> List[MetadataEntry]:
-        """Get all metadata entries."""
-        rows = meta_store.get_all()
-        return [MetadataEntry(**row) for row in rows]
-
-    @app.get(
-        "/api/v1/metadata/{key}",
-        response_model=MetadataEntry,
-        summary="Get Metadata Entry",
-        description="Get a single metadata entry by key",
-        tags=["Metadata"],
-    )
-    async def get_metadata(
-        key: str,
-        meta_store: MetadataStoreDep,
-    ) -> MetadataEntry:
-        """Get a metadata entry by key."""
-        row = meta_store.get(key)
-        if row is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Metadata key not found: {key}",
-            )
-        return MetadataEntry(**row)
-
-    @app.post(
-        "/api/v1/metadata/{key}",
-        response_model=MetadataCRUDResponse,
-        status_code=status.HTTP_201_CREATED,
-        summary="Create Metadata Entry",
-        description="Create a new metadata key-value entry (409 if key exists)",
-        tags=["Metadata"],
-    )
-    async def create_metadata(
-        key: str,
-        request: MetadataWriteRequest,
-        meta_store: MetadataStoreDep,
-    ) -> MetadataCRUDResponse:
-        """Create a new metadata entry. Returns 409 if key already exists."""
-        existing = meta_store.get(key)
-        if existing is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Metadata key already exists: {key}",
-            )
-        meta_store.save(key, request.value)
-        logger.info("metadata_created", key=key)
-        return MetadataCRUDResponse(
-            success=True,
-            key=key,
-            operation="create",
-            message=f"Metadata '{key}' created successfully",
-        )
-
-    @app.put(
-        "/api/v1/metadata/{key}",
-        response_model=MetadataCRUDResponse,
-        summary="Create or Update Metadata Entry",
-        description="Upsert a metadata key-value entry",
-        tags=["Metadata"],
-    )
-    async def upsert_metadata(
-        key: str,
-        request: MetadataWriteRequest,
-        meta_store: MetadataStoreDep,
-    ) -> MetadataCRUDResponse:
-        """Create or replace a metadata entry (upsert)."""
-        existing = meta_store.get(key)
-        operation = "update" if existing else "create"
-        meta_store.save(key, request.value)
-        logger.info("metadata_upserted", key=key, operation=operation)
-        return MetadataCRUDResponse(
-            success=True,
-            key=key,
-            operation=operation,
-            message=f"Metadata '{key}' {'updated' if existing else 'created'} successfully",
-        )
-
-    @app.delete(
-        "/api/v1/metadata/{key}",
-        response_model=MetadataCRUDResponse,
-        summary="Delete Metadata Entry",
-        description="Delete a metadata key-value entry",
-        tags=["Metadata"],
-    )
-    async def delete_metadata(
-        key: str,
-        meta_store: MetadataStoreDep,
-    ) -> MetadataCRUDResponse:
-        """Delete a metadata entry by key."""
-        deleted = meta_store.delete(key)
-        if not deleted:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Metadata key not found: {key}",
-            )
-        logger.info("metadata_deleted", key=key)
-        return MetadataCRUDResponse(
-            success=True,
-            key=key,
-            operation="delete",
-            message=f"Metadata '{key}' deleted successfully",
-        )
 
     return app
 

@@ -757,27 +757,3 @@ class NestedDeviceComponent(BaseModel):
     is_readable: bool = Field(default=True, description="Whether component is readable")
     is_settable: bool = Field(default=False, description="Whether component is settable")
 
-
-# ===== Generic Metadata Store Models =====
-
-
-class MetadataEntry(BaseModel):
-    """A stored metadata key-value entry."""
-    key: str = Field(description="Unique string key")
-    value: Dict[str, Any] = Field(description="Arbitrary JSON dictionary")
-    created_at: Optional[float] = Field(default=None, description="Unix timestamp of creation")
-    updated_at: Optional[float] = Field(default=None, description="Unix timestamp of last update")
-
-
-class MetadataWriteRequest(BaseModel):
-    """Request model for creating or updating a metadata entry."""
-    value: Dict[str, Any] = Field(description="Arbitrary JSON dictionary to store")
-
-
-class MetadataCRUDResponse(BaseModel):
-    """Response model for metadata CRUD operations."""
-    success: bool = Field(description="Whether the operation succeeded")
-    key: str = Field(description="Metadata key")
-    operation: str = Field(description="Operation performed (create/update/delete)")
-    message: str = Field(description="Human-readable status message")
-

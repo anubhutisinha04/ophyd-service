@@ -179,26 +179,6 @@ expect_success "$status" "PUT /api/v1/devices/exer_test_motor" 200
 status=$(req DELETE "${CONFIG_URL}/api/v1/devices/exer_test_motor")
 expect_success "$status" "DELETE /api/v1/devices/exer_test_motor" 204
 
-# ─── Metadata CRUD ────────────────────────────────────────────────────────
-step "Metadata round-trip"
-
-status=$(req POST "${CONFIG_URL}/api/v1/metadata/exer_scratch" '{"value":{"stage":"initial","flag":true}}')
-expect_success "$status" "POST /api/v1/metadata/exer_scratch" 201
-
-status=$(req GET "${CONFIG_URL}/api/v1/metadata/exer_scratch")
-expect_status 200 "$status" "GET /api/v1/metadata/exer_scratch"
-pass "GET /api/v1/metadata/exer_scratch"
-
-status=$(req PUT "${CONFIG_URL}/api/v1/metadata/exer_scratch" '{"value":{"stage":"updated","flag":false}}')
-expect_success "$status" "PUT /api/v1/metadata/exer_scratch" 200
-
-status=$(req GET "${CONFIG_URL}/api/v1/metadata")
-expect_status 200 "$status" "/api/v1/metadata"
-pass "/api/v1/metadata"
-
-status=$(req DELETE "${CONFIG_URL}/api/v1/metadata/exer_scratch")
-expect_success "$status" "DELETE /api/v1/metadata/exer_scratch" 204
-
 # ─── Audit trail ──────────────────────────────────────────────────────────
 step "Change history"
 
