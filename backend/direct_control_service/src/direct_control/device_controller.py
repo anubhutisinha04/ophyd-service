@@ -302,7 +302,7 @@ class DeviceController:
                 timeout=timeout,
                 connection_timeout=connection_timeout,
             )
-            return bool(status and status > 0)
+            return bool(status == 1)
 
         pv = await self._connect(pv_name, connection_timeout)
         if pv is None:
