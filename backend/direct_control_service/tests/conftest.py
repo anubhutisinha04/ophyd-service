@@ -4,8 +4,9 @@ Shared pytest fixtures.
 `test_ioc` spins up the caproto test IOC in a subprocess and tears it down at
 session end (borrowed from ophyd-websocket's conftest pattern). `client`
 builds a FastAPI TestClient against the service with coordination and
-registry validation stubbed so write paths don't require the real
-experiment_execution / configuration services.
+registry validation stubbed so write paths don't require a real
+configuration_service (which is the only HTTP backend direct_control talks
+to — both the registry and the device-lock state live there).
 
 Env setup happens *before* importing `direct_control.*` because pyepics
 reads EPICS_CA_ADDR_LIST at import time.
@@ -84,9 +85,8 @@ def _epics_env(test_ioc):
     """
     os.environ["DIRECT_CONTROL_EPICS_CA_ADDR_LIST"] = _IOC_ADDR
     os.environ["DIRECT_CONTROL_EPICS_CA_AUTO_ADDR_LIST"] = "NO"
-    # Keep coordination / registry pointed at harmless URLs; the `client`
-    # fixture swaps real clients for stubs after lifespan runs.
-    os.environ["DIRECT_CONTROL_EXPERIMENT_EXECUTION_URL"] = "http://localhost:0"
+    # Point at a harmless URL; the `client` fixture swaps the real
+    # configuration_service client for a stub after lifespan runs.
     os.environ["DIRECT_CONTROL_CONFIGURATION_SERVICE_URL"] = "http://localhost:0"
     yield
 

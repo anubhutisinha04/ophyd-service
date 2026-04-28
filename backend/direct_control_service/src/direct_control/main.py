@@ -110,7 +110,7 @@ async def lifespan(app: FastAPI):
     logger.info(
         "Service initialized",
         port=settings.port,
-        coordination_url=settings.experiment_execution_url,
+        configuration_service_url=settings.configuration_service_url,
         coordination_enabled=settings.coordination_check_enabled,
     )
 

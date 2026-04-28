@@ -48,16 +48,22 @@ bluesky-direct-control --reload --log-level debug
 ```bash
 docker build -t bluesky-direct-control .
 docker run -p 8003:8003 \
-  -e DIRECT_CONTROL_EXPERIMENT_EXECUTION_URL=http://host.docker.internal:8001 \
+  -e DIRECT_CONTROL_CONFIGURATION_SERVICE_URL=http://host.docker.internal:8004 \
   bluesky-direct-control
 ```
 
 ## Service Dependencies
 
+direct_control talks to **only** `configuration_service`. It never reaches
+EE or queueserver directly — coordination is mediated through device-lock
+state held in configuration_service's registry. EE/queueserver writes
+locks via `POST /api/v1/devices/lock`; direct_control reads them via
+`GET /api/v1/devices/{name}/status`.
+
 | Dependency | Interface | Purpose |
 |------------|-----------|---------|
-| `experiment_execution` | `/api/v1/coordination/devices/{name}/status` | A4 device lock status |
 | `configuration_service` | `/api/v1/devices/{name}`, `/api/v1/pvs` | Device + PV registry |
+| `configuration_service` | `/api/v1/devices/{name}/status` | A4 device lock status (read-only) |
 
 ## Configuration
 
@@ -68,8 +74,7 @@ All settings use the `DIRECT_CONTROL_` environment variable prefix.
 | `DIRECT_CONTROL_HOST` | `0.0.0.0` | Bind address |
 | `DIRECT_CONTROL_PORT` | `8003` | HTTP port |
 | `DIRECT_CONTROL_LOG_LEVEL` | `info` | Log level |
-| `DIRECT_CONTROL_EXPERIMENT_EXECUTION_URL` | `http://localhost:8001` | Experiment Execution URL |
-| `DIRECT_CONTROL_CONFIGURATION_SERVICE_URL` | `http://localhost:8004` | Configuration Service URL |
+| `DIRECT_CONTROL_CONFIGURATION_SERVICE_URL` | `http://localhost:8004` | Configuration Service URL (registry + lock state) |
 | `DIRECT_CONTROL_COORDINATION_CHECK_ENABLED` | `true` | Enable A4 coordination checks |
 | `DIRECT_CONTROL_COORDINATION_TIMEOUT` | `5.0` | Coordination check timeout (s) |
 | `DIRECT_CONTROL_COMMAND_TIMEOUT` | `30.0` | Command execution timeout (s) |

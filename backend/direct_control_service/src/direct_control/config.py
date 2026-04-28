@@ -27,8 +27,10 @@ class Settings(BaseSettings):
     port: int = 8003
     log_level: str = "info"
 
-    # Service dependencies
-    experiment_execution_url: str = "http://localhost:8001"
+    # Service dependencies. configuration_service is the only HTTP backend
+    # direct_control talks to: it owns the device registry, the per-PV
+    # validation gate, AND the device-lock state that the coordination
+    # check reads (EE/queueserver writes the locks; we read them).
     configuration_service_url: str = "http://localhost:8004"
 
     # EPICS configuration

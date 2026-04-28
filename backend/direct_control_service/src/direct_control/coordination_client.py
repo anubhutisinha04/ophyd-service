@@ -1,8 +1,15 @@
 """
-Coordination client for checking device availability with SVC-001.
+Coordination client — mediates device-lock checks via configuration_service.
 
-Implements the CoordinationService protocol for the critical A4 coordination
-requirement via dependency injection.
+direct_control never talks to EE/queueserver directly. Lock state lives in
+configuration_service (the device registry); this client is the read side
+of that contract:
+
+    EE / queueserver  --POST /api/v1/devices/lock-->  configuration_service
+    direct_control    --GET  /api/v1/devices/{name}/status-->  configuration_service
+
+See `feedback_direct_control_no_ee_polling` memory for the architectural
+intent.
 """
 
 import httpx
@@ -17,24 +24,31 @@ from .config import Settings
 logger = structlog.get_logger(__name__)
 
 
+def _map_lock_status(available: bool, lock_status: str) -> DeviceLockStatus:
+    """Map configuration_service's status fields to the local DeviceLockStatus enum."""
+    if lock_status == "locked":
+        return DeviceLockStatus.LOCKED
+    if available and lock_status == "unlocked":
+        return DeviceLockStatus.AVAILABLE
+    return DeviceLockStatus.UNKNOWN
+
+
 class CoordinationClient:
     """
-    HTTP client for querying device coordination status from Experiment Execution Service.
+    HTTP client for querying device coordination status from configuration_service.
 
-    This implements the A4 coordination requirement: prevent direct control
-    when device is locked by an active plan execution.
+    Implements the A4 coordination requirement: prevent direct control when
+    a device is locked by an active plan.
 
     Implements: CoordinationService protocol
     """
 
     def __init__(self, settings: Settings):
-        """Initialize coordination client."""
         self.settings = settings
-        self.base_url = settings.experiment_execution_url
+        self.base_url = settings.configuration_service_url
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create async HTTP client."""
         if self._client is None:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
@@ -44,20 +58,15 @@ class CoordinationClient:
 
     async def check_device_available(self, device_name: str) -> CoordinationStatus:
         """
-        Check if device is available for direct control.
+        Check if a device is available for direct control.
 
-        This is the CRITICAL A4 coordination check. It queries SVC-001
-        (Experiment Execution Service) to determine if the device is
-        currently locked by an executing plan.
+        Queries `GET /api/v1/devices/{name}/status` on configuration_service.
+        Returns AVAILABLE when the device is unlocked or absent from the lock
+        registry. Returns LOCKED with `locked_by` populated when EE/queueserver
+        has an active lock on the device.
 
-        Args:
-            device_name: Name of the device to check
-
-        Returns:
-            CoordinationStatus with device availability
-
-        Raises:
-            CoordinationCheckError: If coordination check fails
+        Raises CoordinationCheckError if configuration_service is unreachable
+        or returns an unexpected status.
         """
         if not self.settings.coordination_check_enabled:
             logger.warning(
@@ -72,23 +81,29 @@ class CoordinationClient:
                 timestamp=datetime.now(),
             )
 
+        endpoint = f"/api/v1/devices/{device_name}/status"
         try:
             client = await self._get_client()
 
             logger.debug(
                 "checking_device_coordination",
                 device_name=device_name,
-                url=f"{self.base_url}/api/v1/coordination/devices/{device_name}/status",
+                url=f"{self.base_url}{endpoint}",
             )
 
-            response = await client.get(f"/api/v1/coordination/devices/{device_name}/status")
+            response = await client.get(endpoint)
 
             if response.status_code == 404:
-                # Device not found in coordination state - treat as available
+                # The name passed in isn't registered as a device in
+                # configuration_service. This is normal when callers use a
+                # raw PV name (e.g. "mini:current") that has no device-level
+                # lock concept. Lock contention is only possible when
+                # EE/queueserver has registered a device-level lock; absence
+                # of a registry entry implies no lock could exist.
                 logger.info(
-                    "device_not_in_coordination_state",
+                    "device_not_in_lock_registry",
                     device_name=device_name,
-                    note="Device not tracked, assuming available",
+                    note="No device-level lock concept; assuming available",
                 )
                 return CoordinationStatus(
                     device_available=True,
@@ -100,11 +115,13 @@ class CoordinationClient:
             response.raise_for_status()
             data = response.json()
 
+            available = bool(data.get("available", False))
+            lock_status_str = data.get("lock_status", "unlocked")
             status = CoordinationStatus(
-                device_available=data.get("available", False),
-                locked_by=data.get("locked_by"),
-                status=DeviceLockStatus(data.get("status", "unknown")),
-                timestamp=datetime.fromisoformat(data.get("timestamp", datetime.now().isoformat())),
+                device_available=available,
+                locked_by=data.get("locked_by_plan"),
+                status=_map_lock_status(available, lock_status_str),
+                timestamp=datetime.now(),
             )
 
             logger.info(
@@ -134,7 +151,9 @@ class CoordinationClient:
                 device_name=device_name,
                 error=str(e),
             )
-            raise CoordinationCheckError(f"Cannot reach Experiment Execution Service: {e}") from e
+            raise CoordinationCheckError(
+                f"Cannot reach configuration_service for coordination: {e}"
+            ) from e
 
         except Exception as e:
             logger.error(
@@ -146,12 +165,7 @@ class CoordinationClient:
             raise CoordinationCheckError(f"Unexpected coordination check error: {e}") from e
 
     async def is_service_available(self) -> bool:
-        """
-        Check if Experiment Execution Service is reachable.
-
-        Returns:
-            True if service is available
-        """
+        """Check whether configuration_service is reachable."""
         try:
             client = await self._get_client()
             response = await client.get("/health", timeout=2.0)
@@ -160,7 +174,6 @@ class CoordinationClient:
             return False
 
     async def cleanup(self) -> None:
-        """Cleanup HTTP client."""
         if self._client:
             await self._client.aclose()
             self._client = None
