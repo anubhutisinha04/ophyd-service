@@ -71,6 +71,9 @@ python_functions = ["test_*"]
 addopts = [
     "-v",
     "--strict-markers",
+    "--cov=src",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-fail-under=75",
 ]
 asyncio_mode = "auto"
 
