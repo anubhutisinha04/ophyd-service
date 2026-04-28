@@ -40,3 +40,45 @@ uv run pytest tests/
 | [Data Models](docs/reference/models.md) | DeviceMetadata, DeviceInstantiationSpec, PVMetadata, and related types |
 | [Architecture](docs/explanation/architecture.md) | Startup flow, DB-as-source-of-truth, loader design, dependency injection |
 | [Device Locking](docs/explanation/device-locking.md) | Why locking exists and how A4 coordination works |
+
+## Error Handling & Recovery
+
+### HTTP Status Codes
+
+| Status | Meaning | Common Causes |
+|--------|---------|---------------|
+| 200 OK | Operation succeeded | N/A |
+| 201 Created | Resource created | Device/PV successfully added |
+| 400 Bad Request | Invalid request format | Malformed JSON, missing required fields |
+| 404 Not Found | Resource not found | Device/PV does not exist in registry |
+| 409 Conflict | Device/PV already exists | Cannot create duplicate entries |
+| 422 Unprocessable Entity | Validation failed | Device instantiation would fail, invalid configuration |
+| 500 Internal Server Error | Service error | Database error, corrupted state |
+| 503 Service Unavailable | Service not ready | Initializing profile loader or database |
+
+### Startup Behavior
+
+- **Cold start** (15s typical): Loading profile collection or initializing database
+- **Happi loader** (5-10s): Parsing happi_db.json and instantiating device objects
+- **CRUD mode** (1s): Starting empty with API-driven registration
+
+Check `/health` endpoint during startup; returns 503 until ready.
+
+### Recovery Procedures
+
+**Service won't start:**
+- Check logs: `docker compose logs configuration_service`
+- Verify `CONFIG_PROFILE_PATH` points to valid directory (if using happi/BITS)
+- Verify `CONFIG_DB_PATH` directory is writable
+- Try `--use-mock-data` to bypass profile loading issues
+
+**Health check failing:**
+- Check `/health` endpoint: `curl http://localhost:8004/health`
+- If response is 503, service is still initializing; wait a few seconds
+- If response is 500, check database and profile paths
+
+**Device instantiation fails:**
+- Check device definition in happi_db.json or API POST body
+- Verify all required ophyd imports are available
+- Try querying the device via `/api/v1/devices/{name}` for detailed error
+- Enable debug logging: `CONFIG_LOG_LEVEL=debug`

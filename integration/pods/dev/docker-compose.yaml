@@ -153,5 +153,7 @@ services:
     depends_on:
       configuration_service:
         condition: service_healthy
-      direct_control_service:
+      ioc:
+        condition: service_healthy
+      ioc_motor:
         condition: service_healthy

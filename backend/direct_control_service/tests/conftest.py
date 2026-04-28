@@ -28,6 +28,16 @@ import pytest
 _IOC_PORT = 5064  # default EPICS CA
 _IOC_ADDR = f"localhost:{_IOC_PORT}"
 
+# NOTE: Hardcoded port 5064 (EPICS Channel Access default).
+# This fixture supports two modes of parallel testing:
+#   1. Single host, multiple containers: Each container gets its own isolated IOC
+#      on 5064 (the compose network isolates ports).
+#   2. Single machine, multiple processes: Parallel pytest runs on the same machine
+#      will reuse an existing IOC if one is already bound to 5064 (line 42-45).
+#      This assumes the IOC has compatible PVs (see test_ioc.py).
+#      If you need truly parallel tests on the same machine without reuse, run in
+#      separate containers or use pytest-xdist with worker isolation.
+
 
 def _port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

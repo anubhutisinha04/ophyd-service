@@ -415,3 +415,44 @@ src/direct_control/
 Writes through WebSocket are never direct EPICS writes — they always go
 through `DeviceControl.set_pv` / `.execute_device_method` / `.access_nested_device`,
 which perform the coordination check.
+
+## Error Handling & Recovery
+
+### HTTP Status Codes
+
+| Status | Meaning | Common Causes |
+|--------|---------|---------------|
+| 200 OK | Operation succeeded | N/A |
+| 400 Bad Request | Invalid request format or value | Malformed JSON, invalid device/PV name |
+| 404 Not Found | Device or PV not registered | Typo in device/PV name, device not in registry |
+| 406 Not Acceptable | Unsupported accept header | Client requested unsupported media type |
+| 423 Locked | Device is locked by coordination | Experiment running, plan holds the device |
+| 500 Internal Server Error | Service error | EPICS unavailable, configuration error |
+| 502 Bad Gateway | Configuration service unavailable | Configuration service down, network issue |
+| 503 Service Unavailable | Health check failed | Service initializing or shutting down |
+
+### Timeout Behavior
+
+- **Command timeout** (30s default): Long-running ophyd methods or EPICS operations timeout after 30s
+  - Set via `DIRECT_CONTROL_COMMAND_TIMEOUT`
+- **EPICS CA timeout** (5s typical): Individual channel access operations timeout; not user-configurable
+- **Coordination check timeout** (5s default): Check with experiment_execution; configurable via `DIRECT_CONTROL_COORDINATION_TIMEOUT`
+
+If a timeout occurs, the PV/device may be in an indeterminate state. Query the device state endpoint to verify.
+
+### Recovery Procedures
+
+**Service won't start:**
+- Check logs: `docker compose logs direct_control_service`
+- Verify `DIRECT_CONTROL_CONFIGURATION_SERVICE_URL` points to a running configuration_service
+- Verify EPICS network connectivity: `caget` from host should work
+
+**Health check failing:**
+- Check `/health` endpoint: `curl http://localhost:8003/health`
+- If coordination_service_available is false, check coordination service status
+- Service is degraded but may still be usable for read operations
+
+**Devices are locked:**
+- Check coordination service: `curl http://localhost:8004/coordination/state`
+- Wait for experiment to complete or check with experiment_execution service
+- Return 423 is expected during active experiments
