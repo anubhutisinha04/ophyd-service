@@ -359,18 +359,28 @@ async def health_check(
     pv_monitor: PVMonitor = Depends(get_pv_monitor),
     ws_manager=Depends(get_ws_manager),
 ):
-    """Combined health check: coordination availability and monitoring stats."""
-    coord_available = await coordination_client.is_service_available()
+    """Combined health check: coordination availability and monitoring stats.
+
+    Returns 503 when configuration_service is unreachable — pre-S5 this
+    always returned 200, so LB readiness probes never noticed an upstream
+    failure. The body still carries the structured detail in
+    ``coordination_service_detail`` so operators can see the actual reason.
+    """
+    coord = await coordination_client.is_service_available()
     stats = ws_manager.get_stats()
 
-    return HealthResponse(
-        status="healthy" if coord_available else "degraded",
+    body = HealthResponse(
+        status="healthy" if coord.available else "unhealthy",
         timestamp=datetime.now(),
-        coordination_service_available=coord_available,
+        coordination_service_available=coord.available,
+        coordination_service_detail=coord.detail,
         active_subscriptions=len(pv_monitor.get_connected_pvs()),
         connected_pvs=stats["connected_pvs"],
         websocket_connections=stats["active_connections"],
     )
+    if not coord.available:
+        return JSONResponse(status_code=503, content=body.model_dump(mode="json"))
+    return body
 
 
 @app.get("/api/v1/stats")
@@ -380,7 +390,7 @@ async def get_stats(
     ws_manager=Depends(get_ws_manager),
     device_ws_manager=Depends(get_device_ws_manager),
 ):
-    coord_available = await coordination_client.is_service_available()
+    coord = await coordination_client.is_service_available()
     pv_stats = ws_manager.get_stats()
     device_stats = device_ws_manager.get_stats()
 
@@ -388,7 +398,8 @@ async def get_stats(
         "service": "direct_control",
         "timestamp": datetime.now().isoformat(),
         "coordination_enabled": settings.coordination_check_enabled,
-        "coordination_service_available": coord_available,
+        "coordination_service_available": coord.available,
+        "coordination_service_detail": coord.detail,
         "command_timeout": settings.command_timeout,
         "pv_socket": {
             "websocket_connections": pv_stats["active_connections"],

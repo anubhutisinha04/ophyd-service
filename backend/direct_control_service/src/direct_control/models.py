@@ -502,9 +502,24 @@ class HealthResponse(BaseModel):
     status: str = "healthy"
     timestamp: datetime
     coordination_service_available: bool
+    coordination_service_detail: Optional[str] = None
     active_subscriptions: int = 0
     connected_pvs: int = 0
     websocket_connections: int = 0
+
+
+class ServiceAvailability(BaseModel):
+    """Result of a dependency availability probe.
+
+    `detail` is populated only when ``available=False`` so the caller can
+    surface the actual failure reason in /health, instead of the bare
+    True/False that hid all the failure modes pre-S6.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    available: bool
+    detail: Optional[str] = None
 
 
 # ===== Exceptions =====

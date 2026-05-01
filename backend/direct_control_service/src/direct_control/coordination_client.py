@@ -17,7 +17,12 @@ import structlog
 from datetime import datetime
 from typing import Optional
 
-from .models import CoordinationStatus, DeviceLockStatus, CoordinationCheckError
+from .models import (
+    CoordinationCheckError,
+    CoordinationStatus,
+    DeviceLockStatus,
+    ServiceAvailability,
+)
 from .config import Settings
 
 
@@ -177,14 +182,44 @@ class CoordinationClient:
             )
             raise CoordinationCheckError(f"Unexpected coordination check error: {e}") from e
 
-    async def is_service_available(self) -> bool:
-        """Check whether configuration_service is reachable."""
+    async def is_service_available(self) -> ServiceAvailability:
+        """Check whether configuration_service is reachable.
+
+        Pre-S6 this caught every exception and returned a bare ``False``,
+        which hid which failure mode actually fired (timeout vs. connect
+        refused vs. non-2xx). Now: log + return structured detail so
+        /health can surface the real reason.
+        """
         try:
             client = await self._get_client()
             response = await client.get("/health", timeout=2.0)
-            return response.status_code == 200
-        except Exception:
-            return False
+        except httpx.TimeoutException as exc:
+            logger.warning("configuration_service_health_timeout", error=str(exc))
+            return ServiceAvailability(
+                available=False,
+                detail=f"timeout reaching configuration_service /health: {exc}",
+            )
+        except httpx.RequestError as exc:
+            logger.warning("configuration_service_health_unreachable", error=str(exc))
+            return ServiceAvailability(
+                available=False,
+                detail=f"cannot reach configuration_service /health: {exc}",
+            )
+
+        if response.status_code == 200:
+            return ServiceAvailability(available=True)
+
+        logger.warning(
+            "configuration_service_health_non_200",
+            status_code=response.status_code,
+        )
+        return ServiceAvailability(
+            available=False,
+            detail=(
+                f"configuration_service /health returned HTTP "
+                f"{response.status_code}"
+            ),
+        )
 
     async def cleanup(self) -> None:
         if self._client:

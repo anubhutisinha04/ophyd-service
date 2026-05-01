@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import pytest
 
+from direct_control.models import ServiceAvailability
+
 
 # ─── S1: device-method placeholders no longer return 200-OK / success=False ──
 #
@@ -112,8 +114,8 @@ def test_s1_stop_lock_gate_still_fires_before_not_implemented(client):
                 timestamp=datetime.now(),
             )
 
-        async def is_service_available(self) -> bool:
-            return True
+        async def is_service_available(self) -> ServiceAvailability:
+            return ServiceAvailability(available=True)
 
         async def cleanup(self) -> None:
             return None
@@ -202,8 +204,8 @@ async def test_s2_set_pv_controller_raises_control_error_on_put_false():
                 timestamp=datetime.now(),
             )
 
-        async def is_service_available(self) -> bool:
-            return True
+        async def is_service_available(self) -> ServiceAvailability:
+            return ServiceAvailability(available=True)
 
         async def cleanup(self) -> None:
             return None
@@ -249,8 +251,8 @@ async def test_s2_set_pv_controller_propagates_inner_exceptions():
                 timestamp=datetime.now(),
             )
 
-        async def is_service_available(self) -> bool:
-            return True
+        async def is_service_available(self) -> ServiceAvailability:
+            return ServiceAvailability(available=True)
 
         async def cleanup(self) -> None:
             return None
@@ -565,3 +567,132 @@ def test_s4_configuration_service_url_is_required(monkeypatch):
         Settings()
     msg = str(exc_info.value)
     assert "configuration_service_url" in msg.lower()
+
+
+# ─── S5 + S6: /health surfaces real config-service availability + flips to 503 ──
+#
+# Pre-S5: /health always returned 200 even when configuration_service was
+# unreachable; status flipped to "degraded" but LB readiness probes
+# couldn't see anything wrong, so traffic kept routing here.
+#
+# Pre-S6: ``CoordinationClient.is_service_available()`` had a bare
+# ``except Exception: return False`` with no logging and no detail. /health
+# saw the bare bool and couldn't surface the actual failure mode.
+#
+# After: is_service_available() returns ``ServiceAvailability(available,
+# detail)``; /health includes ``coordination_service_detail`` and flips
+# to HTTP 503 when ``available=False``.
+
+
+def test_s5_health_returns_503_when_coordination_unavailable(client):
+    """Pre-fix: 200 + status="degraded" hid the failure from LB probes.
+
+    Drive an unavailable coord stub through the same path the production
+    client takes, then verify both the HTTP status code AND the body
+    surface the failure.
+    """
+    from direct_control.main import get_coordination_client
+
+    class _UnavailableCoord:
+        async def is_service_available(self) -> ServiceAvailability:
+            return ServiceAvailability(
+                available=False,
+                detail="cannot reach configuration_service /health: ConnectError",
+            )
+
+        async def cleanup(self) -> None:
+            return None
+
+    unavailable = _UnavailableCoord()
+    app = client.app
+    original = app.dependency_overrides.get(get_coordination_client)
+    app.dependency_overrides[get_coordination_client] = lambda: unavailable
+    try:
+        r = client.get("/health")
+        assert r.status_code == 503, (
+            f"expected 503 (LB probes must see unhealthy), got {r.status_code}"
+        )
+        body = r.json()
+        assert body["coordination_service_available"] is False
+        assert body["coordination_service_detail"] is not None
+        assert "configuration_service" in body["coordination_service_detail"]
+        assert body["status"] == "unhealthy"
+    finally:
+        if original is None:
+            app.dependency_overrides.pop(get_coordination_client, None)
+        else:
+            app.dependency_overrides[get_coordination_client] = original
+
+
+def test_s5_health_200_when_coordination_available(client):
+    """Sanity: the happy path stays 200 with detail=None."""
+    # The default `client` fixture installs an always-available stub.
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["coordination_service_available"] is True
+    assert body["coordination_service_detail"] is None
+    assert body["status"] == "healthy"
+
+
+def test_s6_is_service_available_returns_structured_detail_on_timeout():
+    """Pre-S6: bare ``except Exception: return False``. Now: structured detail.
+
+    Unit-tests the client directly with an httpx transport that raises
+    TimeoutException so we don't depend on a live configuration_service.
+    """
+    import httpx
+
+    from direct_control.config import Settings
+    from direct_control.coordination_client import CoordinationClient
+
+    settings = Settings()  # picks up DIRECT_CONTROL_CONFIGURATION_SERVICE_URL from env
+    cc = CoordinationClient(settings)
+
+    async def _run():
+        # Inject a transport that always raises TimeoutException.
+        def _handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.TimeoutException("simulated timeout", request=request)
+
+        cc._client = httpx.AsyncClient(
+            base_url=settings.configuration_service_url,
+            transport=httpx.MockTransport(_handler),
+        )
+        result = await cc.is_service_available()
+        assert result.available is False
+        assert result.detail is not None
+        assert "timeout" in result.detail.lower()
+        await cc.cleanup()
+
+    import asyncio
+
+    asyncio.run(_run())
+
+
+def test_s6_is_service_available_returns_structured_detail_on_non_200():
+    """Non-2xx response from /health must produce a structured detail, not bare False."""
+    import httpx
+
+    from direct_control.config import Settings
+    from direct_control.coordination_client import CoordinationClient
+
+    settings = Settings()
+    cc = CoordinationClient(settings)
+
+    async def _run():
+        def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json={"status": "unhealthy"})
+
+        cc._client = httpx.AsyncClient(
+            base_url=settings.configuration_service_url,
+            transport=httpx.MockTransport(_handler),
+        )
+        result = await cc.is_service_available()
+        assert result.available is False
+        assert result.detail is not None
+        assert "503" in result.detail
+        await cc.cleanup()
+
+    import asyncio
+
+    asyncio.run(_run())

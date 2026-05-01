@@ -403,3 +403,38 @@ class TestPVLookupEndpoint:
         assert resp1.json()["device_name"] == resp2.json()["device_name"]
         assert resp1.json()["prefix"] == resp2.json()["prefix"]
         assert resp1.json()["sibling_pvs"] == resp2.json()["sibling_pvs"]
+
+
+class TestHealthEndpointDbProbe:
+    """S5 regression: /health must surface DB unreachability as 503.
+
+    Pre-fix /health returned 200 "healthy" the moment state was injected,
+    without ever touching the DB. A mount-gone or permissions-revoked
+    store would still pass health while every CRUD call 500'd. Now /health
+    runs SELECT 1 against the registry store and flips to 503.
+    """
+
+    def test_health_503_when_registry_store_unreachable(self, client):
+        import sqlite3
+
+        class _BrokenStore:
+            def ping(self) -> None:
+                raise sqlite3.OperationalError("disk I/O error: simulated")
+
+        container = client.app.state.registry_store_container
+        original_store = container["store"]
+        container["store"] = _BrokenStore()
+        try:
+            resp = client.get("/health")
+            assert resp.status_code == 503
+            data = resp.json()
+            assert data["status"] == "unhealthy"
+            assert "disk I/O error" in data["detail"]
+        finally:
+            container["store"] = original_store
+
+    def test_health_200_when_registry_store_healthy(self, client):
+        """Sanity: with a real store, /health stays 200."""
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "healthy"

@@ -534,3 +534,12 @@ class DeviceRegistryStore:
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
+
+    def ping(self) -> None:
+        """Verify the DB is queryable. Raises ``sqlite3.Error`` on failure.
+
+        Used by /health to surface DB-unreachable conditions (e.g. mount
+        gone, permissions revoked) instead of reporting "healthy" while the
+        store is dead.
+        """
+        self._get_connection().execute("SELECT 1").fetchone()

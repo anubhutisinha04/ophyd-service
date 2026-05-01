@@ -317,9 +317,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Expose state_container on app.state so tests can introspect / mutate
-    # the in-memory registry. Production code goes through Depends().
+    # Expose DI containers on app.state so tests can introspect / mutate
+    # them (registry mutation for S3, store swap for S5). Production code
+    # goes through Depends().
     app.state.state_container = state_container
+    app.state.registry_store_container = registry_store_container
 
     # Dependency injection function
     def get_state() -> ConfigurationState:
@@ -371,7 +373,28 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.get("/health", tags=["Health"])
     async def health_check(state: StateDep):
-        """Health check endpoint."""
+        """Health check: verify state loaded AND registry DB is queryable.
+
+        Pre-S5 this returned "healthy" the moment state was injected,
+        without ever touching the DB — a mount-gone or permissions-revoked
+        store would still pass health while every CRUD call 500'd. Now
+        runs ``SELECT 1`` against the registry store (when DB mode is on)
+        and returns 503 with the failure detail when it can't.
+        """
+        store = registry_store_container.get("store")
+        if store is not None:
+            try:
+                store.ping()
+            except Exception as exc:
+                logger.error("health_db_ping_failed", error=str(exc))
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "unhealthy",
+                        "service": "configuration_service",
+                        "detail": f"registry store unreachable: {exc}",
+                    },
+                )
         return {
             "status": "healthy",
             "service": "configuration_service",

@@ -28,6 +28,7 @@ from .models import (
     PVSetResponse,
     PVUpdate,
     PVValue,
+    ServiceAvailability,
 )
 
 
@@ -63,12 +64,15 @@ class CoordinationService(Protocol):
         """
         ...
 
-    async def is_service_available(self) -> bool:
+    async def is_service_available(self) -> ServiceAvailability:
         """
         Check if coordination service is reachable.
 
         Returns:
-            True if service is available
+            ServiceAvailability with `available` flag and, when not
+            available, a `detail` string describing why (timeout,
+            connection error, non-2xx response). Pre-S6 this returned a
+            bare bool that hid the failure mode.
         """
         ...
 
@@ -209,9 +213,9 @@ class MockCoordinationClient:
                 timestamp=datetime.now(),
             )
 
-    async def is_service_available(self) -> bool:
+    async def is_service_available(self) -> ServiceAvailability:
         """Always available for testing."""
-        return True
+        return ServiceAvailability(available=True)
 
     async def cleanup(self) -> None:
         """No cleanup needed for mock."""
