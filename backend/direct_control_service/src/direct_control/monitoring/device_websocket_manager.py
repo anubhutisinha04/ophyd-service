@@ -96,30 +96,53 @@ class DeviceWebSocketManager:
             except Exception:  # noqa: BLE001
                 pass
 
-    async def _fetch_device_info(self, device_name: str) -> Optional[DeviceInfo]:
+    async def _fetch_device_info(
+        self, device_name: str
+    ) -> tuple[Optional[DeviceInfo], Optional[str]]:
+        """Fetch device info from configuration_service.
+
+        Returns (info, reason). On success: (DeviceInfo, None). On failure
+        the reason distinguishes three classes that pre-S7 collapsed to a
+        misleading "not_found":
+          - "not_found"           — 404 (the device really isn't registered)
+          - "upstream_error"      — non-2xx, non-404 (config_service is
+                                    reachable but rejected/erred)
+          - "upstream_unreachable" — network/timeout/connection failure
+        """
         config_url = self.settings.configuration_service_url
         try:
             client = await self._get_http_client()
             response = await client.get(f"{config_url}/api/v1/devices/{device_name}")
-            if response.status_code == 200:
-                data = response.json()
-                return DeviceInfo(
+        except httpx.RequestError as exc:
+            logger.error(
+                "device_info_unreachable", device_name=device_name, error=str(exc)
+            )
+            return None, "upstream_unreachable"
+
+        if response.status_code == 200:
+            data = response.json()
+            return (
+                DeviceInfo(
                     name=data.get("name", device_name),
                     device_type=data.get("device_type", "unknown"),
                     ophyd_class=data.get("ophyd_class"),
                     pvs=data.get("pvs", {}),
                     is_movable=data.get("is_movable", False),
                     is_readable=data.get("is_readable", True),
-                )
-            logger.warning(
-                "device_info_fetch_failed",
-                device_name=device_name,
-                status=response.status_code,
+                ),
+                None,
             )
-            return None
-        except Exception as e:  # noqa: BLE001
-            logger.error("device_info_fetch_error", device_name=device_name, error=str(e))
-            return None
+
+        if response.status_code == 404:
+            logger.info("device_info_not_found", device_name=device_name)
+            return None, "not_found"
+
+        logger.warning(
+            "device_info_upstream_error",
+            device_name=device_name,
+            status=response.status_code,
+        )
+        return None, "upstream_error"
 
     async def connect(self, websocket: WebSocket) -> tuple[str, LockedWS]:
         """Accept the WS, wrap it for serialized sends, and register the client."""
@@ -172,20 +195,31 @@ class DeviceWebSocketManager:
 
     async def subscribe_device(
         self, client_id: str, device_name: str, require_connection: bool = False
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple[bool, Optional[str], list[tuple[str, str, str]]]:
         """
-        Returns (ok, reason). `reason` is one of None, 'unknown_client',
-        'cap_exceeded', 'not_found', 'not_connected' so callers can surface
-        an accurate WS error instead of collapsing everything into "not found".
+        Returns (ok, reason, failed_pvs).
+
+        `reason` is one of None, 'unknown_client', 'cap_exceeded',
+        'not_found', 'upstream_error', 'upstream_unreachable',
+        'not_connected' so callers can surface an accurate WS error
+        instead of collapsing everything into "not found".
+
+        `failed_pvs` is a list of (component, pv_name, error) tuples for
+        PVs whose CA subscribe failed but where the device subscription as
+        a whole succeeded (require_connection=False, partial-success
+        path). Callers should emit a per-PV error envelope so the client
+        knows those signals will never arrive. Pre-S8 these failures were
+        logged and silently dropped, leaving stale ``_pv_callbacks`` and
+        ``_device_pvs`` entries with no live monitor.
         """
         cap = self.settings.max_subscriptions_per_client
         async with self._lock:
             if client_id not in self._connections:
                 logger.warning("subscribe_unknown_client", client_id=client_id)
-                return False, "unknown_client"
+                return False, "unknown_client", []
             current_subs = self._device_subscriptions.get(client_id, set())
             if device_name in current_subs:
-                return True, None
+                return True, None, []
             if cap > 0 and len(current_subs) + 1 > cap:
                 logger.warning(
                     "device_subscribe_cap_exceeded",
@@ -193,11 +227,11 @@ class DeviceWebSocketManager:
                     cap=cap,
                     current=len(current_subs),
                 )
-                return False, "cap_exceeded"
+                return False, "cap_exceeded", []
 
-        device_info = await self._fetch_device_info(device_name)
+        device_info, fetch_reason = await self._fetch_device_info(device_name)
         if device_info is None:
-            return False, "not_found"
+            return False, fetch_reason, []
 
         new_subscriptions: list[tuple[str, str, Callable[[PVUpdate], None]]] = []
         async with self._lock:
@@ -205,7 +239,7 @@ class DeviceWebSocketManager:
 
             if device_name not in self._device_clients:
                 self._device_clients[device_name] = set()
-                self._device_pvs[device_name] = device_info.pvs
+                self._device_pvs[device_name] = dict(device_info.pvs)
 
                 for component, pv_name in device_info.pvs.items():
                     callback = self._make_device_callback(device_name, component)
@@ -222,11 +256,13 @@ class DeviceWebSocketManager:
             ),
             return_exceptions=True,
         )
-        for (component, pv_name, _), result in zip(new_subscriptions, results):
+        succeeded: list[tuple[str, str, Callable[[PVUpdate], None]]] = []
+        failed: list[tuple[str, str, str]] = []
+        for entry, result in zip(new_subscriptions, results):
+            component, pv_name, _ = entry
             if isinstance(result, Exception):
                 logger.error("device_pv_subscribe_failed", pv=pv_name, error=str(result))
-                if require_connection:
-                    return False, "not_connected"
+                failed.append((component, pv_name, str(result)))
             else:
                 logger.debug(
                     "subscribed_device_pv",
@@ -234,6 +270,14 @@ class DeviceWebSocketManager:
                     component=component,
                     pv=pv_name,
                 )
+                succeeded.append(entry)
+
+        if failed and require_connection:
+            await self._rollback_device_subscription(client_id, device_name, succeeded)
+            return False, "not_connected", []
+
+        if failed:
+            await self._purge_failed_pvs(device_name, failed)
 
         await self._send_current_values(client_id, device_name)
 
@@ -241,9 +285,56 @@ class DeviceWebSocketManager:
             "device_subscribed",
             client_id=client_id,
             device=device_name,
-            pvs=len(device_info.pvs),
+            pvs=len(succeeded),
+            failed=len(failed),
         )
-        return True, None
+        return True, None, failed
+
+    async def _purge_failed_pvs(
+        self, device_name: str, failed: list[tuple[str, str, str]]
+    ) -> None:
+        """Drop bookkeeping for PVs whose CA subscribe failed.
+
+        The device-level subscription stays — the client gets updates for
+        the PVs that DID subscribe — but the failed components are removed
+        from `_device_pvs[device_name]` and `_pv_callbacks` so a later
+        unsubscribe doesn't try to tear down a non-existent CA monitor and
+        so a future subscribe to the same device can re-attempt them.
+        """
+        async with self._lock:
+            device_pvs = self._device_pvs.get(device_name)
+            for component, pv_name, _ in failed:
+                self._pv_callbacks.pop(pv_name, None)
+                if device_pvs is not None:
+                    device_pvs.pop(component, None)
+
+    async def _rollback_device_subscription(
+        self,
+        client_id: str,
+        device_name: str,
+        succeeded: list[tuple[str, str, Callable[[PVUpdate], None]]],
+    ) -> None:
+        """Undo a partially-completed device subscription on require_connection failure.
+
+        Removes the client from ``_device_subscriptions`` and
+        ``_device_clients``, drops ``_device_pvs[device_name]`` and the
+        whole device's ``_pv_callbacks`` if no other clients hold it,
+        then unsubscribes any PVs that did succeed.
+        """
+        teardown: list[tuple[str, Callable[[PVUpdate], None]]] = []
+        async with self._lock:
+            self._device_subscriptions.get(client_id, set()).discard(device_name)
+            if device_name in self._device_clients:
+                self._device_clients[device_name].discard(client_id)
+                if not self._device_clients[device_name]:
+                    self._device_clients.pop(device_name, None)
+                    self._device_pvs.pop(device_name, None)
+                    for _, pv_name, callback in succeeded:
+                        self._pv_callbacks.pop(pv_name, None)
+                        teardown.append((pv_name, callback))
+
+        for pv_name, callback in teardown:
+            await asyncio.to_thread(self.pv_monitor.unsubscribe, pv_name, callback)
 
     async def unsubscribe_device(self, client_id: str, device_name: str):
         released_pvs: Dict[str, str] = {}
@@ -460,10 +551,40 @@ class DeviceWebSocketManager:
             "unknown_client": "Client not registered; reconnect and retry.",
             "cap_exceeded": (f"Subscribe would exceed max_subscriptions_per_client (cap={cap})."),
             "not_found": f"Device '{device_name}' not found in configuration service",
+            "upstream_error": (
+                f"Configuration service returned an error looking up device "
+                f"'{device_name}'; cannot subscribe."
+            ),
+            "upstream_unreachable": (
+                f"Configuration service is unreachable; cannot resolve device "
+                f"'{device_name}'."
+            ),
             "not_connected": f"Device {device_name} PVs are not connected",
         }
         message = messages.get(reason or "", f"Failed to subscribe to device {device_name}")
         await send_error(websocket, message, device=device_name, reason=reason)
+
+    async def _emit_failed_pv_envelopes(
+        self,
+        websocket,
+        device_name: str,
+        failed: list[tuple[str, str, str]],
+    ) -> None:
+        """Emit a per-PV error envelope for PVs whose CA subscribe failed.
+
+        Without this the client gets a "subscribed" event for the device but
+        silently never sees updates for the failed components, exactly the
+        no-news-is-bad-news shape S8 was meant to eliminate.
+        """
+        for component, pv_name, error in failed:
+            await send_error(
+                websocket,
+                f"PV {pv_name} ({component}) failed to subscribe: {error}",
+                device=device_name,
+                pv=pv_name,
+                component=component,
+                reason="pv_subscribe_failed",
+            )
 
     async def _handle_subscribe(self, client_id: str, websocket: WebSocket, data: dict):
         device_name = data.get("device")
@@ -471,8 +592,10 @@ class DeviceWebSocketManager:
             await send_error(websocket, "device field required")
             return
 
-        ok, reason = await self.subscribe_device(client_id, device_name)
+        ok, reason, failed_pvs = await self.subscribe_device(client_id, device_name)
         if ok:
+            if failed_pvs:
+                await self._emit_failed_pv_envelopes(websocket, device_name, failed_pvs)
             await send_event(
                 websocket,
                 "subscribed",
@@ -502,7 +625,12 @@ class DeviceWebSocketManager:
             await send_error(websocket, "device field required")
             return
 
-        ok, reason = await self.subscribe_device(client_id, device_name, require_connection=True)
+        ok, reason, _ = await self.subscribe_device(
+            client_id, device_name, require_connection=True
+        )
+        # require_connection rolls back on any PV failure, so failed_pvs
+        # will always be empty here (the helper returns [] alongside
+        # 'not_connected'). Discard it explicitly.
         if ok:
             await send_event(websocket, "subscribed", device=device_name, connected=True)
         else:
@@ -514,8 +642,10 @@ class DeviceWebSocketManager:
             await send_error(websocket, "device field required")
             return
 
-        ok, reason = await self.subscribe_device(client_id, device_name)
+        ok, reason, failed_pvs = await self.subscribe_device(client_id, device_name)
         if ok:
+            if failed_pvs:
+                await self._emit_failed_pv_envelopes(websocket, device_name, failed_pvs)
             await send_event(websocket, "subscribed", device=device_name, read_only=True)
         else:
             await self._send_subscribe_error(websocket, device_name, reason)

@@ -466,10 +466,13 @@ def test_finch_contract_device_socket_emits_meta_message(client):
     async def _stub_fetch(device_name: str):
         # Map a single component to a real test-IOC PV so the subsequent
         # CA monitor + initial-value path produces a real value (and meta).
-        return DeviceInfo(
-            name=device_name,
-            device_type="motor",
-            pvs={"readback": "IOC:counter"},
+        return (
+            DeviceInfo(
+                name=device_name,
+                device_type="motor",
+                pvs={"readback": "IOC:counter"},
+            ),
+            None,
         )
 
     device_ws_manager._fetch_device_info = _stub_fetch  # type: ignore[method-assign]
@@ -696,3 +699,228 @@ def test_s6_is_service_available_returns_structured_detail_on_non_200():
     import asyncio
 
     asyncio.run(_run())
+
+
+# ─── S7: _fetch_device_info distinguishes 404 / non-2xx / network failure ────
+#
+# Pre-S7 ``_fetch_device_info`` returned ``None`` for all three failure
+# classes. The caller in ``subscribe_device`` mapped that to
+# ``reason="not_found"``, so a WS subscribe against a config_service that
+# was *down* surfaced "Device 'X' not found" — operators ended up
+# investigating phantom missing devices. After S7 the fetch result is
+# ``(info, reason)`` and the WS handler emits an actionable
+# upstream_error / upstream_unreachable envelope instead.
+
+
+@pytest.mark.asyncio
+async def test_s7_fetch_device_info_distinguishes_404_from_non2xx_from_network(client):
+    """Pin the three failure-class mapping. No live config_service required."""
+    import httpx
+
+    from direct_control.models import DeviceInfo
+
+    device_ws_manager = client.app.state.device_ws_manager
+
+    async def _fake_get_404(_self):
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda req: httpx.Response(404, json={"detail": "not found"})
+            )
+        )
+        return client
+
+    # 200 → (info, None) is exercised by the meta-message test above; here
+    # we drive the three failure classes.
+    async def _via_transport(handler):
+        device_ws_manager._http_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        return await device_ws_manager._fetch_device_info("any_device")
+
+    # 404 → not_found (the device truly isn't registered)
+    info, reason = await _via_transport(
+        lambda req: httpx.Response(404, json={"detail": "missing"})
+    )
+    assert info is None
+    assert reason == "not_found"
+
+    # 500 → upstream_error (config_service is up but rejected)
+    info, reason = await _via_transport(
+        lambda req: httpx.Response(500, json={"detail": "kaboom"})
+    )
+    assert info is None
+    assert reason == "upstream_error"
+
+    # network failure → upstream_unreachable
+    def _network_fail(req):
+        raise httpx.ConnectError("simulated", request=req)
+
+    info, reason = await _via_transport(_network_fail)
+    assert info is None
+    assert reason == "upstream_unreachable"
+
+
+@pytest.mark.asyncio
+async def test_s7_subscribe_device_propagates_fetch_reason():
+    """``subscribe_device`` must surface the upstream reason verbatim.
+
+    Pre-S7 it always returned ``"not_found"`` regardless of which failure
+    fired in ``_fetch_device_info``. Drive each fetch reason via stubbing
+    and assert the propagated tuple matches.
+    """
+    from direct_control.config import Settings
+    from direct_control.monitoring.device_websocket_manager import DeviceWebSocketManager
+
+    settings = Settings()
+    mgr = DeviceWebSocketManager(
+        pv_monitor=object(),  # not exercised — fetch fails before subscribe
+        device_controller=object(),
+        settings=settings,
+    )
+    # Inject a fake connection so the early "unknown_client" arm is bypassed.
+    mgr._connections["c"] = object()  # type: ignore[assignment]
+    mgr._device_subscriptions["c"] = set()
+
+    for fake_reason in ("not_found", "upstream_error", "upstream_unreachable"):
+
+        async def _fake_fetch(_name, _reason=fake_reason):
+            return None, _reason
+
+        mgr._fetch_device_info = _fake_fetch  # type: ignore[method-assign]
+        ok, reason, failed_pvs = await mgr.subscribe_device("c", "dev")
+        assert ok is False
+        assert reason == fake_reason
+        assert failed_pvs == []
+
+
+# ─── S8: failed PV subscribes are cleaned up + surfaced via error envelope ───
+#
+# Pre-S8: when a PV failed to subscribe, ``_pv_callbacks[pv_name]`` and
+# ``_device_pvs[device_name][component]`` were left dangling — callbacks
+# bound to no live CA monitor — and the WS client got a "subscribed"
+# event with no indication that some components would be silent forever.
+
+
+@pytest.mark.asyncio
+async def test_s8_failed_pv_subscribes_purged_from_bookkeeping():
+    """Stale callbacks for failed PVs must be removed."""
+    from direct_control.config import Settings
+    from direct_control.models import DeviceInfo
+    from direct_control.monitoring.device_websocket_manager import DeviceWebSocketManager
+
+    settings = Settings()
+
+    class _PVMonitorStub:
+        def __init__(self):
+            self.subscribed: list[str] = []
+
+        def subscribe(self, pv_name: str, callback):
+            # Simulate: "good" PVs subscribe fine; "bad" PVs raise.
+            if "bad" in pv_name:
+                raise RuntimeError(f"CA timeout for {pv_name}")
+            self.subscribed.append(pv_name)
+
+        def unsubscribe(self, pv_name: str, callback):
+            pass
+
+    pv_monitor = _PVMonitorStub()
+    mgr = DeviceWebSocketManager(
+        pv_monitor=pv_monitor,
+        device_controller=object(),
+        settings=settings,
+    )
+    mgr._connections["c"] = object()  # type: ignore[assignment]
+    mgr._device_subscriptions["c"] = set()
+
+    async def _fetch(_name):
+        return (
+            DeviceInfo(
+                name="dev",
+                device_type="motor",
+                pvs={"good_signal": "IOC:good", "bad_signal": "IOC:bad"},
+            ),
+            None,
+        )
+
+    mgr._fetch_device_info = _fetch  # type: ignore[method-assign]
+
+    async def _noop_send_current_values(*_args, **_kwargs):
+        return None
+
+    mgr._send_current_values = _noop_send_current_values  # type: ignore[method-assign]
+
+    ok, reason, failed_pvs = await mgr.subscribe_device("c", "dev")
+    assert ok is True
+    assert reason is None
+    assert len(failed_pvs) == 1
+    assert failed_pvs[0][1] == "IOC:bad"
+
+    # Bookkeeping must reflect the actual subscribed-vs-failed split.
+    assert "IOC:good" in mgr._pv_callbacks
+    assert "IOC:bad" not in mgr._pv_callbacks, (
+        "failed PV must be removed from _pv_callbacks (S8 regression)"
+    )
+    assert mgr._device_pvs["dev"] == {"good_signal": "IOC:good"}, (
+        "failed component must be removed from _device_pvs (S8 regression)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_s8_require_connection_rolls_back_on_partial_failure():
+    """With require_connection=True any PV failure must roll back the whole subscription."""
+    from direct_control.config import Settings
+    from direct_control.models import DeviceInfo
+    from direct_control.monitoring.device_websocket_manager import DeviceWebSocketManager
+
+    settings = Settings()
+
+    class _PVMonitorStub:
+        def __init__(self):
+            self.subscribed: list[str] = []
+            self.unsubscribed: list[str] = []
+
+        def subscribe(self, pv_name: str, callback):
+            if "bad" in pv_name:
+                raise RuntimeError("CA timeout")
+            self.subscribed.append(pv_name)
+
+        def unsubscribe(self, pv_name: str, callback):
+            self.unsubscribed.append(pv_name)
+
+    pv_monitor = _PVMonitorStub()
+    mgr = DeviceWebSocketManager(
+        pv_monitor=pv_monitor,
+        device_controller=object(),
+        settings=settings,
+    )
+    mgr._connections["c"] = object()  # type: ignore[assignment]
+    mgr._device_subscriptions["c"] = set()
+
+    async def _fetch(_name):
+        return (
+            DeviceInfo(
+                name="dev",
+                device_type="motor",
+                pvs={"good": "IOC:good", "bad": "IOC:bad"},
+            ),
+            None,
+        )
+
+    mgr._fetch_device_info = _fetch  # type: ignore[method-assign]
+
+    ok, reason, failed_pvs = await mgr.subscribe_device(
+        "c", "dev", require_connection=True
+    )
+    assert ok is False
+    assert reason == "not_connected"
+    assert failed_pvs == []  # rolled-back path returns empty per the contract
+
+    # Rollback teardown: the GOOD PV that subscribed must be unsubscribed
+    # so we don't leak a CA monitor.
+    assert "IOC:good" in pv_monitor.unsubscribed, (
+        "successful PVs must be torn down on rollback (S8 require_connection)"
+    )
+    # All bookkeeping for this device gone.
+    assert "dev" not in mgr._device_clients
+    assert "dev" not in mgr._device_pvs
+    assert "IOC:good" not in mgr._pv_callbacks
