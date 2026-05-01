@@ -258,7 +258,9 @@ class WebSocketManager:
             return
 
         try:
-            await websocket.send_json(update.model_dump(mode="json", by_alias=True, exclude_none=True))
+            payload = update.model_dump(mode="json", by_alias=True, exclude_none=True)
+            payload.setdefault("pv_name", update.pv_name)
+            await websocket.send_json(payload)
         except TimeoutError:
             logger.warning(
                 "websocket_send_timeout",
