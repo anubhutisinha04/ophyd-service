@@ -13,8 +13,12 @@ function DeviceMotorController({ deviceName = 'motor_ph' }: DeviceMotorControlle
 
   // Fetch the PV name from the config service via the direct control proxy.
   useEffect(() => {
-    const url = `${apiUrl}/devices/${deviceName}`;
-    fetch(url)
+    const controller = new AbortController();
+    setError(null);
+    setPvName(null);
+
+    const url = `${apiUrl}/devices/${encodeURIComponent(deviceName)}`;
+    fetch(url, { signal: controller.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`Failed to fetch device: ${res.status}`);
         return res.json();
@@ -25,7 +29,11 @@ function DeviceMotorController({ deviceName = 'motor_ph' }: DeviceMotorControlle
         if (!firstPv) throw new Error(`No PVs found for device ${deviceName}`);
         setPvName(firstPv);
       })
-      .catch((err) => setError(err.message));
+      .catch((err) => {
+        if (err.name !== 'AbortError') setError(err.message);
+      });
+
+    return () => controller.abort();
   }, [deviceName, apiUrl]);
 
   const { devices, handleSetValueRequest, toggleDeviceLock } =

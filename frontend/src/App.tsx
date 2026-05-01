@@ -1,5 +1,4 @@
 import './App.css'
-import MotorController from './components/MotorController'
 import DeviceMotorController from './components/DeviceMotorController'
 import DeviceBrowser from './components/DeviceBrowser'
 import { SignalMonitorPlotPV } from '@blueskyproject/finch'
