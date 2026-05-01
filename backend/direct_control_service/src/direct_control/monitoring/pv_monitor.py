@@ -149,7 +149,7 @@ class PVMonitorManager:
             self._buffers[pv_name].append(pv_value)
 
             update = PVUpdate(
-                pv_name=pv_name,
+                pv=pv_name,
                 value=converted_value,
                 timestamp=ts,
                 status=0,
@@ -191,7 +191,7 @@ class PVMonitorManager:
         # Broadcast the connection state change so subscribers see it without
         # waiting for the next value update (or forever, if there isn't one).
         update = PVUpdate(
-            pv_name=pv_name,
+            pv=pv_name,
             value=latest.value if latest else None,
             timestamp=datetime.now(),
             status=0,

@@ -148,8 +148,14 @@ async def send_event(ws, type_: str, **fields: Any) -> None:
 
 
 async def send_error(ws: WebSocket, message: str, **fields: Any) -> None:
-    """Send a WS error envelope with the given message."""
-    await send_event(ws, "error", message=message, **fields)
+    """Send a WS error envelope.
+
+    Per finch's ophyd-websocket contract (``finch/src/api/ophyd/
+    useOphydPVSocket.tsx:171``), the human-readable text lives in an
+    ``error`` field on the wire. The Python parameter name stays
+    ``message`` so existing callers keep working unchanged.
+    """
+    await send_event(ws, "error", error=message, **fields)
 
 
 async def heartbeat_loop(ws: WebSocket, interval: float) -> None:

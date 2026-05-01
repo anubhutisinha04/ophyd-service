@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
 # ===== Device Control Enums =====
@@ -207,12 +207,17 @@ class PVValue(BaseModel):
 
 
 class PVUpdate(BaseModel):
-    """PV update notification sent via WebSocket (ophyd-websocket compatible)."""
+    """PV update notification sent via WebSocket (ophyd-websocket compatible).
+
+    Wire field names match finch's ``ValueUpdateResponse`` directly — `pv`
+    (not `pv_name`) and `timestamp` as unix-epoch seconds (not ISO string).
+    See ``finch/src/api/ophyd/ophydPVSocketTypes.ts`` for the contract.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     event_type: str = "pv_update"
-    pv_name: str = Field(..., serialization_alias="pv")
+    pv: str
     value: Any
     timestamp: datetime
     status: int = 0
@@ -230,11 +235,18 @@ class PVUpdate(BaseModel):
     units: Optional[str] = None
     precision: Optional[int] = None
 
+    @field_serializer("timestamp")
+    def _serialize_timestamp(self, value: datetime) -> float:
+        # Unix epoch seconds — finch does numeric arithmetic on this
+        # (e.g. TableDeviceController.tsx flash-row check). ISO strings
+        # silently coerce to NaN there.
+        return value.timestamp()
+
     @classmethod
     def from_value(cls, pv_value: "PVValue", **overrides: Any) -> "PVUpdate":
         """Build a PVUpdate carrying the core fields of a PVValue (plus overrides)."""
         return cls(
-            pv_name=pv_value.pv_name,
+            pv=pv_value.pv_name,
             value=pv_value.value,
             timestamp=pv_value.timestamp,
             status=pv_value.status,
@@ -417,7 +429,12 @@ class NestedDeviceResponse(BaseModel):
 
 
 class DeviceUpdate(BaseModel):
-    """Device value update notification (ophyd-websocket compatible)."""
+    """Device value update notification (ophyd-websocket compatible).
+
+    Wire shape matches finch's ``ValueUpdateResponse`` for the device
+    socket — `device` (not `device_name`), `timestamp` as unix-epoch
+    seconds. See ``finch/src/api/ophyd/ophydDeviceSocketTypes.ts``.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -429,6 +446,10 @@ class DeviceUpdate(BaseModel):
     connected: bool = True
     read_access: Optional[bool] = True
     write_access: Optional[bool] = None
+
+    @field_serializer("timestamp")
+    def _serialize_timestamp(self, value: datetime) -> float:
+        return value.timestamp()
 
 
 class DeviceInfo(BaseModel):

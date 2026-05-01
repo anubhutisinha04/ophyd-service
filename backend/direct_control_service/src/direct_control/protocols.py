@@ -341,7 +341,7 @@ class MockPVMonitor:
             connected=True,
         )
         update = PVUpdate(
-            pv_name=pv_name,
+            pv=pv_name,
             value=value,
             timestamp=now,
             status=0,

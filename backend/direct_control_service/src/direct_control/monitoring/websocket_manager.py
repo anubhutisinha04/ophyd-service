@@ -168,43 +168,7 @@ class WebSocketManager:
                 continue
             await self._send_to_client(client_id, PVUpdate.from_value(value))
 
-            # Send a finch-compatible meta message so the UI receives
-            # units, precision, and control limits.
-            meta_msg: dict = {
-                "sub_type": "meta",
-                "pv": value.pv_name,
-                "connected": value.connected,
-                "read_access": value.read_access,
-                "write_access": value.write_access,
-                "timestamp": value.timestamp.isoformat(),
-                "status": value.status,
-                "severity": value.severity,
-                "precision": value.precision,
-                "units": value.units or "",
-                "lower_ctrl_limit": value.lower_ctrl_limit,
-                "upper_ctrl_limit": value.upper_ctrl_limit,
-                "enum_strs": getattr(value, "enum_strs", None),
-            }
-            try:
-                async with self._lock:
-                    ws = self._connections.get(client_id)
-                if ws:
-                    await ws.send_json(meta_msg)
-            except WebSocketResponseTooLarge:
-                logger.warning(
-                    "meta_message_too_large",
-                    client_id=client_id,
-                    pv_name=value.pv_name,
-                    sub_type="meta",
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "meta_message_send_failed",
-                    client_id=client_id,
-                    pv_name=value.pv_name,
-                    sub_type="meta",
-                    error=str(exc),
-                )
+            await self._send_meta_to_client(client_id, value)
 
         logger.info("client_subscribed", client_id=client_id, pv_count=len(pv_names))
 
@@ -258,21 +222,19 @@ class WebSocketManager:
             return
 
         try:
-            payload = update.model_dump(mode="json", by_alias=True, exclude_none=True)
-            payload.setdefault("pv_name", update.pv_name)
-            await websocket.send_json(payload)
+            await websocket.send_json(update.model_dump(mode="json", exclude_none=True))
         except TimeoutError:
             logger.warning(
                 "websocket_send_timeout",
                 client_id=client_id,
-                pv_name=update.pv_name,
+                pv=update.pv,
                 timeout=self.settings.ws_send_timeout,
             )
         except WebSocketResponseTooLarge as e:
             logger.warning(
                 "websocket_payload_too_large",
                 client_id=client_id,
-                pv_name=update.pv_name,
+                pv=update.pv,
                 error=str(e),
             )
             # Error envelope itself must fit under the cap; keep message short
@@ -281,22 +243,106 @@ class WebSocketManager:
                 await send_error(
                     websocket,
                     "payload exceeds size limit; update dropped",
-                    pv_name=update.pv_name,
+                    pv=update.pv,
                 )
             except Exception as inner_err:  # noqa: BLE001
                 logger.debug(
                     "websocket_send_error_envelope_failed",
                     client_id=client_id,
-                    pv_name=update.pv_name,
+                    pv=update.pv,
                     error=str(inner_err),
                 )
         except Exception as e:  # noqa: BLE001
             logger.error(
                 "websocket_send_error",
                 client_id=client_id,
-                pv_name=update.pv_name,
+                pv=update.pv,
                 error=str(e),
             )
+
+    async def _send_meta_to_client(self, client_id: str, value) -> None:
+        """Send a finch-compatible ``sub_type: meta`` message.
+
+        Per ``finch/src/api/ophyd/ophydPVSocketTypes.ts`` the meta envelope
+        carries units, precision, control limits, and enum strings; finch's
+        hook keys it on ``sub_type === 'meta'`` and reads ``message.pv``.
+
+        Routes through the same ``LockedWS`` send path that value updates
+        use, so the size cap is enforced and oversize meta produces a
+        structured error envelope rather than a silent server-side warning.
+        """
+        async with self._lock:
+            websocket = self._connections.get(client_id)
+        if not websocket:
+            return
+
+        meta_msg: dict = {
+            "sub_type": "meta",
+            "pv": value.pv_name,
+            "connected": value.connected,
+            "read_access": value.read_access,
+            "write_access": value.write_access,
+            "timestamp": value.timestamp.timestamp(),
+            "status": value.status,
+            "severity": value.severity,
+            "precision": value.precision,
+            "units": value.units or "",
+            "lower_ctrl_limit": value.lower_ctrl_limit,
+            "upper_ctrl_limit": value.upper_ctrl_limit,
+            "enum_strs": getattr(value, "enum_strs", None),
+        }
+        try:
+            await websocket.send_json(meta_msg)
+        except TimeoutError:
+            logger.warning(
+                "meta_send_timeout",
+                client_id=client_id,
+                pv=value.pv_name,
+                timeout=self.settings.ws_send_timeout,
+            )
+        except WebSocketResponseTooLarge as e:
+            logger.warning(
+                "meta_message_too_large",
+                client_id=client_id,
+                pv=value.pv_name,
+                error=str(e),
+            )
+            try:
+                await send_error(
+                    websocket,
+                    "meta payload exceeds size limit; metadata dropped",
+                    pv=value.pv_name,
+                    sub_type="meta",
+                )
+            except Exception as inner_err:  # noqa: BLE001
+                logger.debug(
+                    "meta_send_error_envelope_failed",
+                    client_id=client_id,
+                    pv=value.pv_name,
+                    error=str(inner_err),
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "meta_send_error",
+                client_id=client_id,
+                pv=value.pv_name,
+                error=str(e),
+                exc_info=True,
+            )
+            try:
+                await send_error(
+                    websocket,
+                    f"meta send failed: {e}",
+                    pv=value.pv_name,
+                    sub_type="meta",
+                )
+            except Exception as inner_err:  # noqa: BLE001
+                logger.debug(
+                    "meta_send_error_envelope_failed",
+                    client_id=client_id,
+                    pv=value.pv_name,
+                    error=str(inner_err),
+                )
 
     async def handle_client(self, websocket: WebSocket):
         client_id, ws = await self.connect(websocket)

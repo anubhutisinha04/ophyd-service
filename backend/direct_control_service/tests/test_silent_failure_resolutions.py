@@ -291,11 +291,12 @@ def test_s1_ws_pv_socket_stop_emits_error_envelope(client):
         while time.monotonic() < deadline:
             msg = ws.receive_json()
             if msg.get("type") == "error":
-                # The error envelope must mention the unimplemented
-                # status — otherwise a future regression that swallows
-                # the NotImplementedError silently would still pass.
-                message = (msg.get("message") or "").lower()
-                assert "not yet implemented" in message, (
+                # finch reads ``error`` (not ``message``) per
+                # ``finch/src/api/ophyd/useOphydPVSocket.tsx:171``. A
+                # regression to ``message`` would silently invisibilize
+                # the error in the UI.
+                error_text = (msg.get("error") or "").lower()
+                assert "not yet implemented" in error_text, (
                     f"error envelope missing not-implemented message: {msg!r}"
                 )
                 return
@@ -307,3 +308,176 @@ def test_s1_ws_pv_socket_stop_emits_error_envelope(client):
                 )
 
         pytest.fail("never received an error envelope on /stop unimplemented")
+
+
+# ─── Finch contract: error envelope, pv field, timestamp number ──────────
+#
+# These tests pin down the wire shape the frontend depends on. A
+# regression here would silently break finch (it would still parse the
+# JSON but find no field it cares about, and either the value or the
+# error would never reach the UI).
+
+
+def test_finch_contract_error_envelope_uses_error_field(client):
+    """WS error envelopes must carry the human-readable text in ``error``.
+
+    finch's ``useOphydPVSocket.tsx:171`` literally checks
+    ``if ('error' in message) console.error(...)``. A regression to
+    ``message`` (our pre-2026-05-01 shape) makes every backend error
+    invisible in the UI — the worst kind of silent failure.
+    """
+    import time
+
+    with client.websocket_connect("/api/v1/pv-socket") as ws:
+        ws.send_json({"action": "set"})  # missing pv + value → triggers send_error
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            msg = ws.receive_json()
+            if msg.get("type") == "error":
+                assert "error" in msg, (
+                    f"error envelope missing 'error' field — finch will "
+                    f"silently drop this message. Got: {msg!r}"
+                )
+                assert "message" not in msg, (
+                    f"error envelope still carries legacy 'message' field; "
+                    f"finch reads 'error', so 'message' is dead weight: {msg!r}"
+                )
+                return
+
+        pytest.fail("never received error envelope for malformed set request")
+
+
+def test_finch_contract_pv_update_uses_pv_field(client):
+    """pv_update messages must carry the PV name as ``pv``, not ``pv_name``.
+
+    finch's ``useOphydPVSocket.tsx:160`` checks ``'pv' in message`` to
+    discriminate value-update messages from meta messages. With ``pv_name``
+    on the wire, finch's hook would simply drop the update.
+    """
+    import time
+
+    with client.websocket_connect("/api/v1/pv-socket") as ws:
+        ws.send_json({"action": "subscribe", "pv": "IOC:counter"})
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            msg = ws.receive_json()
+            if msg.get("event_type") == "pv_update":
+                assert "pv" in msg, (
+                    f"pv_update missing 'pv' field — finch's discriminator "
+                    f"check fails: {msg!r}"
+                )
+                assert msg["pv"] == "IOC:counter"
+                # The legacy `pv_name` shim should be gone — we removed it.
+                assert "pv_name" not in msg, (
+                    f"pv_update still carries legacy 'pv_name' shim: {msg!r}"
+                )
+                return
+
+        pytest.fail("never received pv_update for IOC:counter")
+
+
+def test_finch_contract_timestamp_is_unix_epoch_seconds(client):
+    """Timestamps on pv_update must be unix epoch seconds (number).
+
+    finch's ``TableDeviceController.tsx:31,35`` does
+    ``Date.now() / 1000 - device.timestamp <= 0.03`` to drive a flash
+    effect. With ISO strings the subtraction silently coerces to NaN
+    and the feature dies without a peep. Numeric epoch seconds keep it
+    working.
+    """
+    import time
+    from datetime import datetime, timedelta
+
+    with client.websocket_connect("/api/v1/pv-socket") as ws:
+        ws.send_json({"action": "subscribe", "pv": "IOC:counter"})
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            msg = ws.receive_json()
+            if msg.get("event_type") == "pv_update" and msg.get("pv") == "IOC:counter":
+                ts = msg["timestamp"]
+                assert isinstance(ts, (int, float)), (
+                    f"timestamp must be a number (unix epoch seconds); "
+                    f"got {type(ts).__name__} {ts!r}"
+                )
+                # Sanity: should be within a day of "now" (sec since epoch).
+                now = datetime.now().timestamp()
+                assert abs(now - ts) < timedelta(days=1).total_seconds(), (
+                    f"timestamp {ts} is implausibly far from now ({now})"
+                )
+                return
+
+        pytest.fail("never received pv_update for IOC:counter")
+
+
+def test_finch_contract_meta_message_emitted_on_subscribe(client):
+    """A ``sub_type: meta`` message with units/limits/precision must arrive on subscribe.
+
+    finch's ``useOphydPVSocket.tsx:146-159`` keys off ``sub_type === 'meta'``
+    to populate device metadata (units, min/max). Without this message,
+    every metadata field on the UI stays at its default-empty state.
+    """
+    import time
+
+    with client.websocket_connect("/api/v1/pv-socket") as ws:
+        ws.send_json({"action": "subscribe", "pv": "IOC:counter"})
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            msg = ws.receive_json()
+            if msg.get("sub_type") == "meta" and msg.get("pv") == "IOC:counter":
+                # finch reads these specifically; if any are missing the
+                # frontend's min/max sliders silently default to nothing.
+                assert "lower_ctrl_limit" in msg
+                assert "upper_ctrl_limit" in msg
+                assert "units" in msg
+                assert "precision" in msg
+                # And the timestamp must also be epoch seconds.
+                assert isinstance(msg["timestamp"], (int, float))
+                return
+
+        pytest.fail("never received sub_type:meta envelope on subscribe")
+
+
+def test_finch_contract_meta_oversize_emits_error_envelope(client):
+    """When the meta message exceeds the size cap, send a structured error envelope.
+
+    Pre-fix the meta-message send path used ``await ws.send_json(meta_msg)``
+    directly with a ``try/except WebSocketResponseTooLarge: logger.warning``
+    that swallowed the failure server-side. The client never knew.
+    Post-fix, oversize meta delivers an ``{type: error, error: ..., pv: ...,
+    sub_type: meta}`` envelope so finch can surface it.
+    """
+    import time
+
+    app = client.app
+    # Tight enough to block the meta envelope (~261 bytes for IOC:wf1) but
+    # leave room for the error envelope (~150 bytes).
+    app.state.settings.response_bytesize_limit = 200
+
+    try:
+        with client.websocket_connect("/api/v1/pv-socket") as ws:
+            ws.send_json({"action": "subscribe", "pv": "IOC:wf1"})
+
+            deadline = time.monotonic() + 3.0
+            saw_meta_error = False
+            while time.monotonic() < deadline:
+                msg = ws.receive_json()
+                if (
+                    msg.get("type") == "error"
+                    and msg.get("sub_type") == "meta"
+                    and msg.get("pv") == "IOC:wf1"
+                ):
+                    assert "size limit" in (msg.get("error") or "").lower()
+                    saw_meta_error = True
+                    break
+            assert saw_meta_error, (
+                "never received structured error envelope for oversize meta — "
+                "the silent-fallback pattern from the merge is back"
+            )
+    finally:
+        from direct_control.config import Settings
+
+        app.state.settings.response_bytesize_limit = Settings().response_bytesize_limit
