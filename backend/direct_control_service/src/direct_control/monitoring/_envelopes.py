@@ -158,6 +158,59 @@ async def send_error(ws: WebSocket, message: str, **fields: Any) -> None:
     await send_event(ws, "error", error=message, **fields)
 
 
+async def send_payload_or_size_error(
+    ws: "LockedWS",
+    payload: Any,
+    *,
+    log_event: str,
+    log_fields: dict,
+    oversize_message: str,
+    error_envelope_fields: dict,
+    notify_on_generic_exception: bool = False,
+) -> None:
+    """Send ``payload`` through the size-cap-aware ``LockedWS`` and translate
+    failures into either a structured error envelope or a log line.
+
+    Three failure paths are unified here:
+    - ``TimeoutError``: log a warning. Connection is likely wedged; one
+      missed update is acceptable and the next send will close it.
+    - ``WebSocketResponseTooLarge``: log + emit a ``send_error`` envelope
+      so the client knows their update was dropped (per the finch
+      no-silent-fallbacks contract).
+    - Generic ``Exception``: log. If ``notify_on_generic_exception`` is
+      true, also emit an error envelope. Use this for one-shot sends
+      where losing the message silently is harmful (e.g. ``meta`` on
+      subscribe); leave false for per-update fan-outs where the next
+      tick recovers and notifying every drop would amplify noise.
+
+    Re-uses ``send_error`` for the structured envelope so the field-name
+    contract (``error`` not ``message``) lives in one place.
+    """
+    try:
+        await ws.send_json(payload)
+        return
+    except TimeoutError:
+        logger.warning(f"{log_event}_timeout", **log_fields)
+        return
+    except WebSocketResponseTooLarge as exc:
+        logger.warning(f"{log_event}_too_large", error=str(exc), **log_fields)
+        envelope_msg = oversize_message
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"{log_event}_failed", error=str(exc), exc_info=True, **log_fields)
+        if not notify_on_generic_exception:
+            return
+        envelope_msg = f"send failed: {exc}"
+
+    try:
+        await send_error(ws, envelope_msg, **error_envelope_fields)
+    except Exception as inner_err:  # noqa: BLE001
+        logger.debug(
+            f"{log_event}_error_envelope_failed",
+            error=str(inner_err),
+            **log_fields,
+        )
+
+
 async def heartbeat_loop(ws: WebSocket, interval: float) -> None:
     """
     Server-initiated WS heartbeat.

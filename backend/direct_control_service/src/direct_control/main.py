@@ -338,6 +338,21 @@ def _raise_http_for_device_unavailable(
     raise HTTPException(status_code=423, detail=str(exc))
 
 
+def _raise_http_501_not_implemented(
+    exc: NotImplementedError,
+    event: str,
+    **log_fields: Any,
+) -> None:
+    """Translate a placeholder ``NotImplementedError`` into a clear 501.
+
+    Per the no-silent-fallbacks audit, device-method endpoints whose
+    underlying ophyd integration isn't done must surface 501 with the
+    exception's message rather than 200 OK with ``success=False``.
+    """
+    logger.warning(event, error=str(exc), **log_fields)
+    raise HTTPException(status_code=501, detail=str(exc))
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check(
     coordination_client: CoordinationService = Depends(get_coordination_client),
@@ -594,8 +609,9 @@ async def execute_device_method(
         logger.error("coordination_check_failed", device_name=request.device_name, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
     except NotImplementedError as e:
-        logger.warning("device_method_not_implemented", device_name=request.device_name, error=str(e))
-        raise HTTPException(status_code=501, detail=str(e))
+        _raise_http_501_not_implemented(
+            e, "device_method_not_implemented", device_name=request.device_name
+        )
     except Exception as e:
         logger.error(
             "device_command_error",
@@ -630,8 +646,7 @@ async def stop_device(
         logger.error("coordination_check_failed", device_name=device_name, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
     except NotImplementedError as e:
-        logger.warning("device_stop_not_implemented", device_name=device_name, error=str(e))
-        raise HTTPException(status_code=501, detail=str(e))
+        _raise_http_501_not_implemented(e, "device_stop_not_implemented", device_name=device_name)
     except Exception as e:
         logger.error("device_stop_error", device_name=device_name, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -794,8 +809,9 @@ async def access_nested_device(
         logger.error("coordination_check_failed", device_path=device_path, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
     except NotImplementedError as e:
-        logger.warning("nested_device_not_implemented", device_path=device_path, error=str(e))
-        raise HTTPException(status_code=501, detail=str(e))
+        _raise_http_501_not_implemented(
+            e, "nested_device_not_implemented", device_path=device_path
+        )
     except Exception as e:
         logger.error("nested_device_error", device_path=device_path, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -826,8 +842,9 @@ async def get_nested_device_value(
             "timestamp": datetime.now().isoformat(),
         }
     except NotImplementedError as e:
-        logger.warning("nested_device_read_not_implemented", device_path=device_path, error=str(e))
-        raise HTTPException(status_code=501, detail=str(e))
+        _raise_http_501_not_implemented(
+            e, "nested_device_read_not_implemented", device_path=device_path
+        )
     except Exception as e:
         logger.error("nested_device_read_error", device_path=device_path, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))

@@ -26,12 +26,13 @@ from ..models import (
 )
 from ._envelopes import (
     LockedWS,
-    WebSocketResponseTooLarge,
     heartbeat_loop,
     log_threadsafe_future_exceptions,
     send_error,
     send_event,
+    send_payload_or_size_error,
 )
+from .websocket_manager import SUB_TYPE_META
 
 if TYPE_CHECKING:
     from ..protocols import DeviceControl, PVMonitor
@@ -294,48 +295,30 @@ class DeviceWebSocketManager:
         for client_id in client_ids:
             await self._send_to_client(client_id, update)
 
-    async def _send_to_client(self, client_id: str, update: DeviceUpdate):
-        async with self._lock:
-            websocket = self._connections.get(client_id)
-
+    async def _send_to_client(
+        self,
+        client_id: str,
+        update: DeviceUpdate,
+        websocket: Optional[LockedWS] = None,
+    ):
+        if websocket is None:
+            async with self._lock:
+                websocket = self._connections.get(client_id)
         if not websocket:
             return
 
-        try:
-            await websocket.send_json(update.model_dump(mode="json"))
-        except TimeoutError:
-            logger.warning(
-                "device_websocket_send_timeout",
-                client_id=client_id,
-                device=update.device,
-                signal=update.signal,
-                timeout=self.settings.ws_send_timeout,
-            )
-        except WebSocketResponseTooLarge as e:
-            logger.warning(
-                "device_websocket_payload_too_large",
-                client_id=client_id,
-                device=update.device,
-                signal=update.signal,
-                error=str(e),
-            )
-            try:
-                await send_error(
-                    websocket,
-                    "payload exceeds size limit; update dropped",
-                    device=update.device,
-                    signal=update.signal,
-                )
-            except Exception as inner_err:  # noqa: BLE001
-                logger.debug(
-                    "device_websocket_send_error_envelope_failed",
-                    client_id=client_id,
-                    device=update.device,
-                    signal=update.signal,
-                    error=str(inner_err),
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.error("device_websocket_send_error", client_id=client_id, error=str(e))
+        await send_payload_or_size_error(
+            websocket,
+            update.model_dump(mode="json", exclude_none=True),
+            log_event="device_websocket_send",
+            log_fields={
+                "client_id": client_id,
+                "device": update.device,
+                "signal": update.signal,
+            },
+            oversize_message="payload exceeds size limit; update dropped",
+            error_envelope_fields={"device": update.device, "signal": update.signal},
+        )
 
     async def _send_current_values(self, client_id: str, device_name: str):
         async with self._lock:
@@ -362,31 +345,18 @@ class DeviceWebSocketManager:
                 read_access=True,
                 write_access=True,
             )
-            try:
-                await websocket.send_json(update.model_dump(mode="json"))
-            except WebSocketResponseTooLarge as e:
-                logger.warning(
-                    "send_current_value_too_large",
-                    device=device_name,
-                    signal=component,
-                    error=str(e),
-                )
-                try:
-                    await send_error(
-                        websocket,
-                        "payload exceeds size limit; current value dropped",
-                        device=device_name,
-                        signal=component,
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-            except Exception as e:  # noqa: BLE001
-                logger.error("send_current_value_error", error=str(e))
-
-            await self._send_meta_to_client(client_id, device_name, component, value)
+            await self._send_to_client(client_id, update, websocket=websocket)
+            await self._send_meta_to_client(
+                client_id, device_name, component, value, websocket=websocket
+            )
 
     async def _send_meta_to_client(
-        self, client_id: str, device_name: str, component: str, value
+        self,
+        client_id: str,
+        device_name: str,
+        component: str,
+        value,
+        websocket: Optional[LockedWS] = None,
     ) -> None:
         """Send a finch-compatible ``sub_type: meta`` envelope on the device socket.
 
@@ -396,16 +366,18 @@ class DeviceWebSocketManager:
         metadata. Without this message the UI's min/max/units/etc. silently
         stay empty.
 
-        Routes through ``LockedWS`` so size-cap-violation produces a
-        structured error envelope (same discipline as the value path).
+        Routes through the size-cap-aware send path. Meta is one-shot at
+        subscribe time, so generic-Exception failures also produce an
+        error envelope — losing it silently leaves the UI metadata-blind.
         """
-        async with self._lock:
-            websocket = self._connections.get(client_id)
+        if websocket is None:
+            async with self._lock:
+                websocket = self._connections.get(client_id)
         if not websocket:
             return
 
         meta_msg: dict = {
-            "sub_type": "meta",
+            "sub_type": SUB_TYPE_META,
             "device": device_name,
             "signal": component,
             "connected": value.connected,
@@ -420,63 +392,23 @@ class DeviceWebSocketManager:
             "upper_ctrl_limit": value.upper_ctrl_limit,
             "enum_strs": getattr(value, "enum_strs", None),
         }
-        try:
-            await websocket.send_json(meta_msg)
-        except TimeoutError:
-            logger.warning(
-                "device_meta_send_timeout",
-                client_id=client_id,
-                device=device_name,
-                signal=component,
-                timeout=self.settings.ws_send_timeout,
-            )
-        except WebSocketResponseTooLarge as e:
-            logger.warning(
-                "device_meta_too_large",
-                client_id=client_id,
-                device=device_name,
-                signal=component,
-                error=str(e),
-            )
-            try:
-                await send_error(
-                    websocket,
-                    "meta payload exceeds size limit; metadata dropped",
-                    device=device_name,
-                    signal=component,
-                    sub_type="meta",
-                )
-            except Exception as inner_err:  # noqa: BLE001
-                logger.debug(
-                    "device_meta_error_envelope_failed",
-                    client_id=client_id,
-                    device=device_name,
-                    error=str(inner_err),
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                "device_meta_send_error",
-                client_id=client_id,
-                device=device_name,
-                signal=component,
-                error=str(e),
-                exc_info=True,
-            )
-            try:
-                await send_error(
-                    websocket,
-                    f"meta send failed: {e}",
-                    device=device_name,
-                    signal=component,
-                    sub_type="meta",
-                )
-            except Exception as inner_err:  # noqa: BLE001
-                logger.debug(
-                    "device_meta_error_envelope_failed",
-                    client_id=client_id,
-                    device=device_name,
-                    error=str(inner_err),
-                )
+        await send_payload_or_size_error(
+            websocket,
+            meta_msg,
+            log_event="device_meta_send",
+            log_fields={
+                "client_id": client_id,
+                "device": device_name,
+                "signal": component,
+            },
+            oversize_message="meta payload exceeds size limit; metadata dropped",
+            error_envelope_fields={
+                "device": device_name,
+                "signal": component,
+                "sub_type": SUB_TYPE_META,
+            },
+            notify_on_generic_exception=True,
+        )
 
     async def handle_client(self, websocket: WebSocket):
         client_id, ws = await self.connect(websocket)

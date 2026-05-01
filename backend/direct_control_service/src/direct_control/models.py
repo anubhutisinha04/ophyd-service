@@ -9,6 +9,17 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
+def _serialize_unix_epoch(value: datetime) -> float:
+    """Serialize a datetime as unix epoch seconds for finch's WS contract.
+
+    finch does numeric arithmetic on ``timestamp`` (e.g.
+    ``TableDeviceController.tsx`` flash-row check). ISO strings would
+    silently coerce to NaN there. Shared by ``PVUpdate`` and
+    ``DeviceUpdate``.
+    """
+    return value.timestamp()
+
+
 # ===== Device Control Enums =====
 
 
@@ -235,12 +246,7 @@ class PVUpdate(BaseModel):
     units: Optional[str] = None
     precision: Optional[int] = None
 
-    @field_serializer("timestamp")
-    def _serialize_timestamp(self, value: datetime) -> float:
-        # Unix epoch seconds — finch does numeric arithmetic on this
-        # (e.g. TableDeviceController.tsx flash-row check). ISO strings
-        # silently coerce to NaN there.
-        return value.timestamp()
+    _serialize_timestamp = field_serializer("timestamp")(_serialize_unix_epoch)
 
     @classmethod
     def from_value(cls, pv_value: "PVValue", **overrides: Any) -> "PVUpdate":
@@ -447,9 +453,7 @@ class DeviceUpdate(BaseModel):
     read_access: Optional[bool] = True
     write_access: Optional[bool] = None
 
-    @field_serializer("timestamp")
-    def _serialize_timestamp(self, value: datetime) -> float:
-        return value.timestamp()
+    _serialize_timestamp = field_serializer("timestamp")(_serialize_unix_epoch)
 
 
 class DeviceInfo(BaseModel):
