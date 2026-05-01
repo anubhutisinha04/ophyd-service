@@ -190,8 +190,21 @@ class WebSocketManager:
                     ws = self._connections.get(client_id)
                 if ws:
                     await ws.send_json(meta_msg)
-            except Exception:  # noqa: BLE001
-                pass
+            except WebSocketResponseTooLarge:
+                logger.warning(
+                    "meta_message_too_large",
+                    client_id=client_id,
+                    pv_name=value.pv_name,
+                    sub_type="meta",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "meta_message_send_failed",
+                    client_id=client_id,
+                    pv_name=value.pv_name,
+                    sub_type="meta",
+                    error=str(exc),
+                )
 
         logger.info("client_subscribed", client_id=client_id, pv_count=len(pv_names))
 
