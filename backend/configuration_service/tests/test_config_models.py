@@ -311,3 +311,64 @@ class TestListDevicesByOphydClass:
         # Filters contradict (type=detector but class=EpicsMotor)
         result = registry.list_devices(device_label=DeviceLabel.DETECTOR, ophyd_class="EpicsMotor")
         assert result == []
+
+
+class TestPartialUpdateModelFieldParity:
+    """Hand-written *Update partials must mirror their canonical models.
+
+    Replaces the runtime ``make_partial_model`` factory we used to maintain.
+    The factory was mypy-opaque (variable-as-type), so we made the partials
+    explicit. This test catches the field-drift risk that motivated the
+    factory: if anyone adds a field to DeviceMetadata or DeviceInstantiationSpec
+    and forgets to mirror it in the *Update class, this test fails.
+    """
+
+    def test_device_metadata_update_fields_match(self):
+        from configuration_service.models import DeviceMetadata, DeviceMetadataUpdate
+
+        canonical = set(DeviceMetadata.model_fields.keys())
+        partial = set(DeviceMetadataUpdate.model_fields.keys())
+        missing = canonical - partial
+        extra = partial - canonical
+        assert not missing, f"DeviceMetadataUpdate is missing fields: {sorted(missing)}"
+        assert not extra, f"DeviceMetadataUpdate has unexpected fields: {sorted(extra)}"
+
+    def test_device_instantiation_spec_update_fields_match(self):
+        from configuration_service.models import (
+            DeviceInstantiationSpec,
+            DeviceInstantiationSpecUpdate,
+        )
+
+        canonical = set(DeviceInstantiationSpec.model_fields.keys())
+        partial = set(DeviceInstantiationSpecUpdate.model_fields.keys())
+        missing = canonical - partial
+        extra = partial - canonical
+        assert not missing, f"DeviceInstantiationSpecUpdate is missing fields: {sorted(missing)}"
+        assert not extra, f"DeviceInstantiationSpecUpdate has unexpected fields: {sorted(extra)}"
+
+    def test_all_partial_fields_are_optional(self):
+        """Every partial field must default to None and accept None."""
+        from configuration_service.models import DeviceMetadataUpdate, DeviceInstantiationSpecUpdate
+
+        # Empty construction must succeed (every field omitted)
+        DeviceMetadataUpdate()
+        DeviceInstantiationSpecUpdate()
+
+        for cls in (DeviceMetadataUpdate, DeviceInstantiationSpecUpdate):
+            for field_name, field_info in cls.model_fields.items():
+                assert field_info.default is None, (
+                    f"{cls.__name__}.{field_name} must default to None, got {field_info.default!r}"
+                )
+
+    def test_partial_exclude_unset_round_trip(self):
+        """exclude_unset must distinguish 'not sent' from 'sent as None'."""
+        from configuration_service.models import DeviceMetadataUpdate
+
+        sent_partial = DeviceMetadataUpdate.model_validate({"documentation": None})
+        dumped = sent_partial.model_dump(exclude_unset=True)
+        assert dumped == {"documentation": None}, (
+            "exclude_unset must include explicitly-sent None fields"
+        )
+
+        not_sent = DeviceMetadataUpdate.model_validate({})
+        assert not_sent.model_dump(exclude_unset=True) == {}
