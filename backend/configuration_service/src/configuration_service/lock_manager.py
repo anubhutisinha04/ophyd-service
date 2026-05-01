@@ -21,12 +21,15 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, List, Literal, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .models import DeviceRegistry
 
 logger = logging.getLogger(__name__)
+
+
+LockConflictReason = Literal["not_found", "spec_missing", "disabled", "already_locked"]
 
 
 class DeviceLockState:
@@ -78,12 +81,12 @@ class LockConflict:
     def __init__(
         self,
         device_name: str,
-        reason: str,
+        reason: LockConflictReason,
         locked_by_plan: Optional[str] = None,
         locked_at: Optional[datetime] = None,
     ):
         self.device_name = device_name
-        self.reason = reason
+        self.reason: LockConflictReason = reason
         self.locked_by_plan = locked_by_plan
         self.locked_at = locked_at
 

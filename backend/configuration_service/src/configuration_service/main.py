@@ -317,10 +317,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Expose DI containers on app.state so tests can introspect / mutate
+    # Expose state_container on app.state so tests can introspect / mutate
     # the in-memory registry. Production code goes through Depends().
     app.state.state_container = state_container
-    app.state.lock_manager_container = lock_manager_container
 
     # Dependency injection function
     def get_state() -> ConfigurationState:

@@ -361,28 +361,21 @@ class DeviceRegistryStore:
         happi_db: Dict[str, Any] = {}
         for row in cursor.fetchall():
             metadata = DeviceMetadata.model_validate_json(row["device_metadata"])
-            spec = None
-            if row["instantiation_spec"]:
-                spec = DeviceInstantiationSpec.model_validate_json(row["instantiation_spec"])
-
-            device_class = (
-                spec.device_class
-                if spec
-                else (
-                    f"{metadata.module}.{metadata.ophyd_class}"
-                    if metadata.module
-                    else metadata.ophyd_class
+            if not row["instantiation_spec"]:
+                raise RuntimeError(
+                    f"Registry inconsistency: device '{metadata.name}' has no "
+                    f"instantiation spec; cannot export"
                 )
-            )
+            spec = DeviceInstantiationSpec.model_validate_json(row["instantiation_spec"])
 
             entry: Dict[str, Any] = {
                 "_id": metadata.name,
                 "name": metadata.name,
-                "device_class": device_class,
-                "args": spec.args if spec else [],
-                "kwargs": spec.kwargs if spec else {"name": metadata.name},
-                "type": device_class,
-                "active": spec.active if spec else True,
+                "device_class": spec.device_class,
+                "args": spec.args,
+                "kwargs": spec.kwargs,
+                "type": spec.device_class,
+                "active": spec.active,
             }
 
             if metadata.beamline:
@@ -394,8 +387,7 @@ class DeviceRegistryStore:
             if metadata.documentation:
                 entry["documentation"] = metadata.documentation
 
-            # Add prefix from first arg if it looks like a PV prefix
-            if spec and spec.args and isinstance(spec.args[0], str) and ":" in str(spec.args[0]):
+            if spec.args and isinstance(spec.args[0], str) and ":" in str(spec.args[0]):
                 entry["prefix"] = spec.args[0]
 
             happi_db[metadata.name] = entry

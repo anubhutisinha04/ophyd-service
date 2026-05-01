@@ -480,7 +480,6 @@ class TestSpecMissingFailsHard:
 
     @staticmethod
     def _corrupt_spec(client, device_name: str) -> None:
-        """Pop the instantiation spec to simulate registry corruption."""
         state = client.app.state.state_container["state"]
         assert device_name in state.registry.devices, "precondition: device must exist"
         state.registry.instantiation_specs.pop(device_name, None)
