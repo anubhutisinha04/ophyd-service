@@ -404,6 +404,67 @@ class TestPVLookupEndpoint:
         assert resp1.json()["prefix"] == resp2.json()["prefix"]
         assert resp1.json()["sibling_pvs"] == resp2.json()["sibling_pvs"]
 
+    def test_lookup_dangling_device_reference_returns_500(self, client):
+        """M6 regression: PV referencing a non-existent device must fail loudly.
+
+        Pre-fix this returned 200 OK with sibling_pvs={} and count=0,
+        masking referential-integrity corruption as "no siblings".
+        """
+        state = client.app.state.state_container["state"]
+        # Delete the device but leave the PV → device_name link intact.
+        assert "sample_x" in state.registry.devices
+        del state.registry.devices["sample_x"]
+
+        resp = client.get("/api/v1/pvs/lookup?pv_name=BL01:SAMPLE:X.RBV")
+        assert resp.status_code == 500
+        detail = resp.json()["detail"]
+        assert "Registry inconsistency" in detail
+        assert "sample_x" in detail
+        assert "BL01:SAMPLE:X.RBV" in detail
+
+
+class TestCorsOriginsRespectsSettings:
+    """M2 regression: CORS middleware must honor `settings.cors_origins`.
+
+    Pre-fix `allow_origins` was hardcoded to ``["*"]`` regardless of
+    `CONFIG_CORS_ORIGINS`, so deployments that intended to lock down
+    cross-origin access silently allowed everything.
+    """
+
+    @staticmethod
+    def _client(tmp_path, allowed: list[str]) -> TestClient:
+        settings = Settings(
+            use_mock_data=True,
+            db_path=tmp_path / "test.db",
+            cors_origins=allowed,
+        )
+        app = create_app(settings)
+        return TestClient(app)
+
+    def test_allowed_origin_gets_cors_header(self, tmp_path):
+        with self._client(tmp_path, ["http://allowed.example"]) as client:
+            resp = client.get(
+                "/health",
+                headers={"Origin": "http://allowed.example"},
+            )
+            assert resp.status_code == 200
+            assert (
+                resp.headers.get("access-control-allow-origin") == "http://allowed.example"
+            )
+
+    def test_disallowed_origin_gets_no_cors_header(self, tmp_path):
+        with self._client(tmp_path, ["http://allowed.example"]) as client:
+            resp = client.get(
+                "/health",
+                headers={"Origin": "http://evil.example"},
+            )
+            # Endpoint still responds (CORS is browser-enforced), but the
+            # ACA-Origin header is absent so a browser would block the read.
+            assert resp.status_code == 200
+            assert "access-control-allow-origin" not in {
+                k.lower() for k in resp.headers.keys()
+            }
+
 
 class TestHealthEndpointDbProbe:
     """S5 regression: /health must surface DB unreachability as 503.

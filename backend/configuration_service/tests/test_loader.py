@@ -114,6 +114,77 @@ class TestHappiPartialFailure:
         assert "dormant" not in registry.devices
 
 
+class TestHappiTemplateResolution:
+    """M5 regression: unresolved `{{prefix}}` / `{{name}}` tokens fail loud."""
+
+    def test_missing_prefix_with_template_arg_is_a_failure(self, tmp_path):
+        profile = tmp_path / "profile"
+        # Entry has args=["{{prefix}}"] but no `prefix` field — pre-fix this
+        # would seed the registry with the literal "{{prefix}}" PV name.
+        bad = _good_happi_entry("orphan")
+        bad.pop("prefix")
+        _write_happi_profile(
+            profile,
+            {"good": _good_happi_entry("good"), "orphan": bad},
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            HappiProfileLoader(profile).load_registry()
+
+        msg = str(excinfo.value)
+        assert "Failed to load 1 of 2 happi entries" in msg
+        assert "orphan:" in msg
+        assert "{{prefix}}" in msg
+
+    def test_missing_prefix_without_template_still_loads(self, tmp_path):
+        # No `{{prefix}}` token in args/kwargs → no resolution needed → no raise.
+        profile = tmp_path / "profile"
+        no_template = {
+            "_id": "plain",
+            "active": True,
+            "args": ["TST:HARDCODED"],
+            "kwargs": {},
+            "type": "OphydItem",
+            "device_class": "ophyd.EpicsSignal",
+            "name": "plain",
+        }
+        _write_happi_profile(profile, {"plain": no_template})
+        registry = HappiProfileLoader(profile).load_registry()
+        assert "plain" in registry.devices
+
+
+class TestHappiRequiredFields:
+    """M4 regression: missing `device_class` is a hard failure, not "Unknown"."""
+
+    def test_missing_device_class_raises(self, tmp_path):
+        profile = tmp_path / "profile"
+        bad = _good_happi_entry("orphan")
+        bad.pop("device_class")
+        _write_happi_profile(
+            profile,
+            {"good": _good_happi_entry("good"), "orphan": bad},
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            HappiProfileLoader(profile).load_registry()
+
+        msg = str(excinfo.value)
+        assert "Failed to load 1 of 2 happi entries" in msg
+        assert "orphan:" in msg
+        assert "device_class" in msg
+
+    def test_empty_device_class_raises(self, tmp_path):
+        profile = tmp_path / "profile"
+        bad = _good_happi_entry("blank")
+        bad["device_class"] = ""
+        _write_happi_profile(profile, {"blank": bad})
+
+        with pytest.raises(RuntimeError) as excinfo:
+            HappiProfileLoader(profile).load_registry()
+
+        assert "device_class" in str(excinfo.value)
+
+
 class TestBitsPartialFailure:
     """BitsProfileLoader.load_registry raises RuntimeError if any entry fails."""
 

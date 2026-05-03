@@ -113,14 +113,25 @@ def _resolve_happi_templates(value: Any, prefix: Optional[str], name: Optional[s
     """
     Substitute happi's `{{prefix}}` and `{{name}}` placeholders.
 
-    Walks lists and dicts; leaves non-string scalars untouched. If `prefix`
-    is None and a `{{prefix}}` token is encountered, it stays literal — the
-    caller handles empty-pvs fallback.
+    Walks lists and dicts; leaves non-string scalars untouched. Raises
+    ValueError if a token is encountered with no substitution available
+    (prefix=None or name=None) — leaving the literal in place would seed
+    the registry with bogus PVs like ``{{prefix}}.RBV``.
     """
     if isinstance(value, str):
-        if prefix is not None:
+        if "{{prefix}}" in value:
+            if prefix is None:
+                raise ValueError(
+                    "unresolved {{prefix}} template in " + repr(value)
+                    + ": entry has no 'prefix' field"
+                )
             value = value.replace("{{prefix}}", prefix)
-        if name is not None:
+        if "{{name}}" in value:
+            if name is None:
+                raise ValueError(
+                    "unresolved {{name}} template in " + repr(value)
+                    + ": no name available"
+                )
             value = value.replace("{{name}}", name)
         return value
     if isinstance(value, list):
@@ -222,8 +233,10 @@ class HappiProfileLoader:
 
     def _process_entry(self, name: str, entry: Dict[str, Any], registry: DeviceRegistry) -> None:
         """Process a single happi database entry."""
-        device_class_path = entry.get("device_class", "")
-        class_name = device_class_path.rsplit(".", 1)[-1] if device_class_path else "Unknown"
+        device_class_path = entry.get("device_class") or ""
+        if not device_class_path:
+            raise ValueError("missing required 'device_class' field")
+        class_name = device_class_path.rsplit(".", 1)[-1]
         module_name = device_class_path.rsplit(".", 1)[0] if "." in device_class_path else None
 
         functional_group = entry.get("functional_group")
@@ -234,8 +247,7 @@ class HappiProfileLoader:
         # Resolve happi's {{prefix}} / {{name}} templates before deriving PVs
         # or building the instantiation spec. Happi's own loader does this in
         # happi.loader.from_container; we emulate it to stay faithful to the
-        # format. Without this, `args: ["{{prefix}}"]` collapses every entry
-        # onto the literal "{{prefix}}" PV name.
+        # format. Raises if a token has no substitute available.
         prefix = entry.get("prefix")
         args = _resolve_happi_templates(entry.get("args", []), prefix, name)
         kwargs = _resolve_happi_templates(entry.get("kwargs", {}), prefix, name)

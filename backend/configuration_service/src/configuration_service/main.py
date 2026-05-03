@@ -312,7 +312,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     # Add CORS middleware to allow UI access
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -1628,14 +1628,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         device = state.registry.get_device(device_name)
         if device is None:
-            return {
-                "pv_name": pv_name,
-                "device_name": device_name,
-                "device_label": None,
-                "prefix": None,
-                "sibling_pvs": {},
-                "count": 0,
-            }
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"Registry inconsistency: PV '{pv_name}' references device "
+                    f"'{device_name}' which has no metadata"
+                ),
+            )
 
         prefix = _get_device_prefix(device, state.registry)
 
