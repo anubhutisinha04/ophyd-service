@@ -18,7 +18,7 @@ import threading
 
 from .._array_metadata import describe_array
 from ..config import Settings
-from ..models import PVNotFoundError, PVUpdate, PVValue
+from ..models import PVNotFoundError, PVReadError, PVUpdate, PVValue
 
 # Set EPICS env vars before importing ophyd/pyepics
 # pyepics reads these at import time
@@ -360,18 +360,28 @@ class PVMonitorManager:
                 logger.warning("pv_destroy_failed", pv_name=pv_name, error=str(e))
 
     def get_value(self, pv_name: str) -> Optional[PVValue]:
+        """Return the latest cached value, or read once if subscribed but uncached.
+
+        Returns ``None`` only when ``pv_name`` is not in the subscription
+        cache at all — i.e. genuinely "we don't track this PV." Raises
+        ``PVReadError`` if the PV is subscribed (in ``_signals``) but
+        the on-demand read fails: that's a transient EPICS error, not a
+        not-found, and callers should map it to a 5xx (REST) or a
+        structured WS error rather than 404.
+        """
         with self._lock:
             if pv_name in self._latest_values:
                 return self._latest_values[pv_name]
 
             if pv_name in self._signals:
+                signal = self._signals[pv_name]
                 try:
-                    signal = self._signals[pv_name]
                     pv_value = self._signal_to_pv_value(pv_name, signal)
-                    self._latest_values[pv_name] = pv_value
-                    return pv_value
                 except Exception as e:
                     logger.warning("get_value_error", pv_name=pv_name, error=str(e))
+                    raise PVReadError(f"read failed for {pv_name}: {e}") from e
+                self._latest_values[pv_name] = pv_value
+                return pv_value
 
             return None
 

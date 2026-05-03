@@ -560,3 +560,53 @@ class TestM3StandalonePVStoreInitFailureFailsStartup:
         with TestClient(app) as c:
             assert c.get("/health").status_code == 200
         assert called["initialize"] is False
+
+
+class TestOpenApiExport:
+    """M13 regression: OpenAPI schema export failures must fail loud.
+
+    Pre-fix the helper logged a warning and continued, leaving the
+    frontend's codegen watcher consuming a stale schema with no signal
+    to operators. Now: if ``OPHYD_SERVICE_OPENAPI_EXPORT_PATH`` is set,
+    the export must succeed or startup raises.
+    """
+
+    def test_export_writes_file_when_env_set(self, tmp_path, monkeypatch):
+        from fastapi import FastAPI
+
+        from configuration_service.main import _maybe_export_openapi
+
+        target = tmp_path / "out" / "openapi.json"
+        monkeypatch.setenv("OPHYD_SERVICE_OPENAPI_EXPORT_PATH", str(target))
+        _maybe_export_openapi(FastAPI())
+        assert target.exists()
+        assert "openapi" in target.read_text()
+
+    def test_export_raises_on_unwritable_path(self, tmp_path, monkeypatch):
+        from fastapi import FastAPI
+
+        from configuration_service.main import _maybe_export_openapi
+
+        # Block parent dir creation by planting a file where the parent should be.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a dir")
+        target = blocker / "openapi.json"
+        monkeypatch.setenv("OPHYD_SERVICE_OPENAPI_EXPORT_PATH", str(target))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            _maybe_export_openapi(FastAPI())
+
+        msg = str(excinfo.value)
+        assert "OpenAPI schema export" in msg
+        assert "OPHYD_SERVICE_OPENAPI_EXPORT_PATH" in msg
+        assert str(target) in msg
+
+    def test_no_op_when_env_unset(self, tmp_path, monkeypatch):
+        from fastapi import FastAPI
+
+        from configuration_service.main import _maybe_export_openapi
+
+        monkeypatch.delenv("OPHYD_SERVICE_OPENAPI_EXPORT_PATH", raising=False)
+        # Should not raise and should not write anything.
+        _maybe_export_openapi(FastAPI())
+        assert list(tmp_path.iterdir()) == []

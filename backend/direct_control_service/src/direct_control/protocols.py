@@ -263,7 +263,14 @@ class PVMonitor(Protocol):
         ...
 
     def get_value(self, pv_name: str) -> Optional[PVValue]:
-        """Get current PV value, or None if not connected."""
+        """Get current PV value.
+
+        Returns ``None`` only when the PV is not in the subscription
+        cache (genuinely "we don't track it"). Raises ``PVReadError``
+        if the PV is subscribed but the read itself fails — callers
+        should distinguish so a transient EPICS error doesn't surface
+        as a 404 "not found".
+        """
         ...
 
     def get_buffer(self, pv_name: str) -> List[PVValue]:

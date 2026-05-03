@@ -1304,3 +1304,149 @@ async def test_m9_device_socket_error_handler_broadcasts_envelope_to_clients():
         assert msg["signal"] == "motor"
         assert msg["pv"] == "IOC:motor"
         assert "kaboom" in msg["error"]
+
+
+# ─── M10: get_value distinguishes "not subscribed" from "read error" ─────────
+#
+# Pre-fix: get_value swallowed read exceptions to None, indistinguishable
+# from "PV is not in our subscription cache". The REST endpoint mapped
+# both to HTTP 404 "PV not found", so a transient EPICS read failure
+# looked like the PV didn't exist. Now get_value raises PVReadError on
+# read failure; the REST layer maps it to 503 (transient).
+
+
+def test_m10_get_value_returns_none_when_pv_not_subscribed():
+    """Genuine "PV not in our cache" still returns None — caller maps to 404."""
+    from direct_control.config import Settings
+    from direct_control.monitoring.pv_monitor import PVMonitorManager
+
+    mgr = PVMonitorManager(Settings())
+    # No subscription, no signal, no cached value.
+    assert mgr.get_value("IOC:never_subscribed") is None
+
+
+def test_m10_get_value_raises_pv_read_error_when_signal_read_fails():
+    """Subscribed PV with broken read raises PVReadError, not None.
+
+    Pre-fix this returned None and the REST endpoint mapped it to 404
+    "not found" — wrong: the PV *is* known, EPICS just failed to read.
+    """
+    from direct_control.config import Settings
+    from direct_control.models import PVReadError
+    from direct_control.monitoring.pv_monitor import PVMonitorManager
+
+    mgr = PVMonitorManager(Settings())
+
+    class _FailingSignal:
+        """A stub ophyd signal whose read fails."""
+
+        connected = True
+
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("CA timeout")
+
+    # Plant a fake "subscribed" entry without going through CA.
+    mgr._signals["IOC:flaky"] = _FailingSignal()  # type: ignore[assignment]
+    # _latest_values is empty, so get_value falls through to the on-demand read.
+
+    with pytest.raises(PVReadError) as excinfo:
+        mgr.get_value("IOC:flaky")
+
+    assert "IOC:flaky" in str(excinfo.value)
+    assert "CA timeout" in str(excinfo.value)
+
+
+def test_m10_rest_get_monitored_pv_returns_503_on_read_error(client):
+    """REST `/api/v1/pvs/{pv}/value` returns 503, not 404, on PVReadError.
+
+    Drives the real endpoint with a pv_monitor whose `get_value` raises
+    PVReadError. Pre-fix the same condition surfaced as 404 "not found".
+    """
+    from direct_control.models import PVReadError
+    from direct_control.protocols import PVMonitor
+
+    class _FailingMonitor:
+        def subscribe(self, *_args, **_kwargs):
+            return None
+
+        def get_value(self, pv_name: str):
+            raise PVReadError(f"read failed for {pv_name}: simulated CA timeout")
+
+        # Methods unused on this code path — provide stubs for the
+        # protocol's runtime_checkable surface in case anything probes.
+        def unsubscribe(self, *_args, **_kwargs):
+            pass
+
+        def get_buffer(self, _pv_name):
+            return []
+
+        def is_connected(self, _pv_name):
+            return True
+
+        def get_connected_pvs(self):
+            return []
+
+        async def cleanup(self):
+            pass
+
+    from direct_control.main import app, get_pv_monitor
+
+    app.dependency_overrides[get_pv_monitor] = lambda: _FailingMonitor()
+    try:
+        resp = client.get("/api/v1/pvs/IOC:counter/value")
+    finally:
+        app.dependency_overrides.pop(get_pv_monitor, None)
+
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert "IOC:counter" in detail
+    assert "simulated CA timeout" in detail
+
+
+# ─── M13: OpenAPI export must fail loudly when explicitly requested ──────────
+#
+# Pre-fix the helper logged a warning and continued, leaving the
+# frontend's codegen watcher consuming a stale schema with no signal
+# to operators. Now: if `OPHYD_SERVICE_OPENAPI_EXPORT_PATH` is set,
+# the export must succeed or startup raises.
+
+
+def test_m13_openapi_export_writes_file_when_env_set(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+
+    from direct_control.main import _maybe_export_openapi
+
+    target = tmp_path / "out" / "openapi.json"
+    monkeypatch.setenv("OPHYD_SERVICE_OPENAPI_EXPORT_PATH", str(target))
+    _maybe_export_openapi(FastAPI())
+    assert target.exists()
+    assert "openapi" in target.read_text()
+
+
+def test_m13_openapi_export_raises_on_unwritable_path(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+
+    from direct_control.main import _maybe_export_openapi
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir")
+    target = blocker / "openapi.json"
+    monkeypatch.setenv("OPHYD_SERVICE_OPENAPI_EXPORT_PATH", str(target))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _maybe_export_openapi(FastAPI())
+
+    msg = str(excinfo.value)
+    assert "OpenAPI schema export" in msg
+    assert "OPHYD_SERVICE_OPENAPI_EXPORT_PATH" in msg
+    assert str(target) in msg
+
+
+def test_m13_openapi_export_no_op_when_env_unset(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+
+    from direct_control.main import _maybe_export_openapi
+
+    monkeypatch.delenv("OPHYD_SERVICE_OPENAPI_EXPORT_PATH", raising=False)
+    _maybe_export_openapi(FastAPI())
+    assert list(tmp_path.iterdir()) == []

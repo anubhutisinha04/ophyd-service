@@ -559,5 +559,15 @@ class PVNotFoundError(MonitoringError):
     """Raised when a requested PV cannot be found."""
 
 
+class PVReadError(MonitoringError):
+    """Raised when reading a subscribed PV fails (transient EPICS error).
+
+    Distinguishes "we tried to read and EPICS errored" from "PV is not
+    in our subscription cache" — pre-M10 both surfaced as ``None`` from
+    ``get_value`` and the REST layer mapped both to HTTP 404 "not
+    found", which was wrong for the read-failure case.
+    """
+
+
 class SubscriptionError(MonitoringError):
     """Raised when subscription management fails."""

@@ -76,6 +76,10 @@ def _maybe_export_openapi(app: FastAPI) -> None:
 
     Used by docker-compose to publish the schema onto the shared-schema volume
     for the frontend's codegen watcher. A no-op in local dev unless the env var is set.
+
+    Setting the env var is an explicit "I expect this to work" signal — if the
+    write fails (volume unwritable, parent missing, etc.) we fail startup rather
+    than let the frontend codegen silently consume a stale schema.
     """
     path = os.environ.get("OPHYD_SERVICE_OPENAPI_EXPORT_PATH")
     if not path:
@@ -86,8 +90,13 @@ def _maybe_export_openapi(app: FastAPI) -> None:
         out.write_text(json.dumps(app.openapi(), indent=2) + "\n")
         logger.info("openapi_schema_exported", path=str(out))
     except Exception as exc:
-        # Non-fatal: the service still starts if the shared volume is unwritable.
-        logger.warning("openapi_schema_export_failed", path=path, error=str(exc))
+        logger.error(
+            "openapi_schema_export_failed", path=path, error=str(exc), exc_info=True
+        )
+        raise RuntimeError(
+            f"OpenAPI schema export to {path} failed: {exc}. "
+            "Unset OPHYD_SERVICE_OPENAPI_EXPORT_PATH to skip export."
+        ) from exc
 
 
 _M = TypeVar("_M", bound=BaseModel)
