@@ -114,11 +114,7 @@ class DeviceWebSocketManager:
         # retry-on-next-subscribe behavior and SubscribeOutcome.failed_pvs;
         # cleared on last-client teardown.
         self._device_pv_failures: Dict[str, Dict[str, FailedPV]] = {}
-        # Per-device serialization lock, held across subscribe_device's gather
-        # + bookkeeping update so a second subscriber for the same device can't
-        # enter the "retry only failures" path while the first subscriber's
-        # gather is still in-flight (and _device_pv_failures hasn't been
-        # written yet). Cleared on last-client teardown.
+        # Per-device subscribe serialization. Cleared on last-client teardown.
         self._device_subscribe_locks: Dict[str, asyncio.Lock] = {}
         self._pv_callbacks: Dict[str, Callable[[PVUpdate], None]] = {}
         self._device_clients: Dict[str, Set[str]] = {}
@@ -262,6 +258,13 @@ class DeviceWebSocketManager:
         policy; see project_technical_debt.md for follow-ups like backoff
         and registry-drift handling).
 
+        Concurrent subscribes to the same device serialize on a per-device
+        lock so a second subscriber can't observe an empty failure set
+        while the first attempt's gather is still in-flight. Bookkeeping
+        is committed before the ``require_connection`` rollback decision
+        so partial recoveries persist for any other client still holding
+        the device.
+
         On failure returns ``SubscribeOutcome(ok=False, reason=...)`` with
         a categorized reason so callers surface actionable errors instead
         of collapsing all failures into "not found".
@@ -288,9 +291,10 @@ class DeviceWebSocketManager:
             return SubscribeOutcome(ok=False, reason=fetch_reason)
 
         async with self._lock:
-            device_lock = self._device_subscribe_locks.setdefault(
-                device_name, asyncio.Lock()
-            )
+            device_lock = self._device_subscribe_locks.get(device_name)
+            if device_lock is None:
+                device_lock = asyncio.Lock()
+                self._device_subscribe_locks[device_name] = device_lock
 
         async with device_lock:
             new_subscriptions: list[
@@ -368,17 +372,20 @@ class DeviceWebSocketManager:
                 await self.unsubscribe_device(client_id, device_name)
                 return SubscribeOutcome(ok=False, reason="not_connected")
 
-            await self._send_current_values(client_id, device_name)
+        # Send current values outside the per-device lock — bookkeeping is
+        # already committed and this is a read-only WS fan-out, no need to
+        # block the next subscriber on it.
+        await self._send_current_values(client_id, device_name)
 
-            logger.info(
-                "device_subscribed",
-                client_id=client_id,
-                device=device_name,
-                pvs=len(succeeded),
-                failed=len(failed),
-                still_broken=len(currently_failed),
-            )
-            return SubscribeOutcome(ok=True, failed_pvs=currently_failed)
+        logger.info(
+            "device_subscribed",
+            client_id=client_id,
+            device=device_name,
+            pvs=len(succeeded),
+            failed=len(failed),
+            still_broken=len(currently_failed),
+        )
+        return SubscribeOutcome(ok=True, failed_pvs=currently_failed)
 
     async def unsubscribe_device(self, client_id: str, device_name: str):
         released_pvs: Dict[str, str] = {}

@@ -1184,31 +1184,21 @@ async def test_c2_concurrent_subscribers_to_same_device_serialize():
     from direct_control.models import DeviceInfo
     from direct_control.monitoring.device_websocket_manager import DeviceWebSocketManager
     import asyncio as _asyncio
+    import threading
 
     settings = Settings()
 
-    # Gate A's gather on this event so we can deterministically arrange the
-    # race: A enters subscribe_device first, blocks inside subscribe(...) while
-    # B is dispatched, and only completes once we set the event.
-    a_subscribe_started = _asyncio.Event()
-    a_subscribe_release = _asyncio.Event()
+    # The first subscribe call (whichever client gets there first) blocks on
+    # `release` until the test fires it; the second client must serialize
+    # behind the per-device lock and observe the same failure set.
+    started = threading.Event()
+    release = threading.Event()
 
     class _PVMonitorStub:
-        def __init__(self):
-            self.calls: list[tuple[str, str]] = []  # (client, pv)
-
         def subscribe(self, pv_name, callback, *, on_error=None):
-            # Identify which client this subscribe is for via the closure
-            # captured in the callback's __qualname__ — but simpler: distinguish
-            # by who's currently holding the event. A holds it first.
-            if not a_subscribe_started.is_set():
-                a_subscribe_started.set()
-                # Spin-wait for the release event from the test thread.
-                # Using a sync busy-wait is fine here — pv_monitor.subscribe
-                # runs on a thread (asyncio.to_thread), not the event loop.
-                import time
-                while not a_subscribe_release.is_set():
-                    time.sleep(0.005)
+            if not started.is_set():
+                started.set()
+                release.wait(timeout=2.0)
             if "bad" in pv_name:
                 raise RuntimeError("CA timeout")
 
@@ -1245,7 +1235,7 @@ async def test_c2_concurrent_subscribers_to_same_device_serialize():
 
     # Kick off A; it will block inside the gather waiting for the release.
     a_task = _asyncio.create_task(mgr.subscribe_device("a", "dev"))
-    await a_subscribe_started.wait()
+    await _asyncio.to_thread(started.wait, 2.0)
 
     # While A is mid-gather, fire B. Without the per-device lock, B would
     # take the "subsequent subscriber" path, see an empty failure set, and
@@ -1259,7 +1249,7 @@ async def test_c2_concurrent_subscribers_to_same_device_serialize():
     )
 
     # Release A; both should now complete with consistent state.
-    a_subscribe_release.set()
+    release.set()
     outcome_a = await a_task
     outcome_b = await b_task
 
