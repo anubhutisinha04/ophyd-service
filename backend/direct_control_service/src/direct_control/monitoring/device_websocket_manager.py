@@ -110,6 +110,16 @@ class DeviceWebSocketManager:
         self._connections: Dict[str, LockedWS] = {}
         self._device_subscriptions: Dict[str, Set[str]] = {}
         self._device_pvs: Dict[str, Dict[str, str]] = {}
+        # Components whose CA subscribe failed, keyed by device. Drives the
+        # retry-on-next-subscribe behavior and SubscribeOutcome.failed_pvs;
+        # cleared on last-client teardown.
+        self._device_pv_failures: Dict[str, Dict[str, FailedPV]] = {}
+        # Per-device subscribe serialization. Locks are intentionally kept
+        # for the lifetime of the manager — popping them on last-client
+        # teardown races with any in-flight subscribe still holding the
+        # lock and lets the next subscriber create a fresh one, breaking
+        # serialization. Memory cost is bounded by total devices ever seen.
+        self._device_subscribe_locks: Dict[str, asyncio.Lock] = {}
         self._pv_callbacks: Dict[str, Callable[[PVUpdate], None]] = {}
         self._device_clients: Dict[str, Set[str]] = {}
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
@@ -224,6 +234,10 @@ class DeviceWebSocketManager:
                             callback = self._pv_callbacks.pop(pv_name, None)
                             if callback is not None:
                                 releases.append((pv_name, callback))
+                        self._device_pv_failures.pop(device_name, None)
+                        # Keep the per-device subscribe lock alive. Removing it here can
+                        # race with an in-flight subscribe and allow a new lock to be
+                        # created for the same device, breaking per-device serialization.
 
         if heartbeat and not heartbeat.done():
             heartbeat.cancel()
@@ -239,12 +253,23 @@ class DeviceWebSocketManager:
     ) -> SubscribeOutcome:
         """Subscribe a client to all PVs of the named device.
 
-        On success returns ``SubscribeOutcome(ok=True, ...)``. On the
-        partial-success path (some PVs failed CA subscribe but the device
-        as a whole was registered for the client), ``failed_pvs`` lists
-        each failure so the caller can emit a per-PV error envelope —
-        without those envelopes the client would have no way to know that
-        certain signals will be silent forever.
+        On success returns ``SubscribeOutcome(ok=True, failed_pvs=...)``.
+        ``failed_pvs`` reports *every* component of the device that is
+        currently broken — both newly-failed in this attempt and
+        previously-failed components that didn't recover on this
+        attempt's retry. That gives every subscriber the same visibility
+        into broken signals (pre-C2, only the first subscriber learned
+        about them) and turns each subscribe into an opportunistic retry
+        for previously-failed components (the next-subscribe-as-retry
+        policy; see project_technical_debt.md for follow-ups like backoff
+        and registry-drift handling).
+
+        Concurrent subscribes to the same device serialize on a per-device
+        lock so a second subscriber can't observe an empty failure set
+        while the first attempt's gather is still in-flight. Bookkeeping
+        is committed before the ``require_connection`` rollback decision
+        so partial recoveries persist for any other client still holding
+        the device.
 
         On failure returns ``SubscribeOutcome(ok=False, reason=...)`` with
         a categorized reason so callers surface actionable errors instead
@@ -271,57 +296,98 @@ class DeviceWebSocketManager:
         if device_info is None:
             return SubscribeOutcome(ok=False, reason=fetch_reason)
 
-        new_subscriptions: list[
-            tuple[str, str, Callable[[PVUpdate], None], Callable[[BaseException], None]]
-        ] = []
         async with self._lock:
-            self._device_subscriptions[client_id].add(device_name)
+            device_lock = self._device_subscribe_locks.get(device_name)
+            if device_lock is None:
+                device_lock = asyncio.Lock()
+                self._device_subscribe_locks[device_name] = device_lock
 
-            if device_name not in self._device_clients:
-                self._device_clients[device_name] = set()
-                self._device_pvs[device_name] = dict(device_info.pvs)
+        async with device_lock:
+            new_subscriptions: list[
+                tuple[str, str, Callable[[PVUpdate], None], Callable[[BaseException], None]]
+            ] = []
+            async with self._lock:
+                # The initial connections check ran before _fetch_device_info
+                # and before acquiring device_lock — both await points where
+                # disconnect(client_id) can race in. _connections and
+                # _device_subscriptions are popped together under self._lock
+                # in disconnect(), so re-checking _connections is sufficient.
+                if client_id not in self._connections:
+                    return SubscribeOutcome(ok=False, reason="unknown_client")
+                self._device_subscriptions[client_id].add(device_name)
 
-                for component, pv_name in device_info.pvs.items():
+                if device_name not in self._device_clients:
+                    self._device_clients[device_name] = set()
+                    components_to_attempt = list(device_info.pvs.items())
+                else:
+                    # Subsequent subscriber: retry only the currently-failing
+                    # components; live components share the existing CA monitor.
+                    components_to_attempt = [
+                        (entry.signal, entry.pv)
+                        for entry in self._device_pv_failures.get(device_name, {}).values()
+                    ]
+
+                for component, pv_name in components_to_attempt:
                     callback = self._make_device_callback(device_name, component)
                     on_error = self._make_device_error_handler(device_name, component, pv_name)
                     self._pv_callbacks[pv_name] = callback
                     new_subscriptions.append((component, pv_name, callback, on_error))
 
-            self._device_clients[device_name].add(client_id)
+                self._device_clients[device_name].add(client_id)
 
-        # Run blocking EPICS subscribes concurrently, outside the asyncio lock.
-        results = await asyncio.gather(
-            *(
-                asyncio.to_thread(
-                    self.pv_monitor.subscribe, pv_name, callback, on_error=on_error
-                )
-                for _, pv_name, callback, on_error in new_subscriptions
-            ),
-            return_exceptions=True,
-        )
-        succeeded: list[tuple[str, str, Callable[[PVUpdate], None]]] = []
-        failed: list[FailedPV] = []
-        for entry, result in zip(new_subscriptions, results):
-            component, pv_name, callback, _on_error = entry
-            if isinstance(result, Exception):
-                logger.error("device_pv_subscribe_failed", pv=pv_name, error=str(result))
-                failed.append(FailedPV(signal=component, pv=pv_name, error=str(result)))
-            else:
-                logger.debug(
-                    "subscribed_device_pv",
-                    device=device_name,
-                    component=component,
-                    pv=pv_name,
-                )
-                succeeded.append((component, pv_name, callback))
+            # Run blocking EPICS subscribes concurrently, outside the asyncio lock.
+            results = await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        self.pv_monitor.subscribe, pv_name, callback, on_error=on_error
+                    )
+                    for _, pv_name, callback, on_error in new_subscriptions
+                ),
+                return_exceptions=True,
+            )
+            succeeded: list[tuple[str, str, Callable[[PVUpdate], None]]] = []
+            failed: list[FailedPV] = []
+            for entry, result in zip(new_subscriptions, results):
+                component, pv_name, callback, _on_error = entry
+                if isinstance(result, Exception):
+                    logger.error("device_pv_subscribe_failed", pv=pv_name, error=str(result))
+                    failed.append(FailedPV(signal=component, pv=pv_name, error=str(result)))
+                else:
+                    logger.debug(
+                        "subscribed_device_pv",
+                        device=device_name,
+                        component=component,
+                        pv=pv_name,
+                    )
+                    succeeded.append((component, pv_name, callback))
 
-        if failed and require_connection:
-            await self._rollback_device_subscription(client_id, device_name, succeeded)
-            return SubscribeOutcome(ok=False, reason="not_connected")
+            # Update bookkeeping for both succeeded (incl. recoveries from a
+            # prior failure) and failed BEFORE deciding whether to roll this
+            # client back. Successful CA subscribes are device-scoped — other
+            # clients still subscribed to the device need to see recoveries
+            # in _device_pvs (so eventual teardown unsubscribes them) and out
+            # of _device_pv_failures (so they don't keep being retried).
+            async with self._lock:
+                device_pvs = self._device_pvs.setdefault(device_name, {})
+                failures = self._device_pv_failures.setdefault(device_name, {})
+                for component, pv_name, _callback in succeeded:
+                    device_pvs[component] = pv_name
+                    failures.pop(component, None)
+                for entry in failed:
+                    failures[entry.signal] = entry
+                    self._pv_callbacks.pop(entry.pv, None)
+                currently_failed = list(failures.values())
 
-        if failed:
-            await self._purge_failed_pvs(device_name, failed)
+            if failed and require_connection:
+                # require_connection means this client only wants the device
+                # if every PV subscribed cleanly. Drop just the client; the
+                # device's recovery state stays for any other subscribers.
+                await self.unsubscribe_device(client_id, device_name)
+                return SubscribeOutcome(ok=False, reason="not_connected")
 
+        # Send current values outside the per-device lock — bookkeeping is
+        # already committed and this is a read-only WS fan-out, no need to
+        # block the next subscriber on it.
         await self._send_current_values(client_id, device_name)
 
         logger.info(
@@ -330,61 +396,9 @@ class DeviceWebSocketManager:
             device=device_name,
             pvs=len(succeeded),
             failed=len(failed),
+            still_broken=len(currently_failed),
         )
-        return SubscribeOutcome(ok=True, failed_pvs=failed)
-
-    async def _purge_failed_pvs(
-        self, device_name: str, failed: list[FailedPV]
-    ) -> None:
-        """Drop bookkeeping for PVs whose CA subscribe failed.
-
-        The device-level subscription stays for PVs that did subscribe;
-        the failed components are removed from ``_device_pvs[device_name]``
-        and ``_pv_callbacks`` so a later unsubscribe can't try to tear
-        down a non-existent CA monitor, and so a future subscribe to the
-        same device can re-attempt them.
-        """
-        async with self._lock:
-            device_pvs = self._device_pvs.get(device_name)
-            for entry in failed:
-                self._pv_callbacks.pop(entry.pv, None)
-                if device_pvs is not None:
-                    device_pvs.pop(entry.signal, None)
-
-    async def _rollback_device_subscription(
-        self,
-        client_id: str,
-        device_name: str,
-        succeeded: list[tuple[str, str, Callable[[PVUpdate], None]]],
-    ) -> None:
-        """Undo a partially-completed device subscription on require_connection failure.
-
-        Removes the client from ``_device_subscriptions`` and
-        ``_device_clients``, drops ``_device_pvs[device_name]`` and the
-        whole device's ``_pv_callbacks`` if no other clients hold it,
-        then unsubscribes any PVs that did succeed (in parallel — same
-        gather pattern the forward path uses).
-        """
-        teardown: list[tuple[str, Callable[[PVUpdate], None]]] = []
-        async with self._lock:
-            self._device_subscriptions.get(client_id, set()).discard(device_name)
-            if device_name in self._device_clients:
-                self._device_clients[device_name].discard(client_id)
-                if not self._device_clients[device_name]:
-                    self._device_clients.pop(device_name, None)
-                    self._device_pvs.pop(device_name, None)
-                    for _, pv_name, callback in succeeded:
-                        self._pv_callbacks.pop(pv_name, None)
-                        teardown.append((pv_name, callback))
-
-        if teardown:
-            await asyncio.gather(
-                *(
-                    asyncio.to_thread(self.pv_monitor.unsubscribe, pv_name, callback)
-                    for pv_name, callback in teardown
-                ),
-                return_exceptions=True,
-            )
+        return SubscribeOutcome(ok=True, failed_pvs=currently_failed)
 
     async def unsubscribe_device(self, client_id: str, device_name: str):
         released_pvs: Dict[str, str] = {}
@@ -399,6 +413,9 @@ class DeviceWebSocketManager:
                 if not self._device_clients[device_name]:
                     self._device_clients.pop(device_name)
                     released_pvs = self._device_pvs.pop(device_name, {})
+                    self._device_pv_failures.pop(device_name, None)
+                    # _device_subscribe_locks intentionally left in place —
+                    # see __init__ comment.
 
         teardowns: list[tuple[str, Callable[[PVUpdate], None]]] = []
         for pv_name in released_pvs.values():
