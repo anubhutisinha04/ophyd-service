@@ -31,7 +31,9 @@ class Settings(BaseSettings):
     # direct_control talks to: it owns the device registry, the per-PV
     # validation gate, AND the device-lock state that the coordination
     # check reads (EE/queueserver writes the locks; we read them).
-    configuration_service_url: str = "http://localhost:8004"
+    # Required: no default so a forgotten DIRECT_CONTROL_CONFIGURATION_SERVICE_URL
+    # fails at startup instead of silently pointing at localhost:8004.
+    configuration_service_url: str
 
     # EPICS configuration
     epics_ca_addr_list: Optional[str] = None

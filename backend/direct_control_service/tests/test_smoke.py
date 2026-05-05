@@ -17,8 +17,10 @@ def test_health_endpoint_returns_200(client):
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] in ("healthy", "degraded")
-    # Mock coordination reports available → healthy.
+    # Mock coordination reports available → healthy. (Pre-S5 the unhealthy
+    # branch was "degraded"; S5 also flips status code to 503 in that case
+    # so this code path is the only one that yields 200.)
+    assert body["status"] == "healthy"
     assert body["coordination_service_available"] is True
 
 

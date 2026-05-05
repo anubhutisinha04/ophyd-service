@@ -28,6 +28,7 @@ from .models import (
     PVSetResponse,
     PVUpdate,
     PVValue,
+    ServiceAvailability,
 )
 
 
@@ -40,7 +41,9 @@ class CoordinationService(Protocol):
     available for direct control (not locked by an active plan).
 
     Implementations:
-    - CoordinationClient: HTTP client to Experiment Execution Service
+    - CoordinationClient: HTTP client to configuration_service (reads
+      device-lock state via ``GET /api/v1/devices/{name}/status``;
+      EE/queueserver write the locks via POST /devices/lock)
     - MockCoordinationClient: Always returns available (for testing)
     """
 
@@ -48,9 +51,10 @@ class CoordinationService(Protocol):
         """
         Check if device is available for direct control.
 
-        This is the CRITICAL A4 coordination check. It queries SVC-001
-        (Experiment Execution Service) to determine if the device is
-        currently locked by an executing plan.
+        This is the CRITICAL A4 coordination check. It reads the device-lock
+        state from configuration_service to determine whether the device is
+        currently locked by an executing plan. direct_control NEVER talks
+        to EE / queueserver directly — see feedback_direct_control_no_ee_polling.
 
         Args:
             device_name: Name of the device to check
@@ -63,12 +67,15 @@ class CoordinationService(Protocol):
         """
         ...
 
-    async def is_service_available(self) -> bool:
+    async def is_service_available(self) -> ServiceAvailability:
         """
         Check if coordination service is reachable.
 
         Returns:
-            True if service is available
+            ServiceAvailability with `available` flag and, when not
+            available, a `detail` string describing why (timeout,
+            connection error, non-2xx response). Pre-S6 this returned a
+            bare bool that hid the failure mode.
         """
         ...
 
@@ -209,9 +216,9 @@ class MockCoordinationClient:
                 timestamp=datetime.now(),
             )
 
-    async def is_service_available(self) -> bool:
+    async def is_service_available(self) -> ServiceAvailability:
         """Always available for testing."""
-        return True
+        return ServiceAvailability(available=True)
 
     async def cleanup(self) -> None:
         """No cleanup needed for mock."""
@@ -236,9 +243,15 @@ class PVMonitor(Protocol):
         pv_name: str,
         callback: Optional[Callable[[PVUpdate], None]] = None,
         read_only: bool = False,
+        on_error: Optional[Callable[[BaseException], None]] = None,
     ) -> None:
         """
         Subscribe to PV updates.
+
+        ``on_error`` (when supplied) is invoked synchronously on the CA
+        listener thread when ``callback`` raises during a value or meta
+        dispatch — letting the subscriber translate the failure into a
+        user-visible signal instead of swallowing it.
 
         Raises:
             PVNotFoundError: If PV cannot be connected.
@@ -250,7 +263,14 @@ class PVMonitor(Protocol):
         ...
 
     def get_value(self, pv_name: str) -> Optional[PVValue]:
-        """Get current PV value, or None if not connected."""
+        """Get current PV value.
+
+        Returns ``None`` only when the PV is not in the subscription
+        cache (genuinely "we don't track it"). Raises ``PVReadError``
+        if the PV is subscribed but the read itself fails — callers
+        should distinguish so a transient EPICS error doesn't surface
+        as a 404 "not found".
+        """
         ...
 
     def get_buffer(self, pv_name: str) -> List[PVValue]:
@@ -285,10 +305,14 @@ class MockPVMonitor:
         pv_name: str,
         callback: Optional[Callable[[PVUpdate], None]] = None,
         read_only: bool = False,
+        on_error: Optional[Callable[[BaseException], None]] = None,
     ) -> None:
         self._subscribed[pv_name] = True
         if callback:
             self._callbacks.setdefault(pv_name, []).append(callback)
+        # Mock-PV access bits are explicit so the test path doesn't depend
+        # on PVValue's locked-out defaults (post-M14). A mock with no access
+        # would silently break tests that assumed permissive bits.
         self._values[pv_name] = PVValue(
             pv_name=pv_name,
             value=0.0,
@@ -296,6 +320,8 @@ class MockPVMonitor:
             status=0,
             severity=0,
             connected=True,
+            read_access=True,
+            write_access=not read_only,
         )
 
     def unsubscribe(self, pv_name: str, callback: Optional[Callable] = None) -> None:
@@ -332,6 +358,12 @@ class MockPVMonitor:
         if pv_name not in self._subscribed:
             return
         now = datetime.now()
+        # Preserve the access bits that ``subscribe`` recorded on this PV
+        # so set_mock_value updates don't silently flip the mock's
+        # advertised access (post-M14 model defaults are locked-out).
+        prior = self._values.get(pv_name)
+        read_access = prior.read_access if prior is not None else True
+        write_access = prior.write_access if prior is not None else True
         self._values[pv_name] = PVValue(
             pv_name=pv_name,
             value=value,
@@ -339,14 +371,18 @@ class MockPVMonitor:
             status=0,
             severity=0,
             connected=True,
+            read_access=read_access,
+            write_access=write_access,
         )
         update = PVUpdate(
-            pv_name=pv_name,
+            pv=pv_name,
             value=value,
             timestamp=now,
             status=0,
             severity=0,
             connected=True,
+            read_access=read_access,
+            write_access=write_access,
         )
         for cb in self._callbacks.get(pv_name, []):
             try:

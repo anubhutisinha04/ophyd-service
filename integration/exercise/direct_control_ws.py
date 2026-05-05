@@ -22,7 +22,7 @@ backend/direct_control_service/src/direct_control/monitoring/):
     Server → Client:  {"type": "subscribed",   "pv_names": [...], ...}
                       {"type": "unsubscribed", "pv_names": [...], ...}
                       {"type": "pong" | "heartbeat" | "error", ...}
-                      {"event_type": "pv_update", "pv_name": "...", ...}
+                      {"event_type": "pv_update", "pv": "...", ...}
 
   device-socket
     Client → Server:  {"action": "subscribe",   "device": "<name>"}
@@ -119,7 +119,7 @@ def is_event(msg: dict, type_: str) -> bool:
 def is_pv_update(msg: dict, pv_name: str | None = None) -> bool:
     if msg.get("event_type") != "pv_update":
         return False
-    return pv_name is None or msg.get("pv_name") == pv_name
+    return pv_name is None or msg.get("pv") == pv_name
 
 
 def is_device_update(msg: dict, device: str | None = None) -> bool:

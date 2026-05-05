@@ -34,6 +34,36 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+# Cap the number of failures that get embedded in the RuntimeError message.
+# A registry of 10k broken entries would otherwise build a multi-MB string
+# that gets re-formatted by every layer that prints the traceback. The full
+# list still goes to the structured logger above the raise.
+_MAX_FAILURES_IN_RAISE = 20
+
+
+def _raise_if_partial_load(failures: List[str], total: int, source: str) -> None:
+    """Refuse to seed from a partial registry.
+
+    Pre-2026-05-02 the loader logged per-entry failures then announced a
+    successful "Loaded N devices", silently masking dropped entries. See
+    feedback_no_silent_fallbacks.
+    """
+    if not failures:
+        return
+    shown = failures[:_MAX_FAILURES_IN_RAISE]
+    suffix = (
+        f"; ...and {len(failures) - _MAX_FAILURES_IN_RAISE} more"
+        if len(failures) > _MAX_FAILURES_IN_RAISE
+        else ""
+    )
+    raise RuntimeError(
+        f"Failed to load {len(failures)} of {total} {source} entries; "
+        f"refusing to seed registry from partial data. Errors: "
+        + "; ".join(shown)
+        + suffix
+    )
+
+
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
@@ -83,14 +113,25 @@ def _resolve_happi_templates(value: Any, prefix: Optional[str], name: Optional[s
     """
     Substitute happi's `{{prefix}}` and `{{name}}` placeholders.
 
-    Walks lists and dicts; leaves non-string scalars untouched. If `prefix`
-    is None and a `{{prefix}}` token is encountered, it stays literal — the
-    caller handles empty-pvs fallback.
+    Walks lists and dicts; leaves non-string scalars untouched. Raises
+    ValueError if a token is encountered with no substitution available
+    (prefix=None or name=None) — leaving the literal in place would seed
+    the registry with bogus PVs like ``{{prefix}}.RBV``.
     """
     if isinstance(value, str):
-        if prefix is not None:
+        if "{{prefix}}" in value:
+            if prefix is None:
+                raise ValueError(
+                    "unresolved {{prefix}} template in {!r}: entry has no 'prefix' field".format(
+                        value
+                    )
+                )
             value = value.replace("{{prefix}}", prefix)
-        if name is not None:
+        if "{{name}}" in value:
+            if name is None:
+                raise ValueError(
+                    "unresolved {{name}} template in {!r}: no name available".format(value)
+                )
             value = value.replace("{{name}}", name)
         return value
     if isinstance(value, list):
@@ -165,6 +206,7 @@ class HappiProfileLoader:
         """Load device registry from happi database JSON."""
         logger.info(f"Loading happi device registry from {self.db_path}")
         registry = DeviceRegistry()
+        failures: List[str] = []
 
         with open(self.db_path) as f:
             db = json.load(f)
@@ -178,6 +220,9 @@ class HappiProfileLoader:
                 self._process_entry(name, entry, registry)
             except Exception as e:
                 logger.error(f"Failed to process happi device {name}: {e}")
+                failures.append(f"{name}: {e}")
+
+        _raise_if_partial_load(failures, len(db), "happi")
 
         logger.info(
             f"Loaded {len(registry.devices)} devices, "
@@ -188,8 +233,10 @@ class HappiProfileLoader:
 
     def _process_entry(self, name: str, entry: Dict[str, Any], registry: DeviceRegistry) -> None:
         """Process a single happi database entry."""
-        device_class_path = entry.get("device_class", "")
-        class_name = device_class_path.rsplit(".", 1)[-1] if device_class_path else "Unknown"
+        device_class_path = entry.get("device_class") or ""
+        if not device_class_path:
+            raise ValueError("missing required 'device_class' field")
+        class_name = device_class_path.rsplit(".", 1)[-1]
         module_name = device_class_path.rsplit(".", 1)[0] if "." in device_class_path else None
 
         functional_group = entry.get("functional_group")
@@ -200,8 +247,7 @@ class HappiProfileLoader:
         # Resolve happi's {{prefix}} / {{name}} templates before deriving PVs
         # or building the instantiation spec. Happi's own loader does this in
         # happi.loader.from_container; we emulate it to stay faithful to the
-        # format. Without this, `args: ["{{prefix}}"]` collapses every entry
-        # onto the literal "{{prefix}}" PV name.
+        # format. Raises if a token has no substitute available.
         prefix = entry.get("prefix")
         args = _resolve_happi_templates(entry.get("args", []), prefix, name)
         kwargs = _resolve_happi_templates(entry.get("kwargs", {}), prefix, name)
@@ -293,6 +339,8 @@ class BitsProfileLoader:
         """Load device registry from BITS devices.yml."""
         logger.info(f"Loading BITS device registry from {self.devices_path}")
         registry = DeviceRegistry()
+        failures: List[str] = []
+        total_entries = 0
 
         with open(self.devices_path) as f:
             devices_config = yaml.safe_load(f) or {}
@@ -301,19 +349,29 @@ class BitsProfileLoader:
 
         for module_path, device_entries in devices_config.items():
             if not isinstance(device_entries, list):
-                logger.warning(f"Invalid devices entry for {module_path}")
+                logger.error(f"Invalid devices entry for {module_path}")
+                failures.append(f"{module_path}: not a list of device entries")
+                # Count the malformed module as one entry so the aggregate
+                # "Failed to load N of M" message is sensible — otherwise a
+                # broken module-level value reports failures out of zero.
+                total_entries += 1
                 continue
 
             for entry in device_entries:
+                total_entries += 1
                 name = entry.get("name")
                 if not name:
-                    logger.warning(f"Device entry missing name in {module_path}")
+                    logger.error(f"Device entry missing name in {module_path}")
+                    failures.append(f"{module_path}: device entry missing required 'name' field")
                     continue
 
                 try:
                     self._process_entry(name, entry, module_path, beamline, registry)
                 except Exception as e:
                     logger.error(f"Failed to process BITS device {name}: {e}")
+                    failures.append(f"{name}: {e}")
+
+        _raise_if_partial_load(failures, total_entries, "BITS")
 
         logger.info(
             f"Loaded {len(registry.devices)} devices, "

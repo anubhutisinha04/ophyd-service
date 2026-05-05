@@ -15,7 +15,7 @@ override the coordination client per-test to return DISABLED / LOCKED.
 from datetime import datetime
 from typing import Optional
 
-from direct_control.models import CoordinationStatus, DeviceLockStatus
+from direct_control.models import CoordinationStatus, DeviceLockStatus, ServiceAvailability
 
 
 class _CoordStub:
@@ -37,8 +37,8 @@ class _CoordStub:
             timestamp=datetime.now(),
         )
 
-    async def is_service_available(self) -> bool:
-        return True
+    async def is_service_available(self) -> ServiceAvailability:
+        return ServiceAvailability(available=True)
 
     async def cleanup(self) -> None:
         return None

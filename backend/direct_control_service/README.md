@@ -5,7 +5,7 @@ monitoring via WebSocket, running on a single port.
 
 ## Features
 
-- **A4 Device Coordination**: Checks with experiment_execution before any write; returns `423 Locked` if a plan holds the device.
+- **A4 Device Coordination**: Checks the device-lock state in `configuration_service` before any write; returns `423 Locked` if a plan holds the device.
 - **PV Control**: Low-fidelity channel for EPICS PV set/get (fire-and-forget or put-completion).
 - **Device Method Execution**: High-fidelity channel for Ophyd device methods, always confirmed.
 - **Nested Device Access**: Navigate device component hierarchies (ophyd-websocket compatible).
@@ -25,11 +25,8 @@ pip install -e .
 ### Running the Service
 
 ```bash
-# Basic startup (port 8003)
-bluesky-direct-control
-
-# With custom experiment_execution URL
-export DIRECT_CONTROL_EXPERIMENT_EXECUTION_URL=http://localhost:8001
+# Basic startup (port 8003) — DIRECT_CONTROL_CONFIGURATION_SERVICE_URL is required.
+export DIRECT_CONTROL_CONFIGURATION_SERVICE_URL=http://localhost:8004
 bluesky-direct-control
 
 # With EPICS configuration
@@ -74,7 +71,7 @@ All settings use the `DIRECT_CONTROL_` environment variable prefix.
 | `DIRECT_CONTROL_HOST` | `0.0.0.0` | Bind address |
 | `DIRECT_CONTROL_PORT` | `8003` | HTTP port |
 | `DIRECT_CONTROL_LOG_LEVEL` | `info` | Log level |
-| `DIRECT_CONTROL_CONFIGURATION_SERVICE_URL` | `http://localhost:8004` | Configuration Service URL (registry + lock state) |
+| `DIRECT_CONTROL_CONFIGURATION_SERVICE_URL` | **required** | Configuration Service URL (registry + lock state) |
 | `DIRECT_CONTROL_COORDINATION_CHECK_ENABLED` | `true` | Enable A4 coordination checks |
 | `DIRECT_CONTROL_COORDINATION_TIMEOUT` | `5.0` | Coordination check timeout (s) |
 | `DIRECT_CONTROL_COMMAND_TIMEOUT` | `30.0` | Command execution timeout (s) |
@@ -390,8 +387,9 @@ port 5064 for the duration of the test session; if port 5064 is already
 in use, the fixture assumes an IOC is already running and reuses it.
 `tests/test_ioc.py` defines the PV set (`IOC:m1`, `IOC:counter`, `IOC:wf1`,
 `IOC:shutter`). Coordination and registry validation are stubbed out in
-`conftest.py` so tests don't require the real experiment_execution or
-configuration services.
+`conftest.py` so tests don't require a real `configuration_service` instance
+(coordination state lives in `configuration_service`; direct_control reads
+device-lock status from there).
 
 ## Architecture
 
@@ -415,3 +413,43 @@ src/direct_control/
 Writes through WebSocket are never direct EPICS writes — they always go
 through `DeviceControl.set_pv` / `.execute_device_method` / `.access_nested_device`,
 which perform the coordination check.
+
+## Error Handling & Recovery
+
+### HTTP Status Codes
+
+| Status | Meaning | Common Causes |
+|--------|---------|---------------|
+| 200 OK | Operation succeeded | N/A |
+| 400 Bad Request | Invalid request format or value | Malformed JSON, invalid device/PV name |
+| 404 Not Found | Device or PV not registered | Typo in device/PV name, device not in registry |
+| 406 Not Acceptable | Unsupported accept header | Client requested unsupported media type |
+| 423 Locked | Device is locked by coordination | Experiment running, plan holds the device |
+| 500 Internal Server Error | Service error | EPICS unavailable, configuration error |
+| 503 Service Unavailable | Service unhealthy or coordination check failed | Configuration service down, service initializing or shutting down |
+
+### Timeout Behavior
+
+- **Command timeout** (30s default): Long-running ophyd methods or EPICS operations timeout after 30s
+  - Set via `DIRECT_CONTROL_COMMAND_TIMEOUT`
+- **EPICS CA timeout** (5s typical): Individual channel access operations timeout; not user-configurable
+- **Coordination check timeout** (5s default): timeout for the HTTP read of device-lock state from `configuration_service`; configurable via `DIRECT_CONTROL_COORDINATION_TIMEOUT`
+
+If a timeout occurs, the PV/device may be in an indeterminate state. Query the device state endpoint to verify.
+
+### Recovery Procedures
+
+**Service won't start:**
+- Check logs: `docker compose logs direct_control_service`
+- Verify `DIRECT_CONTROL_CONFIGURATION_SERVICE_URL` points to a running configuration_service
+- Verify EPICS network connectivity: `caget` from host should work
+
+**Health check failing:**
+- Check `/health` endpoint: `curl http://localhost:8003/health`
+- If coordination_service_available is false, check coordination service status
+- Service reports `status="unhealthy"` (HTTP 503) when configuration_service is unreachable; reads against already-subscribed PVs may still work, but coordination-checked operations will fail until it recovers
+
+**Devices are locked:**
+- Inspect a specific device's lock state: `curl http://localhost:8004/api/v1/devices/{name}/status`
+- Wait for the holding plan to complete (the lock-holding service — typically queueserver — releases it on env-close)
+- Return 423 is expected during active experiments

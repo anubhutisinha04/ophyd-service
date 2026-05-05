@@ -367,6 +367,29 @@ class TestDeviceRegistryStore:
 
         store.close()
 
+    def test_export_happi_spec_missing_raises(self, tmp_db):
+        """Registry corruption (device row with NULL spec) must fail export, not synthesize defaults.
+
+        Same semantic as the S3 status endpoints — silent fallback would emit a
+        happi entry with active=True and empty args, hiding the corruption.
+        """
+        store = DeviceRegistryStore(tmp_db)
+        store.initialize()
+
+        registry = DeviceRegistry()
+        metadata = DeviceMetadata(
+            name="orphan_device",
+            device_label=DeviceLabel.MOTOR,
+            ophyd_class="EpicsMotor",
+        )
+        registry.add_device(metadata, instantiation_spec=None)
+        store.seed_from_registry(registry)
+
+        with pytest.raises(RuntimeError, match="Registry inconsistency.*orphan_device"):
+            store.export_happi()
+
+        store.close()
+
     def test_data_survives_reopen(self, tmp_db):
         """Test that data persists across store reopens (simulated restart)."""
         store1 = DeviceRegistryStore(tmp_db)

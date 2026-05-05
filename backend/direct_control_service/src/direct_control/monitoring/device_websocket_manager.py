@@ -9,11 +9,12 @@ Write/stop operations are routed through DeviceControl for coordination checks.
 import asyncio
 import uuid
 from functools import partial
-from typing import Callable, Dict, Optional, Set, TYPE_CHECKING
+from typing import Callable, Dict, List, Literal, Optional, Set, TYPE_CHECKING
 
 import httpx
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ConfigDict
 
 from ..config import Settings
 from ..models import (
@@ -24,14 +25,52 @@ from ..models import (
     PVUpdate,
     WebSocketAction,
 )
+
+
+FetchDeviceReason = Literal["not_found", "upstream_error", "upstream_unreachable"]
+SubscribeReason = Literal[
+    "not_found",
+    "upstream_error",
+    "upstream_unreachable",
+    "unknown_client",
+    "cap_exceeded",
+    "not_connected",
+]
+
+
+class FailedPV(BaseModel):
+    """A PV whose CA subscribe raised during ``subscribe_device``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    signal: str
+    pv: str
+    error: str
+
+
+class SubscribeOutcome(BaseModel):
+    """Result of ``DeviceWebSocketManager.subscribe_device``.
+
+    ``failed_pvs`` is populated only on the partial-success path
+    (``ok=True`` with ``require_connection=False``). On rollback or any
+    other failure it is empty.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ok: bool
+    reason: Optional[SubscribeReason] = None
+    failed_pvs: List[FailedPV] = []
 from ._envelopes import (
     LockedWS,
-    WebSocketResponseTooLarge,
+    fanout_error,
     heartbeat_loop,
     log_threadsafe_future_exceptions,
     send_error,
     send_event,
+    send_payload_or_size_error,
 )
+from .websocket_manager import SUB_TYPE_META
 
 if TYPE_CHECKING:
     from ..protocols import DeviceControl, PVMonitor
@@ -44,6 +83,9 @@ logger = structlog.get_logger(__name__)
 # doesn't allocate a new closure per fired update.
 _DEVICE_BROADCAST_DONE_CB = partial(
     log_threadsafe_future_exceptions, where="device_broadcast_update"
+)
+_DEVICE_CALLBACK_ERROR_DONE_CB = partial(
+    log_threadsafe_future_exceptions, where="device_callback_error"
 )
 
 
@@ -95,30 +137,53 @@ class DeviceWebSocketManager:
             except Exception:  # noqa: BLE001
                 pass
 
-    async def _fetch_device_info(self, device_name: str) -> Optional[DeviceInfo]:
+    async def _fetch_device_info(
+        self, device_name: str
+    ) -> tuple[Optional[DeviceInfo], Optional[FetchDeviceReason]]:
+        """Fetch device info from configuration_service.
+
+        Returns (info, reason). On success: (DeviceInfo, None). On failure
+        the reason distinguishes three classes so the caller can surface
+        an actionable WS error rather than a misleading "not_found":
+          - "not_found"           — 404 (the device really isn't registered)
+          - "upstream_error"      — non-2xx, non-404 (config_service is
+                                    reachable but rejected/erred)
+          - "upstream_unreachable" — network/timeout/connection failure
+        """
         config_url = self.settings.configuration_service_url
         try:
             client = await self._get_http_client()
             response = await client.get(f"{config_url}/api/v1/devices/{device_name}")
-            if response.status_code == 200:
-                data = response.json()
-                return DeviceInfo(
+        except httpx.RequestError as exc:
+            logger.error(
+                "device_info_unreachable", device_name=device_name, error=str(exc)
+            )
+            return None, "upstream_unreachable"
+
+        if response.status_code == 200:
+            data = response.json()
+            return (
+                DeviceInfo(
                     name=data.get("name", device_name),
                     device_type=data.get("device_type", "unknown"),
                     ophyd_class=data.get("ophyd_class"),
                     pvs=data.get("pvs", {}),
                     is_movable=data.get("is_movable", False),
                     is_readable=data.get("is_readable", True),
-                )
-            logger.warning(
-                "device_info_fetch_failed",
-                device_name=device_name,
-                status=response.status_code,
+                ),
+                None,
             )
-            return None
-        except Exception as e:  # noqa: BLE001
-            logger.error("device_info_fetch_error", device_name=device_name, error=str(e))
-            return None
+
+        if response.status_code == 404:
+            logger.info("device_info_not_found", device_name=device_name)
+            return None, "not_found"
+
+        logger.warning(
+            "device_info_upstream_error",
+            device_name=device_name,
+            status=response.status_code,
+        )
+        return None, "upstream_error"
 
     async def connect(self, websocket: WebSocket) -> tuple[str, LockedWS]:
         """Accept the WS, wrap it for serialized sends, and register the client."""
@@ -171,20 +236,28 @@ class DeviceWebSocketManager:
 
     async def subscribe_device(
         self, client_id: str, device_name: str, require_connection: bool = False
-    ) -> tuple[bool, Optional[str]]:
-        """
-        Returns (ok, reason). `reason` is one of None, 'unknown_client',
-        'cap_exceeded', 'not_found', 'not_connected' so callers can surface
-        an accurate WS error instead of collapsing everything into "not found".
+    ) -> SubscribeOutcome:
+        """Subscribe a client to all PVs of the named device.
+
+        On success returns ``SubscribeOutcome(ok=True, ...)``. On the
+        partial-success path (some PVs failed CA subscribe but the device
+        as a whole was registered for the client), ``failed_pvs`` lists
+        each failure so the caller can emit a per-PV error envelope —
+        without those envelopes the client would have no way to know that
+        certain signals will be silent forever.
+
+        On failure returns ``SubscribeOutcome(ok=False, reason=...)`` with
+        a categorized reason so callers surface actionable errors instead
+        of collapsing all failures into "not found".
         """
         cap = self.settings.max_subscriptions_per_client
         async with self._lock:
             if client_id not in self._connections:
                 logger.warning("subscribe_unknown_client", client_id=client_id)
-                return False, "unknown_client"
+                return SubscribeOutcome(ok=False, reason="unknown_client")
             current_subs = self._device_subscriptions.get(client_id, set())
             if device_name in current_subs:
-                return True, None
+                return SubscribeOutcome(ok=True)
             if cap > 0 and len(current_subs) + 1 > cap:
                 logger.warning(
                     "device_subscribe_cap_exceeded",
@@ -192,40 +265,47 @@ class DeviceWebSocketManager:
                     cap=cap,
                     current=len(current_subs),
                 )
-                return False, "cap_exceeded"
+                return SubscribeOutcome(ok=False, reason="cap_exceeded")
 
-        device_info = await self._fetch_device_info(device_name)
+        device_info, fetch_reason = await self._fetch_device_info(device_name)
         if device_info is None:
-            return False, "not_found"
+            return SubscribeOutcome(ok=False, reason=fetch_reason)
 
-        new_subscriptions: list[tuple[str, str, Callable[[PVUpdate], None]]] = []
+        new_subscriptions: list[
+            tuple[str, str, Callable[[PVUpdate], None], Callable[[BaseException], None]]
+        ] = []
         async with self._lock:
             self._device_subscriptions[client_id].add(device_name)
 
             if device_name not in self._device_clients:
                 self._device_clients[device_name] = set()
-                self._device_pvs[device_name] = device_info.pvs
+                self._device_pvs[device_name] = dict(device_info.pvs)
 
                 for component, pv_name in device_info.pvs.items():
                     callback = self._make_device_callback(device_name, component)
+                    on_error = self._make_device_error_handler(device_name, component, pv_name)
                     self._pv_callbacks[pv_name] = callback
-                    new_subscriptions.append((component, pv_name, callback))
+                    new_subscriptions.append((component, pv_name, callback, on_error))
 
             self._device_clients[device_name].add(client_id)
 
         # Run blocking EPICS subscribes concurrently, outside the asyncio lock.
         results = await asyncio.gather(
             *(
-                asyncio.to_thread(self.pv_monitor.subscribe, pv_name, callback)
-                for _, pv_name, callback in new_subscriptions
+                asyncio.to_thread(
+                    self.pv_monitor.subscribe, pv_name, callback, on_error=on_error
+                )
+                for _, pv_name, callback, on_error in new_subscriptions
             ),
             return_exceptions=True,
         )
-        for (component, pv_name, _), result in zip(new_subscriptions, results):
+        succeeded: list[tuple[str, str, Callable[[PVUpdate], None]]] = []
+        failed: list[FailedPV] = []
+        for entry, result in zip(new_subscriptions, results):
+            component, pv_name, callback, _on_error = entry
             if isinstance(result, Exception):
                 logger.error("device_pv_subscribe_failed", pv=pv_name, error=str(result))
-                if require_connection:
-                    return False, "not_connected"
+                failed.append(FailedPV(signal=component, pv=pv_name, error=str(result)))
             else:
                 logger.debug(
                     "subscribed_device_pv",
@@ -233,6 +313,14 @@ class DeviceWebSocketManager:
                     component=component,
                     pv=pv_name,
                 )
+                succeeded.append((component, pv_name, callback))
+
+        if failed and require_connection:
+            await self._rollback_device_subscription(client_id, device_name, succeeded)
+            return SubscribeOutcome(ok=False, reason="not_connected")
+
+        if failed:
+            await self._purge_failed_pvs(device_name, failed)
 
         await self._send_current_values(client_id, device_name)
 
@@ -240,9 +328,63 @@ class DeviceWebSocketManager:
             "device_subscribed",
             client_id=client_id,
             device=device_name,
-            pvs=len(device_info.pvs),
+            pvs=len(succeeded),
+            failed=len(failed),
         )
-        return True, None
+        return SubscribeOutcome(ok=True, failed_pvs=failed)
+
+    async def _purge_failed_pvs(
+        self, device_name: str, failed: list[FailedPV]
+    ) -> None:
+        """Drop bookkeeping for PVs whose CA subscribe failed.
+
+        The device-level subscription stays for PVs that did subscribe;
+        the failed components are removed from ``_device_pvs[device_name]``
+        and ``_pv_callbacks`` so a later unsubscribe can't try to tear
+        down a non-existent CA monitor, and so a future subscribe to the
+        same device can re-attempt them.
+        """
+        async with self._lock:
+            device_pvs = self._device_pvs.get(device_name)
+            for entry in failed:
+                self._pv_callbacks.pop(entry.pv, None)
+                if device_pvs is not None:
+                    device_pvs.pop(entry.signal, None)
+
+    async def _rollback_device_subscription(
+        self,
+        client_id: str,
+        device_name: str,
+        succeeded: list[tuple[str, str, Callable[[PVUpdate], None]]],
+    ) -> None:
+        """Undo a partially-completed device subscription on require_connection failure.
+
+        Removes the client from ``_device_subscriptions`` and
+        ``_device_clients``, drops ``_device_pvs[device_name]`` and the
+        whole device's ``_pv_callbacks`` if no other clients hold it,
+        then unsubscribes any PVs that did succeed (in parallel — same
+        gather pattern the forward path uses).
+        """
+        teardown: list[tuple[str, Callable[[PVUpdate], None]]] = []
+        async with self._lock:
+            self._device_subscriptions.get(client_id, set()).discard(device_name)
+            if device_name in self._device_clients:
+                self._device_clients[device_name].discard(client_id)
+                if not self._device_clients[device_name]:
+                    self._device_clients.pop(device_name, None)
+                    self._device_pvs.pop(device_name, None)
+                    for _, pv_name, callback in succeeded:
+                        self._pv_callbacks.pop(pv_name, None)
+                        teardown.append((pv_name, callback))
+
+        if teardown:
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(self.pv_monitor.unsubscribe, pv_name, callback)
+                    for pv_name, callback in teardown
+                ),
+                return_exceptions=True,
+            )
 
     async def unsubscribe_device(self, client_id: str, device_name: str):
         released_pvs: Dict[str, str] = {}
@@ -288,54 +430,85 @@ class DeviceWebSocketManager:
 
         return callback
 
+    def _make_device_error_handler(
+        self, device_name: str, component: str, pv_name: str
+    ) -> Callable[[BaseException], None]:
+        """Build an ``on_error`` for ``PVMonitor.subscribe`` that fans out a
+        device-level error envelope to clients subscribed to ``device_name``.
+
+        Runs on the CA listener thread, so the broadcast is scheduled
+        threadsafe onto the event loop. Without this hook, a callback
+        exception would be log-only and the device-socket subscriber
+        would assume the signal was simply quiet (M9, 2026-05-01
+        silent-failure audit).
+        """
+
+        def on_error(exc: BaseException) -> None:
+            if self._loop is None:
+                logger.warning(
+                    "device_callback_error_before_loop_initialized",
+                    device=device_name,
+                    component=component,
+                    pv=pv_name,
+                    error=str(exc),
+                )
+                return
+            fut = asyncio.run_coroutine_threadsafe(
+                self._broadcast_device_callback_error(device_name, component, pv_name, exc),
+                self._loop,
+            )
+            fut.add_done_callback(_DEVICE_CALLBACK_ERROR_DONE_CB)
+
+        return on_error
+
+    async def _broadcast_device_callback_error(
+        self, device_name: str, component: str, pv_name: str, exc: BaseException
+    ) -> None:
+        async with self._lock:
+            client_ids = self._device_clients.get(device_name, set()).copy()
+            ws_by_client = {cid: self._connections.get(cid) for cid in client_ids}
+        await fanout_error(
+            ws_by_client,
+            f"Device callback failed: {exc}",
+            log_event="device_callback_error_envelope_send_failed",
+            error_envelope_fields={
+                "device": device_name,
+                "signal": component,
+                "pv": pv_name,
+            },
+            log_fields={"device": device_name, "component": component, "pv": pv_name},
+        )
+
     async def _broadcast_device_update(self, device_name: str, update: DeviceUpdate):
         async with self._lock:
             client_ids = self._device_clients.get(device_name, set()).copy()
         for client_id in client_ids:
             await self._send_to_client(client_id, update)
 
-    async def _send_to_client(self, client_id: str, update: DeviceUpdate):
-        async with self._lock:
-            websocket = self._connections.get(client_id)
-
+    async def _send_to_client(
+        self,
+        client_id: str,
+        update: DeviceUpdate,
+        websocket: Optional[LockedWS] = None,
+    ):
+        if websocket is None:
+            async with self._lock:
+                websocket = self._connections.get(client_id)
         if not websocket:
             return
 
-        try:
-            await websocket.send_json(update.model_dump(mode="json"))
-        except TimeoutError:
-            logger.warning(
-                "device_websocket_send_timeout",
-                client_id=client_id,
-                device=update.device,
-                signal=update.signal,
-                timeout=self.settings.ws_send_timeout,
-            )
-        except WebSocketResponseTooLarge as e:
-            logger.warning(
-                "device_websocket_payload_too_large",
-                client_id=client_id,
-                device=update.device,
-                signal=update.signal,
-                error=str(e),
-            )
-            try:
-                await send_error(
-                    websocket,
-                    "payload exceeds size limit; update dropped",
-                    device=update.device,
-                    signal=update.signal,
-                )
-            except Exception as inner_err:  # noqa: BLE001
-                logger.debug(
-                    "device_websocket_send_error_envelope_failed",
-                    client_id=client_id,
-                    device=update.device,
-                    signal=update.signal,
-                    error=str(inner_err),
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.error("device_websocket_send_error", client_id=client_id, error=str(e))
+        await send_payload_or_size_error(
+            websocket,
+            update.model_dump(mode="json", exclude_none=True),
+            log_event="device_websocket_send",
+            log_fields={
+                "client_id": client_id,
+                "device": update.device,
+                "signal": update.signal,
+            },
+            oversize_message="payload exceeds size limit; update dropped",
+            error_envelope_fields={"device": update.device, "signal": update.signal},
+        )
 
     async def _send_current_values(self, client_id: str, device_name: str):
         async with self._lock:
@@ -359,29 +532,73 @@ class DeviceWebSocketManager:
                 value=value.value,
                 timestamp=value.timestamp,
                 connected=value.connected,
-                read_access=True,
-                write_access=True,
+                read_access=value.read_access,
+                write_access=value.write_access,
             )
-            try:
-                await websocket.send_json(update.model_dump(mode="json"))
-            except WebSocketResponseTooLarge as e:
-                logger.warning(
-                    "send_current_value_too_large",
-                    device=device_name,
-                    signal=component,
-                    error=str(e),
-                )
-                try:
-                    await send_error(
-                        websocket,
-                        "payload exceeds size limit; current value dropped",
-                        device=device_name,
-                        signal=component,
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-            except Exception as e:  # noqa: BLE001
-                logger.error("send_current_value_error", error=str(e))
+            await self._send_to_client(client_id, update, websocket=websocket)
+            await self._send_meta_to_client(
+                client_id, device_name, component, value, websocket=websocket
+            )
+
+    async def _send_meta_to_client(
+        self,
+        client_id: str,
+        device_name: str,
+        component: str,
+        value,
+        websocket: Optional[LockedWS] = None,
+    ) -> None:
+        """Send a finch-compatible ``sub_type: meta`` envelope on the device socket.
+
+        Per ``finch/src/api/ophyd/ophydDeviceSocketTypes.ts:22-38`` finch's
+        device hook keys on ``sub_type === 'meta'`` and reads ``message.device``
+        plus units/precision/limits/enum_strs to populate device-level
+        metadata. Without this message the UI's min/max/units/etc. silently
+        stay empty.
+
+        Routes through the size-cap-aware send path. Meta is one-shot at
+        subscribe time, so generic-Exception failures also produce an
+        error envelope — losing it silently leaves the UI metadata-blind.
+        """
+        if websocket is None:
+            async with self._lock:
+                websocket = self._connections.get(client_id)
+        if not websocket:
+            return
+
+        meta_msg: dict = {
+            "sub_type": SUB_TYPE_META,
+            "device": device_name,
+            "signal": component,
+            "connected": value.connected,
+            "read_access": value.read_access,
+            "write_access": value.write_access,
+            "timestamp": value.timestamp.timestamp(),
+            "status": value.status,
+            "severity": value.severity,
+            "precision": value.precision,
+            "units": value.units or "",
+            "lower_ctrl_limit": value.lower_ctrl_limit,
+            "upper_ctrl_limit": value.upper_ctrl_limit,
+            "enum_strs": getattr(value, "enum_strs", None),
+        }
+        await send_payload_or_size_error(
+            websocket,
+            meta_msg,
+            log_event="device_meta_send",
+            log_fields={
+                "client_id": client_id,
+                "device": device_name,
+                "signal": component,
+            },
+            oversize_message="meta payload exceeds size limit; metadata dropped",
+            error_envelope_fields={
+                "device": device_name,
+                "signal": component,
+                "sub_type": SUB_TYPE_META,
+            },
+            notify_on_generic_exception=True,
+        )
 
     async def handle_client(self, websocket: WebSocket):
         client_id, ws = await self.connect(websocket)
@@ -425,18 +642,55 @@ class DeviceWebSocketManager:
             await self.disconnect(client_id)
 
     async def _send_subscribe_error(
-        self, websocket, device_name: str, reason: Optional[str]
+        self, websocket, device_name: str, reason: Optional[SubscribeReason]
     ) -> None:
         """Map a subscribe_device failure reason to an actionable WS error."""
         cap = self.settings.max_subscriptions_per_client
-        messages = {
+        messages: Dict[SubscribeReason, str] = {
             "unknown_client": "Client not registered; reconnect and retry.",
-            "cap_exceeded": (f"Subscribe would exceed max_subscriptions_per_client (cap={cap})."),
+            "cap_exceeded": f"Subscribe would exceed max_subscriptions_per_client (cap={cap}).",
             "not_found": f"Device '{device_name}' not found in configuration service",
+            "upstream_error": (
+                f"Configuration service returned an error looking up device "
+                f"'{device_name}'; cannot subscribe."
+            ),
+            "upstream_unreachable": (
+                f"Configuration service is unreachable; cannot resolve device "
+                f"'{device_name}'."
+            ),
             "not_connected": f"Device {device_name} PVs are not connected",
         }
-        message = messages.get(reason or "", f"Failed to subscribe to device {device_name}")
+        message = (
+            messages[reason]
+            if reason is not None
+            else f"Failed to subscribe to device {device_name}"
+        )
         await send_error(websocket, message, device=device_name, reason=reason)
+
+    async def _emit_failed_pv_envelopes(
+        self,
+        websocket,
+        device_name: str,
+        failed: list[FailedPV],
+    ) -> None:
+        """Emit a per-PV error envelope for PVs whose CA subscribe failed.
+
+        Without this the client gets a "subscribed" event for the device
+        but silently never sees updates for the failed signals — the
+        client has no way to know those signals will be silent forever.
+        Uses ``signal`` (not ``component``) to match the device-socket
+        wire format used by ``DeviceUpdate``, ``_send_to_client``, and
+        ``_send_meta_to_client``.
+        """
+        for entry in failed:
+            await send_error(
+                websocket,
+                f"PV {entry.pv} ({entry.signal}) failed to subscribe: {entry.error}",
+                device=device_name,
+                signal=entry.signal,
+                pv=entry.pv,
+                reason="pv_subscribe_failed",
+            )
 
     async def _handle_subscribe(self, client_id: str, websocket: WebSocket, data: dict):
         device_name = data.get("device")
@@ -444,8 +698,12 @@ class DeviceWebSocketManager:
             await send_error(websocket, "device field required")
             return
 
-        ok, reason = await self.subscribe_device(client_id, device_name)
-        if ok:
+        outcome = await self.subscribe_device(client_id, device_name)
+        if outcome.ok:
+            if outcome.failed_pvs:
+                await self._emit_failed_pv_envelopes(
+                    websocket, device_name, outcome.failed_pvs
+                )
             await send_event(
                 websocket,
                 "subscribed",
@@ -453,7 +711,7 @@ class DeviceWebSocketManager:
                 message=f"Subscribed to device {device_name}",
             )
         else:
-            await self._send_subscribe_error(websocket, device_name, reason)
+            await self._send_subscribe_error(websocket, device_name, outcome.reason)
 
     async def _handle_unsubscribe(self, client_id: str, websocket: WebSocket, data: dict):
         device_name = data.get("device")
@@ -475,11 +733,15 @@ class DeviceWebSocketManager:
             await send_error(websocket, "device field required")
             return
 
-        ok, reason = await self.subscribe_device(client_id, device_name, require_connection=True)
-        if ok:
+        outcome = await self.subscribe_device(
+            client_id, device_name, require_connection=True
+        )
+        # require_connection rolls back on any PV failure, so failed_pvs
+        # is always empty here.
+        if outcome.ok:
             await send_event(websocket, "subscribed", device=device_name, connected=True)
         else:
-            await self._send_subscribe_error(websocket, device_name, reason)
+            await self._send_subscribe_error(websocket, device_name, outcome.reason)
 
     async def _handle_subscribe_read_only(self, client_id: str, websocket: WebSocket, data: dict):
         device_name = data.get("device")
@@ -487,11 +749,15 @@ class DeviceWebSocketManager:
             await send_error(websocket, "device field required")
             return
 
-        ok, reason = await self.subscribe_device(client_id, device_name)
-        if ok:
+        outcome = await self.subscribe_device(client_id, device_name)
+        if outcome.ok:
+            if outcome.failed_pvs:
+                await self._emit_failed_pv_envelopes(
+                    websocket, device_name, outcome.failed_pvs
+                )
             await send_event(websocket, "subscribed", device=device_name, read_only=True)
         else:
-            await self._send_subscribe_error(websocket, device_name, reason)
+            await self._send_subscribe_error(websocket, device_name, outcome.reason)
 
     async def _handle_refresh(self, client_id: str, websocket: WebSocket, data: dict):
         device_name = data.get("device")

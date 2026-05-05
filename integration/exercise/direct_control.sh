@@ -103,21 +103,22 @@ fi
 status=$(req POST "${DIRECT_URL}/api/v1/pv/set" "{\"pv_name\":\"mini:dot:mtrx\",\"value\":${original}}")
 expect_success "$status" "restored mini:dot:mtrx to ${original}" 200
 
-# Endpoints below are partly placeholder pending full ophyd-device integration,
-# but they accept valid request shapes and return HTTP 200. Lock that contract in.
+# Unimplemented device operations surface as 501 Not Implemented to prevent
+# silent failures (e.g., /stop appearing to succeed when it doesn't actually do anything).
+# This requires full ophyd-device integration via the Configuration Service.
 step "Device-level operations"
 
 body='{"device_name":"beam_current","method":"read","args":[],"kwargs":{}}'
 status=$(req POST "${DIRECT_URL}/api/v1/device/execute" "$body")
-expect_status 200 "$status" "POST /api/v1/device/execute"
+expect_status 501 "$status" "POST /api/v1/device/execute (requires ophyd integration)"
 pass "POST /api/v1/device/execute"
 
 status=$(req POST "${DIRECT_URL}/api/v1/device/beam_current/stop")
-expect_status 200 "$status" "POST /api/v1/device/beam_current/stop"
+expect_status 501 "$status" "POST /api/v1/device/beam_current/stop (requires ophyd integration)"
 pass "POST /api/v1/device/beam_current/stop"
 
 status=$(req POST "${DIRECT_URL}/api/v1/device/beam_current.readback" '{"method":"read"}')
-expect_status 200 "$status" "POST /api/v1/device/beam_current.readback"
+expect_status 501 "$status" "POST /api/v1/device/beam_current.readback (requires ophyd integration)"
 pass "POST /api/v1/device/beam_current.readback (nested component)"
 
 step "Device-path form"

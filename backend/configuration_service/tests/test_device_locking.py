@@ -467,3 +467,69 @@ class TestLockAuditLog:
         details = json.loads(force_entry["details"])
         assert details["reason"] == "EE crashed"
         assert details["admin"] is True
+
+
+class TestSpecMissingFailsHard:
+    """Regression: missing instantiation spec on a known device must fail loudly.
+
+    Pre-fix, the three sites listed below silently coerced "no spec" into
+    "available/enabled/lockable", so a corrupted registry would advertise a
+    device as commandable. Per the no-silent-fallbacks rule (S3 from the
+    2026-05-01 silent-failure audit), all three now surface 500 / spec_missing.
+    """
+
+    @staticmethod
+    def _corrupt_spec(client, device_name: str) -> None:
+        state = client.app.state.state_container["state"]
+        assert device_name in state.registry.devices, "precondition: device must exist"
+        state.registry.instantiation_specs.pop(device_name, None)
+
+    def test_device_status_spec_missing_returns_500(self, client):
+        self._corrupt_spec(client, "sample_x")
+        resp = client.get("/api/v1/devices/sample_x/status")
+        assert resp.status_code == 500
+        assert "instantiation spec" in resp.json()["detail"]
+        assert "sample_x" in resp.json()["detail"]
+
+    def test_pv_status_spec_missing_returns_500(self, client):
+        # Pick a PV owned by sample_x
+        device_resp = client.get("/api/v1/devices/sample_x")
+        pv_name = list(device_resp.json()["pvs"].values())[0]
+
+        self._corrupt_spec(client, "sample_x")
+        resp = client.get("/api/v1/pvs/status", params={"pv_name": pv_name})
+        assert resp.status_code == 500
+        assert "instantiation spec" in resp.json()["detail"]
+        assert "sample_x" in resp.json()["detail"]
+
+    def test_lock_devices_spec_missing_returns_500(self, client):
+        self._corrupt_spec(client, "sample_x")
+        resp = client.post(
+            "/api/v1/devices/lock",
+            json={
+                "device_names": ["sample_x"],
+                "item_id": "item-001",
+                "plan_name": "count",
+            },
+        )
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["success"] is False
+        assert data["conflicting_devices"][0]["reason"] == "spec_missing"
+        assert "instantiation spec" in data["message"]
+
+    def test_lock_atomicity_when_one_device_spec_missing(self, client):
+        """500 from corruption must not leave partial locks behind."""
+        self._corrupt_spec(client, "sample_x")
+        resp = client.post(
+            "/api/v1/devices/lock",
+            json={
+                "device_names": ["det1", "sample_x"],
+                "item_id": "item-001",
+                "plan_name": "count",
+            },
+        )
+        assert resp.status_code == 500
+        # det1 must remain unlocked — atomicity preserved
+        det_status = client.get("/api/v1/devices/det1/status").json()
+        assert det_status["lock_status"] == "unlocked"

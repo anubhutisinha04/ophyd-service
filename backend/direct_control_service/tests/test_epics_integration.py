@@ -77,12 +77,15 @@ def test_set_scalar_pv(client):
 
 
 def test_pv_socket_subscribe_receives_initial_value(client):
-    """Subscribe via WebSocket; receive the subscribed ack and an initial update."""
+    """Subscribe via WebSocket; receive the subscribed ack and an initial update.
+
+    Wire shape on `pv_update` follows finch's ``ValueUpdateResponse``: the
+    field is ``pv`` (not ``pv_name``). See ``finch/src/api/ophyd/
+    ophydPVSocketTypes.ts:13-20``.
+    """
     with client.websocket_connect("/api/v1/pv-socket") as ws:
         ws.send_json({"action": "subscribe", "pv": "IOC:counter"})
 
-        # Drain messages for a short window; we expect at least one
-        # `subscribed` event and one `pv_update` with the current value.
         saw_subscribed = False
         saw_update = False
         deadline = time.monotonic() + 3.0
@@ -93,8 +96,12 @@ def test_pv_socket_subscribe_receives_initial_value(client):
                 assert "IOC:counter" in msg["pv_names"]
             elif msg.get("event_type") == "pv_update":
                 saw_update = True
-                assert msg["pv_name"] == "IOC:counter"
+                assert msg["pv"] == "IOC:counter"
                 assert msg["connected"] is True
+                # finch reads timestamp as unix epoch seconds (number); a
+                # regression to ISO string would silently break arithmetic
+                # in TableDeviceController.tsx flash-row check.
+                assert isinstance(msg["timestamp"], (int, float))
 
         assert saw_subscribed, "never received 'subscribed' ack"
         assert saw_update, "never received initial pv_update"
@@ -127,7 +134,7 @@ def test_pv_socket_receives_update_on_caput(client):
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             msg = ws.receive_json()
-            if msg.get("event_type") == "pv_update" and msg["value"] == pytest.approx(new_value):
+            if msg.get("event_type") == "pv_update" and msg.get("value") == pytest.approx(new_value):
                 return
         pytest.fail(f"never saw pv_update with value={new_value}")
 
@@ -155,17 +162,22 @@ def test_ws_oversize_update_delivers_error_envelope(client):
     """WS path enforces ``response_bytesize_limit``: oversize monitor updates
     are dropped and the client receives a typed error envelope rather than a
     silent drop or a dropped connection. Connection stays open for other PVs.
+
+    Wire shape follows finch's contract — error envelope carries ``error``
+    and ``pv`` fields (not ``message``/``pv_name``); pv_update messages use
+    ``pv`` (not ``pv_name``). See ``finch/src/api/ophyd/
+    ophydPVSocketTypes.ts``.
     """
     from direct_control.config import Settings
 
     app = client.app
-    # Calibrated to sit between a scalar PVUpdate (~400 bytes — the
-    # timestamp/connected/read_access/write_access fields dominate a 4-byte
-    # value) and a 20-element waveform PVUpdate (~490 bytes). 450 blocks
-    # wf1, passes counter, and leaves headroom for the error envelope
-    # (~130 bytes). Re-tune if PVUpdate fields or the JSON serialization
-    # shape changes.
-    app.state.settings.response_bytesize_limit = 450
+    # Calibrated for the post-finch-alignment payload sizes:
+    #   scalar pv_update (IOC:counter): ~183 bytes
+    #   waveform pv_update (IOC:wf1, 20 elements): ~247 bytes
+    #   error envelope: ~130 bytes
+    # 200 sits between scalar and waveform, leaves room for the error.
+    # Re-tune if PVUpdate fields or the JSON serialization shape changes.
+    app.state.settings.response_bytesize_limit = 200
 
     try:
         with client.websocket_connect("/api/v1/pv-socket") as ws:
@@ -175,8 +187,8 @@ def test_ws_oversize_update_delivers_error_envelope(client):
             saw_error = False
             while time.monotonic() < deadline:
                 msg = ws.receive_json()
-                if msg.get("type") == "error" and msg.get("pv_name") == "IOC:wf1":
-                    assert "size limit" in msg["message"].lower()
+                if msg.get("type") == "error" and msg.get("pv") == "IOC:wf1":
+                    assert "size limit" in msg["error"].lower()
                     saw_error = True
                     break
             assert saw_error, "never received error envelope for oversize update"
@@ -186,7 +198,7 @@ def test_ws_oversize_update_delivers_error_envelope(client):
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
                 msg = ws.receive_json()
-                if msg.get("event_type") == "pv_update" and msg.get("pv_name") == "IOC:counter":
+                if msg.get("event_type") == "pv_update" and msg.get("pv") == "IOC:counter":
                     return
             pytest.fail("connection should still deliver small-payload updates")
     finally:

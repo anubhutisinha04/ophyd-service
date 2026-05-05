@@ -4,28 +4,9 @@ Domain models for Configuration Service (SVC-004).
 These models represent the core entities for the device/PV registry.
 """
 
-from typing import Dict, List, Literal, Optional, Any, Type, Union, get_args
+from typing import Dict, List, Literal, Optional, Any
 from enum import Enum
-from pydantic import BaseModel, Field, create_model
-
-
-def make_partial_model(model: Type[BaseModel], name: str = None) -> Type[BaseModel]:
-    """Create a copy of *model* where every field is Optional with default None.
-
-    Used to generate partial-update request models from canonical models.
-    Fields added to the base model are automatically available in the
-    partial variant, eliminating field-drift risk.
-
-    Works with ``model_dump(exclude_unset=True)`` to distinguish
-    "not sent" from "sent as None".
-    """
-    fields = {}
-    for field_name, field_info in model.model_fields.items():
-        ann = field_info.annotation
-        if type(None) not in get_args(ann):
-            ann = Optional[ann]
-        fields[field_name] = (ann, Field(default=None, description=field_info.description))
-    return create_model(name or f"{model.__name__}Update", **fields)
+from pydantic import BaseModel, Field
 
 
 class DeviceLabel(str, Enum):
@@ -457,8 +438,56 @@ class DeviceCreateRequest(BaseModel):
         }
 
 
-DeviceMetadataUpdate = make_partial_model(DeviceMetadata)
-DeviceInstantiationSpecUpdate = make_partial_model(DeviceInstantiationSpec)
+class DeviceInstantiationSpecUpdate(BaseModel):
+    """Partial of DeviceInstantiationSpec for PATCH/PUT updates.
+
+    Every field is Optional with default None so callers can send only
+    the fields they want to change. Pair with ``model_dump(exclude_unset=True)``
+    to distinguish "not sent" from "sent as None". Field set must mirror
+    DeviceInstantiationSpec — enforced by test_partial_models_field_parity.
+    """
+
+    name: Optional[str] = Field(default=None)
+    device_class: Optional[str] = Field(default=None)
+    args: Optional[List[Any]] = Field(default=None)
+    kwargs: Optional[Dict[str, Any]] = Field(default=None)
+    active: Optional[bool] = Field(default=None)
+
+
+class DeviceMetadataUpdate(BaseModel):
+    """Partial of DeviceMetadata for PATCH/PUT updates.
+
+    Every field is Optional with default None so callers can send only
+    the fields they want to change. Pair with ``model_dump(exclude_unset=True)``
+    to distinguish "not sent" from "sent as None". Field set must mirror
+    DeviceMetadata — enforced by test_partial_models_field_parity.
+    """
+
+    name: Optional[str] = Field(default=None)
+    device_label: Optional[DeviceLabel] = Field(default=None)
+    ophyd_class: Optional[str] = Field(default=None)
+    module: Optional[str] = Field(default=None)
+    is_movable: Optional[bool] = Field(default=None)
+    is_flyable: Optional[bool] = Field(default=None)
+    is_readable: Optional[bool] = Field(default=None)
+    is_triggerable: Optional[bool] = Field(default=None)
+    is_stageable: Optional[bool] = Field(default=None)
+    is_configurable: Optional[bool] = Field(default=None)
+    is_pausable: Optional[bool] = Field(default=None)
+    is_stoppable: Optional[bool] = Field(default=None)
+    is_subscribable: Optional[bool] = Field(default=None)
+    is_checkable: Optional[bool] = Field(default=None)
+    writes_external_assets: Optional[bool] = Field(default=None)
+    pvs: Optional[Dict[str, str]] = Field(default=None)
+    hints: Optional[Dict[str, Any]] = Field(default=None)
+    read_attrs: Optional[List[str]] = Field(default=None)
+    configuration_attrs: Optional[List[str]] = Field(default=None)
+    parent: Optional[str] = Field(default=None)
+    labels: Optional[List[str]] = Field(default=None)
+    beamline: Optional[str] = Field(default=None)
+    location_group: Optional[str] = Field(default=None)
+    functional_group: Optional[str] = Field(default=None)
+    documentation: Optional[str] = Field(default=None)
 
 
 class DeviceUpdateRequest(BaseModel):

@@ -21,12 +21,15 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, List, Literal, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .models import DeviceRegistry
 
 logger = logging.getLogger(__name__)
+
+
+LockConflictReason = Literal["not_found", "spec_missing", "disabled", "already_locked"]
 
 
 class DeviceLockState:
@@ -78,12 +81,12 @@ class LockConflict:
     def __init__(
         self,
         device_name: str,
-        reason: str,
+        reason: LockConflictReason,
         locked_by_plan: Optional[str] = None,
         locked_at: Optional[datetime] = None,
     ):
         self.device_name = device_name
-        self.reason = reason
+        self.reason: LockConflictReason = reason
         self.locked_by_plan = locked_by_plan
         self.locked_at = locked_at
 
@@ -156,7 +159,15 @@ class DeviceLockManager:
                     continue
 
                 spec = registry.get_instantiation_spec(name)
-                if spec is not None and not spec.active:
+                if spec is None:
+                    conflicts.append(
+                        LockConflict(
+                            device_name=name,
+                            reason="spec_missing",
+                        )
+                    )
+                    continue
+                if not spec.active:
                     conflicts.append(
                         LockConflict(
                             device_name=name,
@@ -179,7 +190,9 @@ class DeviceLockManager:
             if conflicts:
                 # Determine error code from conflict types
                 reasons = {c.reason for c in conflicts}
-                if "not_found" in reasons:
+                if "spec_missing" in reasons:
+                    error_code = 500
+                elif "not_found" in reasons:
                     error_code = 404
                 elif "disabled" in reasons:
                     error_code = 422

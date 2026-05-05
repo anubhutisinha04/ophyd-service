@@ -71,13 +71,20 @@ structlog.configure(
 logger = structlog.get_logger()
 
 
+_OPENAPI_EXPORT_PATH_ENV = "OPHYD_SERVICE_OPENAPI_EXPORT_PATH"
+
+
 def _maybe_export_openapi(app: FastAPI) -> None:
-    """If OPHYD_SERVICE_OPENAPI_EXPORT_PATH is set, dump the schema there.
+    """If ``_OPENAPI_EXPORT_PATH_ENV`` is set, dump the schema there.
 
     Used by docker-compose to publish the schema onto the shared-schema volume
     for the frontend's codegen watcher. A no-op in local dev unless the env var is set.
+
+    Setting the env var is an explicit "I expect this to work" signal — if the
+    write fails (volume unwritable, parent missing, etc.) we fail startup rather
+    than let the frontend codegen silently consume a stale schema.
     """
-    path = os.environ.get("OPHYD_SERVICE_OPENAPI_EXPORT_PATH")
+    path = os.environ.get(_OPENAPI_EXPORT_PATH_ENV)
     if not path:
         return
     try:
@@ -86,8 +93,13 @@ def _maybe_export_openapi(app: FastAPI) -> None:
         out.write_text(json.dumps(app.openapi(), indent=2) + "\n")
         logger.info("openapi_schema_exported", path=str(out))
     except Exception as exc:
-        # Non-fatal: the service still starts if the shared volume is unwritable.
-        logger.warning("openapi_schema_export_failed", path=path, error=str(exc))
+        logger.error(
+            "openapi_schema_export_failed", path=path, error=str(exc), exc_info=True
+        )
+        raise RuntimeError(
+            f"OpenAPI schema export to {path} failed: {exc}. "
+            f"Unset {_OPENAPI_EXPORT_PATH_ENV} to skip export."
+        ) from exc
 
 
 _M = TypeVar("_M", bound=BaseModel)
@@ -243,19 +255,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         state = ConfigurationState(registry=registry)
         state_container["state"] = state
 
-        # Initialize standalone PV store (uses same gate as registry store)
+        # Initialize standalone PV store (uses same gate as registry store).
+        # Init failure must crash startup — pre-fix behavior was to log+continue,
+        # leaving the service "healthy" but every /standalone-pvs/* endpoint
+        # returning 501 with the misleading "Set CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=true"
+        # message even though the flag was set. See feedback_no_silent_fallbacks.
         if settings.device_change_history_enabled:
-            try:
-                pv_store = StandalonePVStore(settings.db_path)
-                pv_store.initialize()
-                standalone_pv_container["store"] = pv_store
-                _apply_standalone_pvs(registry, pv_store, logger)
-                logger.info(
-                    "standalone_pv_store_enabled",
-                    db_path=str(settings.db_path),
-                )
-            except Exception as e:
-                logger.error("standalone_pv_store_init_failed", error=str(e))
+            pv_store = StandalonePVStore(settings.db_path)
+            pv_store.initialize()
+            standalone_pv_container["store"] = pv_store
+            _apply_standalone_pvs(registry, pv_store, logger)
+            logger.info(
+                "standalone_pv_store_enabled",
+                db_path=str(settings.db_path),
+            )
 
         # Initialize device lock manager (in-memory, ephemeral)
         lock_manager_container["manager"] = DeviceLockManager()
@@ -311,11 +324,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     # Add CORS middleware to allow UI access
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Expose DI containers on app.state so tests can introspect / mutate
+    # them (registry mutation for S3, store swap for S5). Production code
+    # goes through Depends().
+    app.state.state_container = state_container
+    app.state.registry_store_container = registry_store_container
 
     # Dependency injection function
     def get_state() -> ConfigurationState:
@@ -367,7 +386,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.get("/health", tags=["Health"])
     async def health_check(state: StateDep):
-        """Health check endpoint."""
+        """Health check: state loaded AND registry DB queryable.
+
+        Runs ``SELECT 1`` against the registry store (when DB mode is on)
+        and returns 503 with the failure detail when it can't. Without
+        the DB ping, a mount-gone or permissions-revoked store would
+        still pass health while every CRUD call 500'd.
+        """
+        store = registry_store_container.get("store")
+        if store is not None:
+            try:
+                store.ping()
+            except Exception as exc:
+                logger.error("health_db_ping_failed", error=str(exc))
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "unhealthy",
+                        "service": "configuration_service",
+                        "detail": f"registry store unreachable: {exc}",
+                    },
+                )
         return {
             "status": "healthy",
             "service": "configuration_service",
@@ -603,6 +642,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 message = f"Device '{first.device_name}' is locked by plan '{first.locked_by_plan}'"
             elif first.reason == "not_found":
                 message = f"Device not found: {first.device_name}"
+            elif first.reason == "spec_missing":
+                message = (
+                    f"Registry inconsistency: device '{first.device_name}' "
+                    f"has no instantiation spec"
+                )
             else:
                 message = f"Device '{first.device_name}' is disabled"
 
@@ -767,7 +811,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
 
         spec = state.registry.get_instantiation_spec(device_name)
-        enabled = spec.active if spec is not None else True
+        if spec is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Registry inconsistency: device '{device_name}' has no instantiation spec",
+            )
+        enabled = spec.active
         lock_state = lock_manager.get_device_lock(device_name)
         locked = lock_state is not None
 
@@ -1591,14 +1640,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         device = state.registry.get_device(device_name)
         if device is None:
-            return {
-                "pv_name": pv_name,
-                "device_name": device_name,
-                "device_label": None,
-                "prefix": None,
-                "sibling_pvs": {},
-                "count": 0,
-            }
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"Registry inconsistency: PV '{pv_name}' references device "
+                    f"'{device_name}' which has no metadata"
+                ),
+            )
 
         prefix = _get_device_prefix(device, state.registry)
 
@@ -1657,7 +1705,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         # Device-bound PV — check device lock and enabled state
         spec = state.registry.get_instantiation_spec(device_name)
-        enabled = spec.active if spec is not None else True
+        if spec is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"Registry inconsistency: PV '{pv_name}' references device "
+                    f"'{device_name}' which has no instantiation spec"
+                ),
+            )
+        enabled = spec.active
         lock_state = lock_manager.get_device_lock(device_name)
         locked = lock_state is not None
 

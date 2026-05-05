@@ -146,165 +146,100 @@ class DeviceController:
         coord_status = await self.coordination.check_device_available(coord_target)
         self._raise_for_unavailable(coord_target, "device_name", coord_status)
 
-        # Execute PV set operation
-        try:
+        # Execute PV set operation. Errors propagate — never return success=False
+        # with the requested value as if it had been written; the HTTP layer
+        # maps ControlError / Exception to a real 5xx so callers see the failure.
+        logger.info(
+            "setting_pv",
+            pv_name=pv_name,
+            value=request.value,
+            mode=mode.value,
+            wait=request.wait,
+        )
+
+        timeout = request.timeout or self.settings.command_timeout
+        connection_timeout = request.connection_timeout or 5.0
+
+        success = await self._execute_put(
+            pv_name=pv_name,
+            value=request.value,
+            wait=request.wait,
+            timeout=timeout,
+            connection_timeout=connection_timeout,
+            use_complete=request.use_complete,
+            ftype=request.ftype,
+        )
+
+        if not success:
+            logger.error("pv_set_failed", pv_name=pv_name, value=request.value, mode=mode.value)
+            raise ControlError(f"Failed to set PV {pv_name}")
+
+        if mode == CommandMode.FIRE_AND_FORGET:
             logger.info(
-                "setting_pv",
+                "pv_write_issued",
                 pv_name=pv_name,
                 value=request.value,
-                mode=mode.value,
-                wait=request.wait,
-            )
-
-            timeout = request.timeout or self.settings.command_timeout
-            connection_timeout = request.connection_timeout or 5.0
-
-            success = await self._execute_put(
-                pv_name=pv_name,
-                value=request.value,
-                wait=request.wait,
-                timeout=timeout,
-                connection_timeout=connection_timeout,
-                use_complete=request.use_complete,
-                ftype=request.ftype,
-            )
-
-            if success:
-                if mode == CommandMode.FIRE_AND_FORGET:
-                    # Fire-and-forget: write issued, client should monitor PV updates
-                    logger.info(
-                        "pv_write_issued",
-                        pv_name=pv_name,
-                        value=request.value,
-                        mode="fire-and-forget",
-                    )
-                    return PVSetResponse(
-                        pv_name=pv_name,
-                        success=True,
-                        value_set=request.value,
-                        timestamp=datetime.now(),
-                        coordination_checked=True,
-                        mode=mode,
-                        message="Write issued (fire-and-forget). Monitor PV readback for confirmation.",
-                    )
-                else:
-                    # Put-completion: write confirmed
-                    logger.info(
-                        "pv_set_confirmed",
-                        pv_name=pv_name,
-                        value=request.value,
-                        mode="put-completion",
-                    )
-                    return PVSetResponse(
-                        pv_name=pv_name,
-                        success=True,
-                        value_set=request.value,
-                        timestamp=datetime.now(),
-                        coordination_checked=True,
-                        mode=mode,
-                        message="PV set confirmed (put-completion)",
-                    )
-            else:
-                logger.error("pv_set_failed", pv_name=pv_name, value=request.value, mode=mode.value)
-                raise ControlError(f"Failed to set PV {pv_name}")
-
-        except Exception as e:
-            logger.error(
-                "pv_set_error",
-                pv_name=pv_name,
-                error=str(e),
-                mode=mode.value,
-                exc_info=True,
+                mode="fire-and-forget",
             )
             return PVSetResponse(
                 pv_name=pv_name,
-                success=False,
+                success=True,
                 value_set=request.value,
                 timestamp=datetime.now(),
                 coordination_checked=True,
                 mode=mode,
-                message=f"Error: {str(e)}",
+                message="Write issued (fire-and-forget). Monitor PV readback for confirmation.",
             )
+
+        logger.info(
+            "pv_set_confirmed",
+            pv_name=pv_name,
+            value=request.value,
+            mode="put-completion",
+        )
+        return PVSetResponse(
+            pv_name=pv_name,
+            success=True,
+            value_set=request.value,
+            timestamp=datetime.now(),
+            coordination_checked=True,
+            mode=mode,
+            message="PV set confirmed (put-completion)",
+        )
 
     async def execute_device_method(self, request: DeviceCommandRequest) -> DeviceCommandResponse:
         """
         Execute Ophyd device method with coordination check.
 
-        Args:
-            request: Device command request
-
-        Returns:
-            Device command response
+        Currently unimplemented: full ophyd-device instantiation requires
+        Configuration Service integration that hasn't landed yet. Raises
+        ``NotImplementedError`` instead of silently returning ``success=False``
+        — the HTTP layer maps that to 501 so safety-relevant calls (e.g. /stop)
+        cannot look successful while doing nothing.
 
         Raises:
             DeviceLockedError: If device is locked by active plan
             DeviceDisabledError: If device is administratively disabled
-            ControlError: If command execution fails
+            NotImplementedError: Always, until ophyd integration lands.
         """
         device_name = request.device_name
 
         coord_status = await self.coordination.check_device_available(device_name)
         self._raise_for_unavailable(device_name, "device_name", coord_status)
 
-        # Execute device method
-        # Note: Full Ophyd device loading would require Configuration Service integration
-        # This is a simplified implementation for the pip-installable pattern
-        try:
-            logger.info(
-                "executing_device_method",
-                device_name=device_name,
-                method=request.method,
-                args=request.args,
-                kwargs=request.kwargs,
-                use_put=request.use_put,
-            )
-
-            # In a full implementation, we would:
-            # 1. Query Configuration Service for device definition
-            # 2. Instantiate Ophyd device
-            # 3. Execute method using put() or set() based on use_put flag:
-            #    - use_put=True: device.put(value) - returns immediately
-            #    - use_put=False: device.set(value) - waits for Status.done
-            # For now, return a placeholder
-
-            mode_desc = "put() (no wait)" if request.use_put else "set() (wait for completion)"
-            logger.warning(
-                "device_method_not_implemented",
-                device_name=device_name,
-                method=request.method,
-                use_put=request.use_put,
-                note=f"Full Ophyd device execution requires Configuration Service integration. Would use {mode_desc}",
-            )
-
-            return DeviceCommandResponse(
-                device_name=device_name,
-                method=request.method,
-                success=False,
-                result=None,
-                timestamp=datetime.now(),
-                coordination_checked=True,
-                message=f"Device method execution requires Configuration Service integration. Mode: {mode_desc}",
-                use_put=request.use_put,
-            )
-
-        except Exception as e:
-            logger.error(
-                "device_method_error",
-                device_name=device_name,
-                method=request.method,
-                error=str(e),
-                exc_info=True,
-            )
-            return DeviceCommandResponse(
-                device_name=device_name,
-                method=request.method,
-                success=False,
-                result=None,
-                timestamp=datetime.now(),
-                coordination_checked=True,
-                message=f"Error: {str(e)}",
-                use_put=request.use_put,
-            )
+        mode_desc = "put() (no wait)" if request.use_put else "set() (wait for completion)"
+        logger.warning(
+            "device_method_not_implemented",
+            device_name=device_name,
+            method=request.method,
+            use_put=request.use_put,
+            mode=mode_desc,
+        )
+        raise NotImplementedError(
+            f"Device method execution ({request.method} on {device_name}) "
+            f"requires Configuration Service ophyd integration; not yet "
+            f"implemented. Would use {mode_desc}."
+        )
 
     async def _connect(self, pv_name: str, connection_timeout: float) -> Any:
         """Connect to a PV off-loop; returns the pyepics PV or None on failure."""
@@ -441,25 +376,20 @@ class DeviceController:
         """
         Access nested device component (ophyd-websocket compatible).
 
-        Supports dot-separated paths like:
-        - motor1
-        - motor1.user_readback
-        - detector.image.array_size
-
-        Args:
-            device_path: Dot-separated device component path
-            method: Method to execute (read, set, trigger, etc.)
-            value: Value to set (for set method)
-            timeout: Timeout in seconds
-
-        Returns:
-            Result of the operation
+        Currently unimplemented for every method: full ophyd-device
+        instantiation requires Configuration Service integration that hasn't
+        landed yet. Raises ``NotImplementedError`` instead of returning a
+        placeholder dict that earlier looked like a successful read/write —
+        the HTTP layer maps that to 501. Coord-gate still fires for write
+        methods so disabled/locked targets get the precise 409/423 error
+        rather than a generic 501.
 
         Raises:
-            DeviceLockedError: If device is locked by active plan
-            ControlError: If operation fails
+            DeviceLockedError: If device is locked by active plan (writes only)
+            DeviceDisabledError: If device is disabled (writes only)
+            NotImplementedError: Always, after the coord gate, until ophyd
+                integration lands.
         """
-        # Parse device path
         parts = device_path.split(".")
         device_name = parts[0]
         component_path = parts[1:] if len(parts) > 1 else []
@@ -479,69 +409,12 @@ class DeviceController:
             coord_status = await self.coordination.check_device_available(device_name)
             self._raise_for_unavailable(device_name, "device_name", coord_status)
 
-        # In a full implementation, we would:
-        # 1. Query Configuration Service for device definition
-        # 2. Instantiate Ophyd device
-        # 3. Navigate to the nested component
-        # 4. Execute method
-        #
-        # For now, we implement a simplified version that works with EPICS PVs
-        # where the component path maps to PV suffixes
-        #
-        # Example: motor1.user_readback -> IOC:motor1.RBV or IOC:motor1:RBV
-
-        # Placeholder implementation - returns mock data or attempts PV access
-        try:
-            if method in ("read", "get"):
-                # Try to interpret as PV pattern
-                # This is a simplified mapping - real implementation would query config service
-                logger.warning(
-                    "nested_device_read_placeholder",
-                    device_path=device_path,
-                    note="Full Ophyd device access requires Configuration Service integration",
-                )
-                return {
-                    "device_path": device_path,
-                    "method": method,
-                    "status": "placeholder",
-                    "note": "Full Ophyd device access requires Configuration Service integration",
-                }
-
-            elif method in ("set", "put", "write"):
-                logger.warning(
-                    "nested_device_set_placeholder",
-                    device_path=device_path,
-                    value=value,
-                    note="Full Ophyd device access requires Configuration Service integration",
-                )
-                return {
-                    "device_path": device_path,
-                    "method": method,
-                    "value": value,
-                    "status": "placeholder",
-                    "note": "Full Ophyd device access requires Configuration Service integration",
-                }
-
-            else:
-                logger.warning(
-                    "nested_device_method_placeholder",
-                    device_path=device_path,
-                    method=method,
-                    note="Full Ophyd device access requires Configuration Service integration",
-                )
-                return {
-                    "device_path": device_path,
-                    "method": method,
-                    "status": "placeholder",
-                    "note": "Full Ophyd device access requires Configuration Service integration",
-                }
-
-        except Exception as e:
-            logger.error(
-                "nested_device_error",
-                device_path=device_path,
-                method=method,
-                error=str(e),
-                exc_info=True,
-            )
-            raise ControlError(f"Failed to access {device_path}: {str(e)}")
+        logger.warning(
+            "nested_device_not_implemented",
+            device_path=device_path,
+            method=method,
+        )
+        raise NotImplementedError(
+            f"Nested device access ({method} on {device_path}) requires "
+            f"Configuration Service ophyd integration; not yet implemented."
+        )

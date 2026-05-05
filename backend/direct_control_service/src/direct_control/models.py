@@ -4,9 +4,20 @@ Pydantic models for Direct Device Control + Monitoring Service.
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+
+def _serialize_unix_epoch(value: datetime) -> float:
+    """Serialize a datetime as unix epoch seconds for finch's WS contract.
+
+    finch does numeric arithmetic on ``timestamp`` (e.g.
+    ``TableDeviceController.tsx`` flash-row check). ISO strings would
+    silently coerce to NaN there. Shared by ``PVUpdate`` and
+    ``DeviceUpdate``.
+    """
+    return value.timestamp()
 
 
 # ===== Device Control Enums =====
@@ -22,7 +33,7 @@ class DeviceLockStatus(str, Enum):
     """
 
     AVAILABLE = "available"
-    LOCKED = "locked"      # held by an active plan (queueserver/EE)
+    LOCKED = "locked"      # held by an active plan (lock written by queueserver to configuration_service)
     DISABLED = "disabled"  # administratively disabled in configuration_service
     UNKNOWN = "unknown"
 
@@ -154,7 +165,13 @@ class DeviceCommandResponse(BaseModel):
 
 
 class CoordinationStatus(BaseModel):
-    """Coordination status from Experiment Execution Service."""
+    """Coordination status read from configuration_service's device-lock state.
+
+    Locks are written into configuration_service by queueserver / any plan-
+    execution service via ``POST /api/v1/devices/lock``; direct_control reads
+    them via ``GET /api/v1/devices/{name}/status``. We never talk to EE or
+    queueserver directly — see feedback_direct_control_no_ee_polling.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -202,23 +219,35 @@ class PVValue(BaseModel):
     lower_disp_limit: Optional[float] = None
     upper_disp_limit: Optional[float] = None
 
-    read_access: bool = True
-    write_access: bool = True
+    # Default to no access — assume locked-out until EPICS confirms otherwise.
+    # Pre-M14 these defaulted to True/True so any construction site that
+    # forgot to populate them would advertise the PV as fully writable.
+    # See feedback_no_silent_fallbacks.
+    read_access: bool = False
+    write_access: bool = False
 
 
 class PVUpdate(BaseModel):
-    """PV update notification sent via WebSocket (ophyd-websocket compatible)."""
+    """PV update notification sent via WebSocket (ophyd-websocket compatible).
+
+    Wire field names match finch's ``ValueUpdateResponse`` directly — `pv`
+    (not `pv_name`) and `timestamp` as unix-epoch seconds (not ISO string).
+    See ``finch/src/api/ophyd/ophydPVSocketTypes.ts`` for the contract.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     event_type: str = "pv_update"
-    pv_name: str = Field(..., serialization_alias="pv")
+    pv: str
     value: Any
     timestamp: datetime
     status: int = 0
     severity: int = 0
     connected: bool = True
-    read_access: bool = True
+    # Default to no access. See PVValue rationale; PVUpdate's pre-M14
+    # default of read_access=True (write_access already False) silently
+    # painted streaming-update PVs as readable regardless of CA reality.
+    read_access: bool = False
     write_access: bool = False
     alarm_status: Optional[str] = None
     alarm_severity: Optional[int] = None
@@ -230,11 +259,13 @@ class PVUpdate(BaseModel):
     units: Optional[str] = None
     precision: Optional[int] = None
 
+    _serialize_timestamp = field_serializer("timestamp")(_serialize_unix_epoch)
+
     @classmethod
     def from_value(cls, pv_value: "PVValue", **overrides: Any) -> "PVUpdate":
         """Build a PVUpdate carrying the core fields of a PVValue (plus overrides)."""
         return cls(
-            pv_name=pv_value.pv_name,
+            pv=pv_value.pv_name,
             value=pv_value.value,
             timestamp=pv_value.timestamp,
             status=pv_value.status,
@@ -260,8 +291,9 @@ class PVInfo(BaseModel):
     pv_name: str
     value: Any = None
     connected: bool
-    read_access: bool = True
-    write_access: bool = True
+    # Default to no access (mirror PVValue/PVUpdate post-M14).
+    read_access: bool = False
+    write_access: bool = False
     timestamp: datetime
 
     lower_ctrl_limit: Optional[float] = None
@@ -286,8 +318,9 @@ class PVValueResponse(BaseModel):
     value: Any
     timestamp: datetime
     connected: bool = True
-    read_access: bool = True
-    write_access: bool = True
+    # Default to no access (mirror PVValue/PVUpdate post-M14).
+    read_access: bool = False
+    write_access: bool = False
 
 
 class PVLimits(BaseModel):
@@ -417,7 +450,12 @@ class NestedDeviceResponse(BaseModel):
 
 
 class DeviceUpdate(BaseModel):
-    """Device value update notification (ophyd-websocket compatible)."""
+    """Device value update notification (ophyd-websocket compatible).
+
+    Wire shape matches finch's ``ValueUpdateResponse`` for the device
+    socket — `device` (not `device_name`), `timestamp` as unix-epoch
+    seconds. See ``finch/src/api/ophyd/ophydDeviceSocketTypes.ts``.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -429,6 +467,8 @@ class DeviceUpdate(BaseModel):
     connected: bool = True
     read_access: Optional[bool] = True
     write_access: Optional[bool] = None
+
+    _serialize_timestamp = field_serializer("timestamp")(_serialize_unix_epoch)
 
 
 class DeviceInfo(BaseModel):
@@ -474,12 +514,27 @@ class HealthResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str = "healthy"
+    status: Literal["healthy", "unhealthy"] = "healthy"
     timestamp: datetime
     coordination_service_available: bool
+    coordination_service_detail: Optional[str] = None
     active_subscriptions: int = 0
     connected_pvs: int = 0
     websocket_connections: int = 0
+
+
+class ServiceAvailability(BaseModel):
+    """Result of a dependency availability probe.
+
+    `detail` is populated only when ``available=False`` so the caller can
+    surface the actual failure reason in /health, instead of the bare
+    True/False that hid all the failure modes pre-S6.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    available: bool
+    detail: Optional[str] = None
 
 
 # ===== Exceptions =====
@@ -511,6 +566,14 @@ class MonitoringError(Exception):
 
 class PVNotFoundError(MonitoringError):
     """Raised when a requested PV cannot be found."""
+
+
+class PVReadError(MonitoringError):
+    """Raised when reading a subscribed PV fails (transient EPICS error).
+
+    Distinct from ``PVNotFoundError`` so callers can map it to a 5xx
+    instead of a 404 — the PV *is* tracked, EPICS just failed to read.
+    """
 
 
 class SubscriptionError(MonitoringError):

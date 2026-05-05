@@ -20,7 +20,12 @@ logger = structlog.get_logger(__name__)
 
 # Where the threadsafe coroutine was scheduled from. Closed set so a typo
 # at the call site is a type error rather than a silent log-tag drift.
-ThreadsafeCallSite = Literal["pv_broadcast_update", "device_broadcast_update"]
+ThreadsafeCallSite = Literal[
+    "pv_broadcast_update",
+    "device_broadcast_update",
+    "pv_callback_error",
+    "device_callback_error",
+]
 
 
 def log_threadsafe_future_exceptions(
@@ -148,8 +153,99 @@ async def send_event(ws, type_: str, **fields: Any) -> None:
 
 
 async def send_error(ws: WebSocket, message: str, **fields: Any) -> None:
-    """Send a WS error envelope with the given message."""
-    await send_event(ws, "error", message=message, **fields)
+    """Send a WS error envelope.
+
+    Per finch's ophyd-websocket contract (``finch/src/api/ophyd/
+    useOphydPVSocket.tsx:171``), the human-readable text lives in an
+    ``error`` field on the wire. The Python parameter name stays
+    ``message`` so existing callers keep working unchanged.
+    """
+    await send_event(ws, "error", error=message, **fields)
+
+
+async def fanout_error(
+    ws_by_client: dict[str, Optional["LockedWS"]],
+    message: str,
+    *,
+    log_event: str,
+    error_envelope_fields: dict,
+    log_fields: dict,
+) -> None:
+    """Fan out an error envelope to a pre-snapshotted set of clients.
+
+    Caller takes the manager lock once, snapshots ``{client_id: ws}``,
+    then hands the dict here so the fan-out does not reacquire the
+    lock per client. Clients whose websocket is ``None`` (disconnected
+    between snapshot and send-attempt) are skipped silently. Send
+    failures are logged at warning under ``log_event`` with the
+    caller-supplied fields and never re-raised — one wedged client
+    must not poison fan-out for the others.
+    """
+    for client_id, websocket in ws_by_client.items():
+        if websocket is None:
+            continue
+        try:
+            await send_error(websocket, message, **error_envelope_fields)
+        except Exception as send_exc:  # noqa: BLE001
+            logger.warning(
+                log_event,
+                client_id=client_id,
+                error=str(send_exc),
+                **log_fields,
+            )
+
+
+async def send_payload_or_size_error(
+    ws: "LockedWS",
+    payload: Any,
+    *,
+    log_event: str,
+    log_fields: dict,
+    oversize_message: str,
+    error_envelope_fields: dict,
+    notify_on_generic_exception: bool = False,
+) -> None:
+    """Send ``payload`` through the size-cap-aware ``LockedWS`` and translate
+    failures into either a structured error envelope or a log line.
+
+    Three failure paths are unified here:
+    - ``TimeoutError``: log a warning. Connection is likely wedged; one
+      missed update is acceptable and the next send will close it.
+    - ``WebSocketResponseTooLarge``: log + emit a ``send_error`` envelope
+      so the client knows their update was dropped (per the finch
+      no-silent-fallbacks contract).
+    - Generic ``Exception``: log. If ``notify_on_generic_exception`` is
+      true, also emit an error envelope. Use this for one-shot sends
+      where losing the message silently is harmful (e.g. ``meta`` on
+      subscribe); leave false for per-update fan-outs where the next
+      tick recovers and notifying every drop would amplify noise.
+
+    Re-uses ``send_error`` for the structured envelope so the field-name
+    contract (``error`` not ``message``) lives in one place.
+    """
+    try:
+        await ws.send_json(payload)
+        return
+    except TimeoutError:
+        logger.warning(f"{log_event}_timeout", **log_fields)
+        return
+    except WebSocketResponseTooLarge as exc:
+        logger.warning(f"{log_event}_too_large", error=str(exc), **log_fields)
+        envelope_msg = oversize_message
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"{log_event}_failed", error=str(exc), exc_info=True, **log_fields)
+        if not notify_on_generic_exception:
+            return
+        envelope_msg = f"send failed: {exc}"
+
+    try:
+        await send_error(ws, envelope_msg, **error_envelope_fields)
+    except Exception as inner_err:  # noqa: BLE001
+        logger.debug(
+            f"{log_event}_error_envelope_failed",
+            error=str(inner_err),
+            **log_fields,
+        )
 
 
 async def heartbeat_loop(ws: WebSocket, interval: float) -> None:

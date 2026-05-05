@@ -36,6 +36,7 @@ from .models import (
     NestedDeviceRequest,
     NestedDeviceResponse,
     PVNotFoundError,
+    PVReadError,
     PVSetRequest,
     PVSetResponse,
     PVValue,
@@ -46,13 +47,20 @@ from .registry_client import RegistryClient, RegistryValidationError
 logger = structlog.get_logger(__name__)
 
 
+_OPENAPI_EXPORT_PATH_ENV = "OPHYD_SERVICE_OPENAPI_EXPORT_PATH"
+
+
 def _maybe_export_openapi(app: FastAPI) -> None:
-    """If OPHYD_SERVICE_OPENAPI_EXPORT_PATH is set, dump the schema there.
+    """If ``_OPENAPI_EXPORT_PATH_ENV`` is set, dump the schema there.
 
     Used by docker-compose to publish the schema onto the shared-schema volume
     for the frontend's codegen watcher. A no-op in local dev unless the env var is set.
+
+    Setting the env var is an explicit "I expect this to work" signal — if the
+    write fails (volume unwritable, parent missing, etc.) we fail startup rather
+    than let the frontend codegen silently consume a stale schema.
     """
-    path = os.environ.get("OPHYD_SERVICE_OPENAPI_EXPORT_PATH")
+    path = os.environ.get(_OPENAPI_EXPORT_PATH_ENV)
     if not path:
         return
     try:
@@ -62,10 +70,15 @@ def _maybe_export_openapi(app: FastAPI) -> None:
         out = _Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(app.openapi(), indent=2) + "\n")
-        logger.info("Exported OpenAPI schema", path=str(out))
+        logger.info("openapi_schema_exported", path=str(out))
     except Exception as exc:
-        # Non-fatal: the service still starts if the shared volume is unwritable.
-        logger.warning("Failed to export OpenAPI schema", path=path, error=str(exc))
+        logger.error(
+            "openapi_schema_export_failed", path=path, error=str(exc), exc_info=True
+        )
+        raise RuntimeError(
+            f"OpenAPI schema export to {path} failed: {exc}. "
+            f"Unset {_OPENAPI_EXPORT_PATH_ENV} to skip export."
+        ) from exc
 
 
 @asynccontextmanager
@@ -338,24 +351,48 @@ def _raise_http_for_device_unavailable(
     raise HTTPException(status_code=423, detail=str(exc))
 
 
+def _raise_http_501_not_implemented(
+    exc: NotImplementedError,
+    event: str,
+    **log_fields: Any,
+) -> None:
+    """Translate a placeholder ``NotImplementedError`` into a clear 501.
+
+    Per the no-silent-fallbacks audit, device-method endpoints whose
+    underlying ophyd integration isn't done must surface 501 with the
+    exception's message rather than 200 OK with ``success=False``.
+    """
+    logger.warning(event, error=str(exc), **log_fields)
+    raise HTTPException(status_code=501, detail=str(exc))
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check(
     coordination_client: CoordinationService = Depends(get_coordination_client),
     pv_monitor: PVMonitor = Depends(get_pv_monitor),
     ws_manager=Depends(get_ws_manager),
 ):
-    """Combined health check: coordination availability and monitoring stats."""
-    coord_available = await coordination_client.is_service_available()
+    """Combined health check: coordination availability and monitoring stats.
+
+    Returns 503 when configuration_service is unreachable so LB readiness
+    probes can route away. ``coordination_service_detail`` carries the
+    structured reason (timeout / connect-refused / non-2xx).
+    """
+    coord = await coordination_client.is_service_available()
     stats = ws_manager.get_stats()
 
-    return HealthResponse(
-        status="healthy" if coord_available else "degraded",
+    body = HealthResponse(
+        status="healthy" if coord.available else "unhealthy",
         timestamp=datetime.now(),
-        coordination_service_available=coord_available,
+        coordination_service_available=coord.available,
+        coordination_service_detail=coord.detail,
         active_subscriptions=len(pv_monitor.get_connected_pvs()),
         connected_pvs=stats["connected_pvs"],
         websocket_connections=stats["active_connections"],
     )
+    if not coord.available:
+        return JSONResponse(status_code=503, content=body.model_dump(mode="json"))
+    return body
 
 
 @app.get("/api/v1/stats")
@@ -365,7 +402,7 @@ async def get_stats(
     ws_manager=Depends(get_ws_manager),
     device_ws_manager=Depends(get_device_ws_manager),
 ):
-    coord_available = await coordination_client.is_service_available()
+    coord = await coordination_client.is_service_available()
     pv_stats = ws_manager.get_stats()
     device_stats = device_ws_manager.get_stats()
 
@@ -373,7 +410,8 @@ async def get_stats(
         "service": "direct_control",
         "timestamp": datetime.now().isoformat(),
         "coordination_enabled": settings.coordination_check_enabled,
-        "coordination_service_available": coord_available,
+        "coordination_service_available": coord.available,
+        "coordination_service_detail": coord.detail,
         "command_timeout": settings.command_timeout,
         "pv_socket": {
             "websocket_connections": pv_stats["active_connections"],
@@ -536,6 +574,9 @@ async def get_monitored_pv_value(
     except PVNotFoundError as e:
         logger.warning("pv_not_found", pv_name=pv_name, error=str(e))
         raise HTTPException(status_code=404, detail=str(e))
+    except PVReadError as e:
+        logger.warning("pv_read_failed", pv_name=pv_name, error=str(e))
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error("get_monitored_pv_error", pv_name=pv_name, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
@@ -593,6 +634,10 @@ async def execute_device_method(
     except CoordinationCheckError as e:
         logger.error("coordination_check_failed", device_name=request.device_name, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
+    except NotImplementedError as e:
+        _raise_http_501_not_implemented(
+            e, "device_method_not_implemented", device_name=request.device_name
+        )
     except Exception as e:
         logger.error(
             "device_command_error",
@@ -626,6 +671,8 @@ async def stop_device(
     except CoordinationCheckError as e:
         logger.error("coordination_check_failed", device_name=device_name, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
+    except NotImplementedError as e:
+        _raise_http_501_not_implemented(e, "device_stop_not_implemented", device_name=device_name)
     except Exception as e:
         logger.error("device_stop_error", device_name=device_name, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -787,6 +834,10 @@ async def access_nested_device(
     except CoordinationCheckError as e:
         logger.error("coordination_check_failed", device_path=device_path, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
+    except NotImplementedError as e:
+        _raise_http_501_not_implemented(
+            e, "nested_device_not_implemented", device_path=device_path
+        )
     except Exception as e:
         logger.error("nested_device_error", device_path=device_path, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -816,6 +867,10 @@ async def get_nested_device_value(
             "value": value,
             "timestamp": datetime.now().isoformat(),
         }
+    except NotImplementedError as e:
+        _raise_http_501_not_implemented(
+            e, "nested_device_read_not_implemented", device_path=device_path
+        )
     except Exception as e:
         logger.error("nested_device_read_error", device_path=device_path, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))

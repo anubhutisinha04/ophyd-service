@@ -10,7 +10,7 @@ Implements: PVMonitor protocol
 import os
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import Callable, Deque, Dict, List, Optional
+from typing import Callable, Deque, Dict, List, Literal, NamedTuple, Optional
 
 import numpy as np
 import structlog
@@ -18,7 +18,7 @@ import threading
 
 from .._array_metadata import describe_array
 from ..config import Settings
-from ..models import PVNotFoundError, PVUpdate, PVValue
+from ..models import PVNotFoundError, PVReadError, PVUpdate, PVValue
 
 # Set EPICS env vars before importing ophyd/pyepics
 # pyepics reads these at import time
@@ -33,6 +33,19 @@ if _epics_auto:
 from ophyd import EpicsSignal, EpicsSignalRO
 
 logger = structlog.get_logger(__name__)
+
+
+class _Subscriber(NamedTuple):
+    """A registered (callback, on_error) pair for a subscribed PV.
+
+    The optional ``on_error`` is invoked synchronously on the CA thread
+    when ``callback`` raises during a value or meta update — letting the
+    subscriber translate the failure into a user-visible signal (e.g. a
+    ``pv_error`` WebSocket envelope) instead of having it disappear into
+    a log line.
+    """
+    callback: Callable[["PVUpdate"], None]
+    on_error: Optional[Callable[[BaseException], None]]
 
 
 class PVMonitorManager:
@@ -51,7 +64,7 @@ class PVMonitorManager:
         self._buffers: Dict[str, Deque[PVValue]] = defaultdict(
             lambda: deque(maxlen=settings.pv_buffer_size)
         )
-        self._callbacks: Dict[str, List[Callable]] = defaultdict(list)
+        self._callbacks: Dict[str, List[_Subscriber]] = defaultdict(list)
         self._connection_status: Dict[str, bool] = {}
         self._latest_values: Dict[str, PVValue] = {}
         self._lock = threading.RLock()
@@ -66,6 +79,7 @@ class PVMonitorManager:
         pv_name: str,
         callback: Optional[Callable[[PVUpdate], None]] = None,
         read_only: bool = False,
+        on_error: Optional[Callable[[BaseException], None]] = None,
     ) -> None:
         with self._lock:
             if pv_name not in self._signals:
@@ -122,7 +136,47 @@ class PVMonitorManager:
                     raise PVNotFoundError(f"PV {pv_name} subscription failed: {e}")
 
             if callback:
-                self._callbacks[pv_name].append(callback)
+                self._callbacks[pv_name].append(_Subscriber(callback, on_error))
+
+    def _dispatch_subscriber(
+        self,
+        pv_name: str,
+        sub: _Subscriber,
+        update: "PVUpdate",
+        *,
+        source: Literal["value", "meta"],
+    ) -> None:
+        """Invoke a subscriber's callback and route any exception to its on_error.
+
+        Runs on the CA listener thread. The outer ``try`` keeps a single
+        broken subscriber from poisoning fan-out for the others on this
+        PV. ``exc_info=True`` preserves the traceback in the log so a
+        future failure isn't a one-line mystery, and ``on_error`` (when
+        provided) lets the subscriber translate the failure into a
+        user-visible signal — e.g. a ``pv_error`` WS envelope.
+        """
+        try:
+            sub.callback(update)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "pv_callback_failed",
+                pv_name=pv_name,
+                source=source,
+                error=str(exc),
+                exc_info=True,
+            )
+            if sub.on_error is None:
+                return
+            try:
+                sub.on_error(exc)
+            except Exception as inner:  # noqa: BLE001
+                logger.error(
+                    "pv_callback_on_error_raised",
+                    pv_name=pv_name,
+                    source=source,
+                    error=str(inner),
+                    exc_info=True,
+                )
 
     def _handle_value_update(self, pv_name: str, value, timestamp):
         with self._lock:
@@ -132,6 +186,7 @@ class PVMonitorManager:
             shape, dtype, ndim, nbytes = describe_array(value)
             converted_value = self._convert_value(value)
             ts = datetime.fromtimestamp(timestamp) if timestamp else datetime.now()
+            read_access, write_access = self._extract_access_bits(pv_name)
 
             pv_value = PVValue(
                 pv_name=pv_name,
@@ -144,25 +199,26 @@ class PVMonitorManager:
                 dtype=dtype,
                 ndim=ndim,
                 nbytes=nbytes,
+                read_access=read_access,
+                write_access=write_access,
             )
             self._latest_values[pv_name] = pv_value
             self._buffers[pv_name].append(pv_value)
 
             update = PVUpdate(
-                pv_name=pv_name,
+                pv=pv_name,
                 value=converted_value,
                 timestamp=ts,
                 status=0,
                 severity=0,
                 connected=True,
+                read_access=read_access,
+                write_access=write_access,
             )
             callbacks = list(self._callbacks.get(pv_name, []))
 
-        for cb in callbacks:
-            try:
-                cb(update)
-            except Exception as e:
-                logger.error("callback_error", pv_name=pv_name, error=str(e))
+        for sub in callbacks:
+            self._dispatch_subscriber(pv_name, sub, update, source="value")
 
     def _handle_meta_update(self, pv_name: str, **kwargs):
         if "connected" not in kwargs:
@@ -182,6 +238,7 @@ class PVMonitorManager:
                 return
             callbacks = list(self._callbacks.get(pv_name, []))
             latest = self._latest_values.get(pv_name)
+            read_access, write_access = self._extract_access_bits(pv_name)
 
         if connected:
             logger.info("pv_reconnected", pv_name=pv_name)
@@ -191,28 +248,55 @@ class PVMonitorManager:
         # Broadcast the connection state change so subscribers see it without
         # waiting for the next value update (or forever, if there isn't one).
         update = PVUpdate(
-            pv_name=pv_name,
+            pv=pv_name,
             value=latest.value if latest else None,
             timestamp=datetime.now(),
             status=0,
             severity=0,
             connected=connected,
+            read_access=read_access,
+            write_access=write_access,
         )
-        for cb in callbacks:
-            try:
-                cb(update)
-            except Exception as e:
-                logger.error("meta_callback_error", pv_name=pv_name, error=str(e))
+        for sub in callbacks:
+            self._dispatch_subscriber(pv_name, sub, update, source="meta")
+
+    def _extract_access_bits(self, pv_name: str) -> tuple[bool, bool]:
+        """Read (read_access, write_access) from a subscribed signal's CA PV.
+
+        Caller must hold ``self._lock``. Returns ``(False, False)`` if the
+        signal is missing or extraction fails — matches the no-silent-fallback
+        policy in ``_signal_to_pv_value``: defaulting to permissive bits
+        would let a UI render writable controls for a PV we never confirmed
+        write access on. Pre-M14 the streaming-update path skipped this
+        entirely and PVUpdate's pydantic defaults silently reported
+        ``read_access=True, write_access=False`` regardless of CA reality.
+        """
+        signal = self._signals.get(pv_name)
+        if signal is None:
+            return False, False
+        try:
+            pv = getattr(signal, "_read_pv", None)
+            if pv is None:
+                return False, False
+            return (
+                bool(getattr(pv, "read_access", False)),
+                bool(getattr(pv, "write_access", False)),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("access_bits_extraction_error", pv_name=pv_name, error=str(e))
+            return False, False
 
     def _convert_value(self, value):
+        # No int-array→ASCII heuristic. Pre-M11 we rendered any uint/int
+        # array whose values were all <256 as a string (after dropping
+        # zeros). That collapsed legitimate uint8 readbacks (status bytes,
+        # image strips) into garbled chars and silently dropped data.
+        # Per feedback_no_silent_fallbacks, surface arrays as-is; the
+        # ``dtype``/``shape`` fields on PVValue carry the structure for
+        # any client that needs to decode a DBR_CHAR waveform back to
+        # string. EPICS DBR_STRING (≤40 chars) still arrives as ``str``
+        # and falls through; bytes is decoded explicitly below.
         if isinstance(value, np.ndarray):
-            if value.dtype.kind in ["i", "u"]:
-                if len(value) > 0 and value.max() < 256:
-                    cleaned = value[value != 0]
-                    try:
-                        return "".join(chr(x) for x in cleaned)
-                    except Exception:
-                        pass
             return value.tolist()
         elif isinstance(value, np.integer):
             return int(value)
@@ -238,7 +322,10 @@ class PVMonitorManager:
         units = precision = enum_strs = None
         lower_ctrl_limit = upper_ctrl_limit = None
         lower_disp_limit = upper_disp_limit = None
-        read_access = write_access = True
+        # Default to no access — assume locked-out until EPICS confirms otherwise.
+        # Defaulting write_access=True would let a UI render writable controls for a
+        # PV we never confirmed write access on. See feedback_no_silent_fallbacks.
+        read_access = write_access = False
 
         try:
             pv = getattr(signal, "_read_pv", None)
@@ -250,8 +337,8 @@ class PVMonitorManager:
                 upper_ctrl_limit = getattr(pv, "upper_ctrl_limit", None)
                 lower_disp_limit = getattr(pv, "lower_disp_limit", None)
                 upper_disp_limit = getattr(pv, "upper_disp_limit", None)
-                read_access = getattr(pv, "read_access", True)
-                write_access = getattr(pv, "write_access", True)
+                read_access = getattr(pv, "read_access", False)
+                write_access = getattr(pv, "write_access", False)
                 if enum_strs and isinstance(enum_strs, tuple):
                     enum_strs = list(enum_strs)
         except Exception as e:
@@ -284,10 +371,11 @@ class PVMonitorManager:
         with self._lock:
             if callback:
                 if pv_name in self._callbacks:
-                    try:
-                        self._callbacks[pv_name].remove(callback)
-                    except ValueError:
-                        pass
+                    # Identity match on the value callback — the on_error
+                    # paired with it (if any) goes away with the entry.
+                    self._callbacks[pv_name] = [
+                        sub for sub in self._callbacks[pv_name] if sub.callback is not callback
+                    ]
             else:
                 self._callbacks.pop(pv_name, None)
 
@@ -308,18 +396,22 @@ class PVMonitorManager:
                 logger.warning("pv_destroy_failed", pv_name=pv_name, error=str(e))
 
     def get_value(self, pv_name: str) -> Optional[PVValue]:
+        """See ``PVMonitor.get_value``: ``None`` if not subscribed, else
+        the cached value or a fresh read; raises ``PVReadError`` if the
+        on-demand read fails."""
         with self._lock:
             if pv_name in self._latest_values:
                 return self._latest_values[pv_name]
 
             if pv_name in self._signals:
+                signal = self._signals[pv_name]
                 try:
-                    signal = self._signals[pv_name]
                     pv_value = self._signal_to_pv_value(pv_name, signal)
-                    self._latest_values[pv_name] = pv_value
-                    return pv_value
                 except Exception as e:
-                    logger.warning("get_value_error", pv_name=pv_name, error=str(e))
+                    logger.warning("pv_read_failed", pv_name=pv_name, error=str(e))
+                    raise PVReadError(f"read failed for {pv_name}: {e}") from e
+                self._latest_values[pv_name] = pv_value
+                return pv_value
 
             return None
 

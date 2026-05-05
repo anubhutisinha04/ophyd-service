@@ -403,3 +403,210 @@ class TestPVLookupEndpoint:
         assert resp1.json()["device_name"] == resp2.json()["device_name"]
         assert resp1.json()["prefix"] == resp2.json()["prefix"]
         assert resp1.json()["sibling_pvs"] == resp2.json()["sibling_pvs"]
+
+    def test_lookup_dangling_device_reference_returns_500(self, client):
+        """M6 regression: PV referencing a non-existent device must fail loudly.
+
+        Pre-fix this returned 200 OK with sibling_pvs={} and count=0,
+        masking referential-integrity corruption as "no siblings".
+        """
+        state = client.app.state.state_container["state"]
+        # Delete the device but leave the PV → device_name link intact.
+        assert "sample_x" in state.registry.devices
+        del state.registry.devices["sample_x"]
+
+        resp = client.get("/api/v1/pvs/lookup?pv_name=BL01:SAMPLE:X.RBV")
+        assert resp.status_code == 500
+        detail = resp.json()["detail"]
+        assert "Registry inconsistency" in detail
+        assert "sample_x" in detail
+        assert "BL01:SAMPLE:X.RBV" in detail
+
+
+class TestCorsOriginsRespectsSettings:
+    """M2 regression: CORS middleware must honor `settings.cors_origins`.
+
+    Pre-fix `allow_origins` was hardcoded to ``["*"]`` regardless of
+    `CONFIG_CORS_ORIGINS`, so deployments that intended to lock down
+    cross-origin access silently allowed everything.
+    """
+
+    @staticmethod
+    def _client(tmp_path, allowed: list[str]) -> TestClient:
+        settings = Settings(
+            use_mock_data=True,
+            db_path=tmp_path / "test.db",
+            cors_origins=allowed,
+        )
+        app = create_app(settings)
+        return TestClient(app)
+
+    def test_allowed_origin_gets_cors_header(self, tmp_path):
+        with self._client(tmp_path, ["http://allowed.example"]) as client:
+            resp = client.get(
+                "/health",
+                headers={"Origin": "http://allowed.example"},
+            )
+            assert resp.status_code == 200
+            assert (
+                resp.headers.get("access-control-allow-origin") == "http://allowed.example"
+            )
+
+    def test_disallowed_origin_gets_no_cors_header(self, tmp_path):
+        with self._client(tmp_path, ["http://allowed.example"]) as client:
+            resp = client.get(
+                "/health",
+                headers={"Origin": "http://evil.example"},
+            )
+            # Endpoint still responds (CORS is browser-enforced), but the
+            # ACA-Origin header is absent so a browser would block the read.
+            assert resp.status_code == 200
+            assert "access-control-allow-origin" not in {
+                k.lower() for k in resp.headers.keys()
+            }
+
+
+class TestHealthEndpointDbProbe:
+    """S5 regression: /health must surface DB unreachability as 503.
+
+    Pre-fix /health returned 200 "healthy" the moment state was injected,
+    without ever touching the DB. A mount-gone or permissions-revoked
+    store would still pass health while every CRUD call 500'd. Now /health
+    runs SELECT 1 against the registry store and flips to 503.
+    """
+
+    def test_health_503_when_registry_store_unreachable(self, client):
+        import sqlite3
+
+        class _BrokenStore:
+            def ping(self) -> None:
+                raise sqlite3.OperationalError("disk I/O error: simulated")
+
+        container = client.app.state.registry_store_container
+        original_store = container["store"]
+        container["store"] = _BrokenStore()
+        try:
+            resp = client.get("/health")
+            assert resp.status_code == 503
+            data = resp.json()
+            assert data["status"] == "unhealthy"
+            assert "disk I/O error" in data["detail"]
+        finally:
+            container["store"] = original_store
+
+    def test_health_200_when_registry_store_healthy(self, client):
+        """Sanity: with a real store, /health stays 200."""
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "healthy"
+
+
+class TestM3StandalonePVStoreInitFailureFailsStartup:
+    """M3 regression: StandalonePVStore init failure must crash startup.
+
+    Pre-fix the lifespan caught any init exception and continued; downstream
+    /standalone-pvs/* endpoints then returned 501 with the misleading message
+    "Set CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=true." even when the flag was set.
+    """
+
+    def test_lifespan_raises_when_pv_store_init_fails(self, mock_settings, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from configuration_service import standalone_pv_store as standalone_pv_module
+        from configuration_service.main import create_app
+
+        def _broken_initialize(self):
+            raise RuntimeError("simulated PV store schema migration failure")
+
+        monkeypatch.setattr(
+            standalone_pv_module.StandalonePVStore, "initialize", _broken_initialize
+        )
+
+        app = create_app(mock_settings)
+        with pytest.raises(RuntimeError, match="simulated PV store schema migration failure"):
+            with TestClient(app):
+                pass  # Entering the with-block runs lifespan; we expect it to raise.
+
+    def test_lifespan_succeeds_when_flag_disabled_and_init_would_fail(
+        self, tmp_path, monkeypatch
+    ):
+        """When the flag is OFF the broken initializer must never run.
+
+        Pins the gate so an unrelated init breakage can't affect deployments
+        that don't opt into the feature.
+        """
+        from fastapi.testclient import TestClient
+
+        from configuration_service import standalone_pv_store as standalone_pv_module
+        from configuration_service.config import Settings
+        from configuration_service.main import create_app
+
+        called = {"initialize": False}
+
+        def _broken_initialize(self):
+            called["initialize"] = True
+            raise RuntimeError("should never run when flag is off")
+
+        monkeypatch.setattr(
+            standalone_pv_module.StandalonePVStore, "initialize", _broken_initialize
+        )
+
+        settings = Settings(
+            use_mock_data=True,
+            db_path=tmp_path / "test.db",
+            device_change_history_enabled=False,
+        )
+        app = create_app(settings)
+        with TestClient(app) as c:
+            assert c.get("/health").status_code == 200
+        assert called["initialize"] is False
+
+
+class TestOpenApiExport:
+    """M13 regression: OpenAPI schema export failures must fail loud.
+
+    Pre-fix the helper logged a warning and continued, leaving the
+    frontend's codegen watcher consuming a stale schema with no signal
+    to operators. Now: if ``OPHYD_SERVICE_OPENAPI_EXPORT_PATH`` is set,
+    the export must succeed or startup raises.
+    """
+
+    def test_export_writes_file_when_env_set(self, tmp_path, monkeypatch):
+        from fastapi import FastAPI
+
+        from configuration_service.main import _maybe_export_openapi
+
+        target = tmp_path / "out" / "openapi.json"
+        monkeypatch.setenv("OPHYD_SERVICE_OPENAPI_EXPORT_PATH", str(target))
+        _maybe_export_openapi(FastAPI())
+        assert target.exists()
+        assert "openapi" in target.read_text()
+
+    def test_export_raises_on_unwritable_path(self, tmp_path, monkeypatch):
+        from fastapi import FastAPI
+
+        from configuration_service.main import _maybe_export_openapi
+
+        # Block parent dir creation by planting a file where the parent should be.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a dir")
+        target = blocker / "openapi.json"
+        monkeypatch.setenv("OPHYD_SERVICE_OPENAPI_EXPORT_PATH", str(target))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            _maybe_export_openapi(FastAPI())
+
+        msg = str(excinfo.value)
+        assert "OpenAPI schema export" in msg
+        assert "OPHYD_SERVICE_OPENAPI_EXPORT_PATH" in msg
+        assert str(target) in msg
+
+    def test_no_op_when_env_unset(self, tmp_path, monkeypatch):
+        from fastapi import FastAPI
+
+        from configuration_service.main import _maybe_export_openapi
+
+        monkeypatch.delenv("OPHYD_SERVICE_OPENAPI_EXPORT_PATH", raising=False)
+        # Should not raise and should not write anything.
+        _maybe_export_openapi(FastAPI())
+        assert list(tmp_path.iterdir()) == []
