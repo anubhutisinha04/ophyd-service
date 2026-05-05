@@ -1084,6 +1084,193 @@ async def test_c2_pv_failures_cleared_on_last_client_unsubscribe():
     )
 
 
+# ─── C2 follow-ups (PR #6 review) ─────────────────────────────────────────────
+#
+# Two issues Copilot caught after the initial C2 fix landed:
+#   * partial recovery during a require_connection retry was discarded along
+#     with the rolled-back client — leaking the CA monitor and leaving the
+#     component listed as "still broken" forever.
+#   * a second client subscribing to the same device while the first
+#     subscriber's gather was in-flight took the "subsequent subscriber" path,
+#     saw an empty failure set, and got a clean ack — masking the failures the
+#     first subscribe was about to surface.
+
+
+@pytest.mark.asyncio
+async def test_c2_partial_recovery_preserved_through_require_connection_rollback():
+    """When subscribe_safely partial-recovers, recoveries stick for other clients."""
+    from direct_control.config import Settings
+    from direct_control.models import DeviceInfo
+    from direct_control.monitoring.device_websocket_manager import DeviceWebSocketManager
+
+    settings = Settings()
+
+    class _PVMonitorStub:
+        def __init__(self):
+            self.subscribe_calls: list[str] = []
+            # bad1 heals on second attempt; bad2 is permanently broken.
+            self.bad1_calls = 0
+
+        def subscribe(self, pv_name, callback, *, on_error=None):
+            self.subscribe_calls.append(pv_name)
+            if pv_name == "IOC:bad1":
+                self.bad1_calls += 1
+                if self.bad1_calls == 1:
+                    raise RuntimeError("CA timeout (transient)")
+                return  # heals
+            if pv_name == "IOC:bad2":
+                raise RuntimeError("CA timeout (permanent)")
+
+        def unsubscribe(self, pv_name, callback):
+            pass
+
+    pv_monitor = _PVMonitorStub()
+    mgr = DeviceWebSocketManager(
+        pv_monitor=pv_monitor,
+        device_controller=object(),
+        settings=settings,
+    )
+    mgr._connections["a"] = object()  # type: ignore[assignment]
+    mgr._connections["b"] = object()  # type: ignore[assignment]
+    mgr._device_subscriptions["a"] = set()
+    mgr._device_subscriptions["b"] = set()
+
+    async def _fetch(_name):
+        return (
+            DeviceInfo(
+                name="dev",
+                device_type="motor",
+                pvs={"good": "IOC:good", "bad1": "IOC:bad1", "bad2": "IOC:bad2"},
+            ),
+            None,
+        )
+
+    mgr._fetch_device_info = _fetch  # type: ignore[method-assign]
+
+    async def _noop(*_a, **_kw):
+        return None
+
+    mgr._send_current_values = _noop  # type: ignore[method-assign]
+
+    # Client A holds the device; bad1 + bad2 fail on first attempt.
+    outcome_a = await mgr.subscribe_device("a", "dev")
+    assert outcome_a.ok is True
+    assert {f.signal for f in outcome_a.failed_pvs} == {"bad1", "bad2"}
+
+    # Client B does subscribe_safely. bad1 recovers on retry, bad2 still fails.
+    # require_connection rolls B back, but the recovery must persist for A.
+    outcome_b = await mgr.subscribe_device("b", "dev", require_connection=True)
+    assert outcome_b.ok is False
+    assert outcome_b.reason == "not_connected"
+
+    # The recovery is the load-bearing assertion: bad1 left _device_pv_failures
+    # and joined _device_pvs, so A keeps receiving its updates and the eventual
+    # last-client teardown unsubscribes the live CA monitor.
+    assert "bad1" in mgr._device_pvs["dev"], (
+        "recovered component must persist in _device_pvs after rollback (C2 follow-up A)"
+    )
+    assert mgr._device_pv_failures["dev"].keys() == {"bad2"}, (
+        "recovered component must drop out of _device_pv_failures even on rollback"
+    )
+    # B is not on the device; A still is.
+    assert mgr._device_clients["dev"] == {"a"}
+    assert "dev" not in mgr._device_subscriptions["b"]
+
+
+@pytest.mark.asyncio
+async def test_c2_concurrent_subscribers_to_same_device_serialize():
+    """A second subscribe in-flight with the first must wait + see consistent failures."""
+    from direct_control.config import Settings
+    from direct_control.models import DeviceInfo
+    from direct_control.monitoring.device_websocket_manager import DeviceWebSocketManager
+    import asyncio as _asyncio
+
+    settings = Settings()
+
+    # Gate A's gather on this event so we can deterministically arrange the
+    # race: A enters subscribe_device first, blocks inside subscribe(...) while
+    # B is dispatched, and only completes once we set the event.
+    a_subscribe_started = _asyncio.Event()
+    a_subscribe_release = _asyncio.Event()
+
+    class _PVMonitorStub:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []  # (client, pv)
+
+        def subscribe(self, pv_name, callback, *, on_error=None):
+            # Identify which client this subscribe is for via the closure
+            # captured in the callback's __qualname__ — but simpler: distinguish
+            # by who's currently holding the event. A holds it first.
+            if not a_subscribe_started.is_set():
+                a_subscribe_started.set()
+                # Spin-wait for the release event from the test thread.
+                # Using a sync busy-wait is fine here — pv_monitor.subscribe
+                # runs on a thread (asyncio.to_thread), not the event loop.
+                import time
+                while not a_subscribe_release.is_set():
+                    time.sleep(0.005)
+            if "bad" in pv_name:
+                raise RuntimeError("CA timeout")
+
+        def unsubscribe(self, pv_name, callback):
+            pass
+
+    pv_monitor = _PVMonitorStub()
+    mgr = DeviceWebSocketManager(
+        pv_monitor=pv_monitor,
+        device_controller=object(),
+        settings=settings,
+    )
+    mgr._connections["a"] = object()  # type: ignore[assignment]
+    mgr._connections["b"] = object()  # type: ignore[assignment]
+    mgr._device_subscriptions["a"] = set()
+    mgr._device_subscriptions["b"] = set()
+
+    async def _fetch(_name):
+        return (
+            DeviceInfo(
+                name="dev",
+                device_type="motor",
+                pvs={"good": "IOC:good", "bad": "IOC:bad"},
+            ),
+            None,
+        )
+
+    mgr._fetch_device_info = _fetch  # type: ignore[method-assign]
+
+    async def _noop(*_a, **_kw):
+        return None
+
+    mgr._send_current_values = _noop  # type: ignore[method-assign]
+
+    # Kick off A; it will block inside the gather waiting for the release.
+    a_task = _asyncio.create_task(mgr.subscribe_device("a", "dev"))
+    await a_subscribe_started.wait()
+
+    # While A is mid-gather, fire B. Without the per-device lock, B would
+    # take the "subsequent subscriber" path, see an empty failure set, and
+    # return ok=True with no failed_pvs. The lock must make B wait for A.
+    b_task = _asyncio.create_task(mgr.subscribe_device("b", "dev"))
+    # Give B a moment to enter and block on the per-device lock.
+    await _asyncio.sleep(0.05)
+    assert not b_task.done(), (
+        "B must block on the per-device subscribe lock while A is in-flight "
+        "(C2 follow-up B)"
+    )
+
+    # Release A; both should now complete with consistent state.
+    a_subscribe_release.set()
+    outcome_a = await a_task
+    outcome_b = await b_task
+
+    assert outcome_a.ok is True
+    assert {f.signal for f in outcome_a.failed_pvs} == {"bad"}
+    assert outcome_b.ok is True
+    assert {f.signal for f in outcome_b.failed_pvs} == {"bad"}, (
+        "B must observe A's failure set, not an empty one (C2 follow-up B)"
+    )
+
+
 # ─── M7: PV access bits must default to False on extraction failure ──────────
 #
 # Three sites pre-fix told a UI "you can write this PV" when we hadn't
