@@ -179,54 +179,46 @@ class PVMonitorManager:
                 )
 
     def _handle_value_update(self, pv_name: str, value, timestamp):
-        try:
-            with self._lock:
-                if pv_name not in self._signals:
-                    return
+        with self._lock:
+            if pv_name not in self._signals:
+                return
 
-                shape, dtype, ndim, nbytes = describe_array(value)
-                converted_value = self._convert_value(value)
-                ts = datetime.fromtimestamp(timestamp) if timestamp else datetime.now()
-                read_access, write_access = self._extract_access_bits(pv_name)
+            shape, dtype, ndim, nbytes = describe_array(value)
+            converted_value = self._convert_value(value)
+            ts = datetime.fromtimestamp(timestamp) if timestamp else datetime.now()
+            read_access, write_access = self._extract_access_bits(pv_name)
 
-                pv_value = PVValue(
-                    pv_name=pv_name,
-                    value=converted_value,
-                    timestamp=ts,
-                    status=0,
-                    severity=0,
-                    connected=True,
-                    shape=shape,
-                    dtype=dtype,
-                    ndim=ndim,
-                    nbytes=nbytes,
-                    read_access=read_access,
-                    write_access=write_access,
-                )
-                self._latest_values[pv_name] = pv_value
-                self._buffers[pv_name].append(pv_value)
-
-                update = PVUpdate(
-                    pv=pv_name,
-                    value=converted_value,
-                    timestamp=ts,
-                    status=0,
-                    severity=0,
-                    connected=True,
-                    read_access=read_access,
-                    write_access=write_access,
-                )
-                callbacks = list(self._callbacks.get(pv_name, []))
-
-            for sub in callbacks:
-                self._dispatch_subscriber(pv_name, sub, update, source="value")
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                "value_update_failed",
+            pv_value = PVValue(
                 pv_name=pv_name,
-                error=str(e),
-                exc_info=True,
+                value=converted_value,
+                timestamp=ts,
+                status=0,
+                severity=0,
+                connected=True,
+                shape=shape,
+                dtype=dtype,
+                ndim=ndim,
+                nbytes=nbytes,
+                read_access=read_access,
+                write_access=write_access,
             )
+            self._latest_values[pv_name] = pv_value
+            self._buffers[pv_name].append(pv_value)
+
+            update = PVUpdate(
+                pv=pv_name,
+                value=converted_value,
+                timestamp=ts,
+                status=0,
+                severity=0,
+                connected=True,
+                read_access=read_access,
+                write_access=write_access,
+            )
+            callbacks = list(self._callbacks.get(pv_name, []))
+
+        for sub in callbacks:
+            self._dispatch_subscriber(pv_name, sub, update, source="value")
 
     def _handle_meta_update(self, pv_name: str, **kwargs):
         if "connected" not in kwargs:
