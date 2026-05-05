@@ -231,7 +231,9 @@ class DeviceWebSocketManager:
                             if callback is not None:
                                 releases.append((pv_name, callback))
                         self._device_pv_failures.pop(device_name, None)
-                        self._device_subscribe_locks.pop(device_name, None)
+                        # Keep the per-device subscribe lock alive. Removing it here can
+                        # race with an in-flight subscribe and allow a new lock to be
+                        # created for the same device, breaking per-device serialization.
 
         if heartbeat and not heartbeat.done():
             heartbeat.cancel()
