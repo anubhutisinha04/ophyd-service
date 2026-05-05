@@ -110,10 +110,9 @@ class DeviceWebSocketManager:
         self._connections: Dict[str, LockedWS] = {}
         self._device_subscriptions: Dict[str, Set[str]] = {}
         self._device_pvs: Dict[str, Dict[str, str]] = {}
-        # Per-device map of components whose CA subscribe failed. Visible to
-        # every subscriber via SubscribeOutcome.failed_pvs and retried on the
-        # next subscribe to the device — the natural retry trigger now that
-        # we don't run a background heal task. Cleared on last-client teardown.
+        # Components whose CA subscribe failed, keyed by device. Drives the
+        # retry-on-next-subscribe behavior and SubscribeOutcome.failed_pvs;
+        # cleared on last-client teardown.
         self._device_pv_failures: Dict[str, Dict[str, FailedPV]] = {}
         self._pv_callbacks: Dict[str, Callable[[PVUpdate], None]] = {}
         self._device_clients: Dict[str, Set[str]] = {}
@@ -288,17 +287,11 @@ class DeviceWebSocketManager:
             self._device_subscriptions[client_id].add(device_name)
 
             if device_name not in self._device_clients:
-                # First subscriber: attempt every component. _device_pvs is
-                # populated only with components that succeed, so a later
-                # unsubscribe can't try to tear down a non-existent monitor.
                 self._device_clients[device_name] = set()
-                self._device_pvs[device_name] = {}
-                self._device_pv_failures[device_name] = {}
                 components_to_attempt = list(device_info.pvs.items())
             else:
-                # Subsequent subscriber: retry the previously-failed
-                # components only. Already-subscribed PVs share the existing
-                # CA monitor + callback fanout to _device_clients[device].
+                # Subsequent subscriber: retry only the currently-failing
+                # components; live components share the existing CA monitor.
                 components_to_attempt = [
                     (entry.signal, entry.pv)
                     for entry in self._device_pv_failures.get(device_name, {}).values()
@@ -342,9 +335,6 @@ class DeviceWebSocketManager:
             await self._rollback_device_subscription(client_id, device_name, succeeded)
             return SubscribeOutcome(ok=False, reason="not_connected")
 
-        # Update bookkeeping for both succeeded (incl. recoveries from a prior
-        # failure) and failed, then snapshot the device's current failure set
-        # for the caller.
         async with self._lock:
             device_pvs = self._device_pvs.setdefault(device_name, {})
             failures = self._device_pv_failures.setdefault(device_name, {})
@@ -390,9 +380,6 @@ class DeviceWebSocketManager:
                 if not self._device_clients[device_name]:
                     self._device_clients.pop(device_name, None)
                     self._device_pvs.pop(device_name, None)
-                    # Symmetric cleanup. Failures aren't written until after
-                    # the rollback decision in subscribe_device, so this is
-                    # belt-and-suspenders for any future caller.
                     self._device_pv_failures.pop(device_name, None)
                     for _, pv_name, callback in succeeded:
                         self._pv_callbacks.pop(pv_name, None)
