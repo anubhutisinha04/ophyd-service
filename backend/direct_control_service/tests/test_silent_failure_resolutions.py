@@ -404,9 +404,13 @@ def test_finch_contract_timestamp_is_unix_epoch_seconds(client):
                     f"timestamp must be a number (unix epoch seconds); "
                     f"got {type(ts).__name__} {ts!r}"
                 )
-                # Sanity: should be within a day of "now" (sec since epoch).
+                # Sanity: a real epoch-seconds number, not zero or a parse
+                # error. Window is 30d, not 1d, because conftest reuses any
+                # caproto IOC already on :5064 — a long-running dev IOC's PV
+                # timestamp can legitimately be days old without anything
+                # being wrong with the code under test.
                 now = datetime.now().timestamp()
-                assert abs(now - ts) < timedelta(days=1).total_seconds(), (
+                assert abs(now - ts) < timedelta(days=30).total_seconds(), (
                     f"timestamp {ts} is implausibly far from now ({now})"
                 )
                 return
