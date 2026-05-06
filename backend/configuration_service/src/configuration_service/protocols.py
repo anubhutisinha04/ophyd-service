@@ -16,15 +16,9 @@ Plans are the responsibility of Experiment Execution Service (SVC-001),
 which is the single source of truth for available plans.
 """
 
-from typing import Dict, List, Optional, Protocol, runtime_checkable
+from typing import Dict, List, Protocol, runtime_checkable
 
-from .models import (
-    DeviceMetadata,
-    DeviceInstantiationSpec,
-    DeviceLabel,
-    PVMetadata,
-    DeviceRegistry,
-)
+from .models import DeviceRegistry
 
 
 @runtime_checkable
@@ -52,56 +46,6 @@ class ProfileLoader(Protocol):
         ...
 
 
-@runtime_checkable
-class DeviceRegistryProtocol(Protocol):
-    """
-    Protocol for device registry operations.
-
-    Defines the interface for querying device metadata.
-    """
-
-    def get_device(self, name: str) -> Optional[DeviceMetadata]:
-        """Get device by name."""
-        ...
-
-    def list_devices(
-        self,
-        device_label: Optional[DeviceLabel] = None,
-        pattern: Optional[str] = None,
-        ophyd_class: Optional[str] = None,
-    ) -> List[str]:
-        """List device names with optional filtering."""
-        ...
-
-    def get_pv(self, pv_name: str) -> Optional[PVMetadata]:
-        """Get PV metadata by name."""
-        ...
-
-    def search_pvs(self, pattern: str) -> List[str]:
-        """Search PVs by glob pattern."""
-        ...
-
-    def add_device(self, device: DeviceMetadata) -> None:
-        """Add or update device in registry."""
-        ...
-
-    def remove_device(self, name: str) -> bool:
-        """Remove device from registry.
-
-        Returns True if device was found and removed, False if not found.
-        """
-        ...
-
-    def update_device(
-        self, device: DeviceMetadata, instantiation_spec: Optional[DeviceInstantiationSpec] = None
-    ) -> bool:
-        """Update an existing device in registry.
-
-        Returns True if device existed and was updated, False if not found.
-        """
-        ...
-
-
 class ConfigurationState:
     """
     Container for configuration service state.
@@ -113,7 +57,7 @@ class ConfigurationState:
     of Experiment Execution Service (SVC-001).
     """
 
-    def __init__(self, registry: DeviceRegistryProtocol):
+    def __init__(self, registry: DeviceRegistry):
         """
         Initialize configuration state.
 
@@ -123,7 +67,7 @@ class ConfigurationState:
         self._registry = registry
 
     @property
-    def registry(self) -> DeviceRegistryProtocol:
+    def registry(self) -> DeviceRegistry:
         """Get device registry."""
         return self._registry
 
