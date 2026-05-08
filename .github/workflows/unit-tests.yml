@@ -1,0 +1,86 @@
+# Unit-test the ophyd-service backends.
+#
+# Two parallel jobs, one per backend. Each runs pytest, which respects
+# the backend's coverage gate from pyproject.toml (--cov-fail-under=60
+# for direct_control, =75 for configuration_service).
+#
+# Triggers:
+#   - every PR
+#   - every push to main
+#   - manual via workflow_dispatch
+#
+# Why parallel jobs (not a matrix): clearer failure attribution, and
+# the two backends use different dep-extra formats:
+#   - direct_control: [project.optional-dependencies] dev = [...]
+#   - configuration_service: [dependency-groups] dev = [...] (PEP 735)
+#
+# Runtime: ~2 min per job.
+
+name: unit-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  direct-control-tests:
+    name: direct_control_service pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: backend/direct_control_service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/direct_control_service/pyproject.toml
+
+      - name: Install backend + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run pytest
+        run: pytest
+
+  configuration-service-tests:
+    name: configuration_service pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: backend/configuration_service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/configuration_service/pyproject.toml
+
+      - name: Install backend + dev deps
+        # PEP 735 [dependency-groups] requires pip 25.1+ for --group.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install --group dev
+
+      - name: Run pytest
+        run: pytest
