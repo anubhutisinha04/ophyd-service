@@ -1,0 +1,510 @@
+{
+  "_README": {
+    "purpose": "Reference catalog of runtime device/PV CRUD bodies for the pods/full compose. NOT loaded by configuration_service — happi_db.json is the only file the loader reads.",
+    "usage": "Copy any inner object into Swagger UI at http://localhost:8004/docs and POST it to /api/v1/devices (compounds + leaf signals) or /api/v1/pvs (standalone PVs).",
+    "endpoints": {
+      "create_device":      "POST   /api/v1/devices",
+      "read_device":        "GET    /api/v1/devices/{name}",
+      "read_device_pvs":    "GET    /api/v1/devices/{name}/pvs",
+      "read_device_spec":   "GET    /api/v1/devices/{name}/instantiation",
+      "update_device":      "PUT    /api/v1/devices/{name}",
+      "enable_device":      "PATCH  /api/v1/devices/{name}/enable",
+      "disable_device":     "PATCH  /api/v1/devices/{name}/disable",
+      "delete_device":      "DELETE /api/v1/devices/{name}",
+      "create_standalone":  "POST   /api/v1/pvs",
+      "list_standalone":    "GET    /api/v1/pvs/standalone",
+      "update_standalone":  "PUT    /api/v1/pvs/standalone/{pv_name}",
+      "delete_standalone":  "DELETE /api/v1/pvs/standalone/{pv_name}"
+    },
+    "ioc_inventory": {
+      "ioc_random_walk":   {"prefix": "random_walk:",       "pvs": ["random_walk:dt", "random_walk:x"]},
+      "ioc_random_walk_h": {"prefix": "random_walk:horiz-", "pvs": ["random_walk:horiz-dt", "random_walk:horiz-x"]},
+      "ioc_random_walk_v": {"prefix": "random_walk:vert-",  "pvs": ["random_walk:vert-dt", "random_walk:vert-x"]},
+      "ioc_thermo":        {"prefix": "thermo:",            "pvs": ["thermo:I (RO)", "thermo:SP", "thermo:K", "thermo:omega", "thermo:Tvar"]},
+      "ioc_fake_motor":    {"prefix": "sim:",               "pvs": ["sim:mtr1 (motor record: .VAL .RBV .VELO .ACCL .STOP .DMOV .HLM .LLM ...)", "sim:mtr2", "sim:mtr3"]}
+    },
+    "notes": [
+      "metadata.name and instantiation_spec.name MUST match (server returns 400 otherwise).",
+      "device_label enum: motor | detector | signal | flyer | readable | device.",
+      "pvs map is verbatim — runtime CRUD does NOT auto-derive component->PV mapping.",
+      "localdevs.RandomWalk / localdevs.Thermo import paths are stored as text; configuration_service does not import them. direct_control reads PVs by name."
+    ]
+  },
+
+  "compound_devices": {
+
+    "random_walk": {
+      "metadata": {
+        "name": "random_walk",
+        "device_label": "device",
+        "ophyd_class": "RandomWalk",
+        "module": "localdevs",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {
+          "dt": "random_walk:dt",
+          "x":  "random_walk:x"
+        },
+        "labels": ["random_walk"],
+        "documentation": "random_walk IOC at random_walk: — components: dt (config), x (hinted)."
+      },
+      "instantiation_spec": {
+        "name": "random_walk",
+        "device_class": "localdevs.RandomWalk",
+        "args": ["random_walk:"],
+        "kwargs": {"name": "random_walk"},
+        "active": true
+      }
+    },
+
+    "random_walk_h": {
+      "metadata": {
+        "name": "random_walk_h",
+        "device_label": "device",
+        "ophyd_class": "RandomWalk",
+        "module": "localdevs",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {
+          "dt": "random_walk:horiz-dt",
+          "x":  "random_walk:horiz-x"
+        },
+        "labels": ["random_walk", "horizontal"],
+        "documentation": "Horizontal random walk (random_walk:horiz- prefix)."
+      },
+      "instantiation_spec": {
+        "name": "random_walk_h",
+        "device_class": "localdevs.RandomWalk",
+        "args": ["random_walk:horiz-"],
+        "kwargs": {"name": "random_walk_h"},
+        "active": true
+      }
+    },
+
+    "random_walk_v": {
+      "metadata": {
+        "name": "random_walk_v",
+        "device_label": "device",
+        "ophyd_class": "RandomWalk",
+        "module": "localdevs",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {
+          "dt": "random_walk:vert-dt",
+          "x":  "random_walk:vert-x"
+        },
+        "labels": ["random_walk", "vertical"],
+        "documentation": "Vertical random walk (random_walk:vert- prefix)."
+      },
+      "instantiation_spec": {
+        "name": "random_walk_v",
+        "device_class": "localdevs.RandomWalk",
+        "args": ["random_walk:vert-"],
+        "kwargs": {"name": "random_walk_v"},
+        "active": true
+      }
+    },
+
+    "thermo": {
+      "metadata": {
+        "name": "thermo",
+        "device_label": "device",
+        "ophyd_class": "Thermo",
+        "module": "localdevs",
+        "is_readable": true,
+        "is_movable": true,
+        "is_stoppable": true,
+        "is_subscribable": true,
+        "pvs": {
+          "readback": "thermo:I",
+          "setpoint": "thermo:SP",
+          "K":        "thermo:K",
+          "omega":    "thermo:omega",
+          "Tvar":     "thermo:Tvar"
+        },
+        "labels": ["temperature"],
+        "documentation": "Eurotherm-shape thermo_sim IOC at thermo: — readback I (RO), setpoint SP, plus K/omega/Tvar config."
+      },
+      "instantiation_spec": {
+        "name": "thermo",
+        "device_class": "localdevs.Thermo",
+        "args": ["thermo:"],
+        "kwargs": {"name": "thermo"},
+        "active": true
+      }
+    }
+  },
+
+  "epics_motors": {
+    "_note": "Real motor records from caproto.ioc_examples.fake_motor_record (sim:mtr1/2/3). Unlike mini_beamline's bare-float 'motors', these expose the full motor record (.VAL/.RBV/.VELO/.ACCL/.STOP/.DMOV/.HLM/.LLM/...) and can be wrapped with ophyd.EpicsMotor for the full Movable/Stoppable/Stageable/Configurable/Checkable/Subscribable interface.",
+
+    "motor1": {
+      "metadata": {
+        "name": "motor1",
+        "device_label": "motor",
+        "ophyd_class": "EpicsMotor",
+        "module": "ophyd.epics_motor",
+        "is_movable": true,
+        "is_readable": true,
+        "is_stoppable": true,
+        "is_stageable": true,
+        "is_configurable": true,
+        "is_checkable": true,
+        "is_subscribable": true,
+        "pvs": {
+          "user_setpoint": "sim:mtr1",
+          "user_readback": "sim:mtr1.RBV",
+          "velocity":      "sim:mtr1.VELO",
+          "acceleration":  "sim:mtr1.ACCL",
+          "motor_done_move": "sim:mtr1.DMOV",
+          "motor_stop":      "sim:mtr1.STOP",
+          "high_limit_travel": "sim:mtr1.HLM",
+          "low_limit_travel":  "sim:mtr1.LLM"
+        },
+        "labels": ["motors", "sim"],
+        "documentation": "Fake motor #1 — velocity 1, limits 0-10, precision 3."
+      },
+      "instantiation_spec": {
+        "name": "motor1",
+        "device_class": "ophyd.EpicsMotor",
+        "args": ["sim:mtr1"],
+        "kwargs": {"name": "motor1"},
+        "active": true
+      }
+    },
+
+    "motor2": {
+      "metadata": {
+        "name": "motor2",
+        "device_label": "motor",
+        "ophyd_class": "EpicsMotor",
+        "module": "ophyd.epics_motor",
+        "is_movable": true,
+        "is_readable": true,
+        "is_stoppable": true,
+        "is_stageable": true,
+        "is_configurable": true,
+        "is_checkable": true,
+        "is_subscribable": true,
+        "pvs": {
+          "user_setpoint": "sim:mtr2",
+          "user_readback": "sim:mtr2.RBV",
+          "velocity":      "sim:mtr2.VELO",
+          "acceleration":  "sim:mtr2.ACCL",
+          "motor_done_move": "sim:mtr2.DMOV",
+          "motor_stop":      "sim:mtr2.STOP",
+          "high_limit_travel": "sim:mtr2.HLM",
+          "low_limit_travel":  "sim:mtr2.LLM"
+        },
+        "labels": ["motors", "sim"],
+        "documentation": "Fake motor #2 — velocity 2, limits -10 to 20, precision 2."
+      },
+      "instantiation_spec": {
+        "name": "motor2",
+        "device_class": "ophyd.EpicsMotor",
+        "args": ["sim:mtr2"],
+        "kwargs": {"name": "motor2"},
+        "active": true
+      }
+    },
+
+    "motor3": {
+      "metadata": {
+        "name": "motor3",
+        "device_label": "motor",
+        "ophyd_class": "EpicsMotor",
+        "module": "ophyd.epics_motor",
+        "is_movable": true,
+        "is_readable": true,
+        "is_stoppable": true,
+        "is_stageable": true,
+        "is_configurable": true,
+        "is_checkable": true,
+        "is_subscribable": true,
+        "pvs": {
+          "user_setpoint": "sim:mtr3",
+          "user_readback": "sim:mtr3.RBV",
+          "velocity":      "sim:mtr3.VELO",
+          "acceleration":  "sim:mtr3.ACCL",
+          "motor_done_move": "sim:mtr3.DMOV",
+          "motor_stop":      "sim:mtr3.STOP",
+          "high_limit_travel": "sim:mtr3.HLM",
+          "low_limit_travel":  "sim:mtr3.LLM"
+        },
+        "labels": ["motors", "sim"],
+        "documentation": "Fake motor #3 — velocity 3, limits 0-30, precision 2."
+      },
+      "instantiation_spec": {
+        "name": "motor3",
+        "device_class": "ophyd.EpicsMotor",
+        "args": ["sim:mtr3"],
+        "kwargs": {"name": "motor3"},
+        "active": true
+      }
+    }
+  },
+
+  "leaf_signals": {
+
+    "random_walk_dt": {
+      "metadata": {
+        "name": "random_walk_dt",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "random_walk:dt"},
+        "documentation": "Step interval for random_walk."
+      },
+      "instantiation_spec": {
+        "name": "random_walk_dt",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["random_walk:dt"],
+        "kwargs": {"name": "random_walk_dt"},
+        "active": true
+      }
+    },
+
+    "random_walk_x": {
+      "metadata": {
+        "name": "random_walk_x",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "random_walk:x"},
+        "documentation": "Random-walk value (hinted)."
+      },
+      "instantiation_spec": {
+        "name": "random_walk_x",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["random_walk:x"],
+        "kwargs": {"name": "random_walk_x"},
+        "active": true
+      }
+    },
+
+    "random_walk_h_dt": {
+      "metadata": {
+        "name": "random_walk_h_dt",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "random_walk:horiz-dt"},
+        "documentation": "Step interval for horizontal random walk."
+      },
+      "instantiation_spec": {
+        "name": "random_walk_h_dt",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["random_walk:horiz-dt"],
+        "kwargs": {"name": "random_walk_h_dt"},
+        "active": true
+      }
+    },
+
+    "random_walk_h_x": {
+      "metadata": {
+        "name": "random_walk_h_x",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "random_walk:horiz-x"},
+        "documentation": "Horizontal random-walk value (hinted)."
+      },
+      "instantiation_spec": {
+        "name": "random_walk_h_x",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["random_walk:horiz-x"],
+        "kwargs": {"name": "random_walk_h_x"},
+        "active": true
+      }
+    },
+
+    "random_walk_v_dt": {
+      "metadata": {
+        "name": "random_walk_v_dt",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "random_walk:vert-dt"},
+        "documentation": "Step interval for vertical random walk."
+      },
+      "instantiation_spec": {
+        "name": "random_walk_v_dt",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["random_walk:vert-dt"],
+        "kwargs": {"name": "random_walk_v_dt"},
+        "active": true
+      }
+    },
+
+    "random_walk_v_x": {
+      "metadata": {
+        "name": "random_walk_v_x",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "random_walk:vert-x"},
+        "documentation": "Vertical random-walk value (hinted)."
+      },
+      "instantiation_spec": {
+        "name": "random_walk_v_x",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["random_walk:vert-x"],
+        "kwargs": {"name": "random_walk_v_x"},
+        "active": true
+      }
+    },
+
+    "thermo_readback": {
+      "metadata": {
+        "name": "thermo_readback",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignalRO",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "thermo:I"},
+        "documentation": "Read-only temperature readback (thermo:I, ai record, scanned at 10 Hz)."
+      },
+      "instantiation_spec": {
+        "name": "thermo_readback",
+        "device_class": "ophyd.signal.EpicsSignalRO",
+        "args": ["thermo:I"],
+        "kwargs": {"name": "thermo_readback"},
+        "active": true
+      }
+    },
+
+    "thermo_setpoint": {
+      "metadata": {
+        "name": "thermo_setpoint",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "thermo:SP"},
+        "documentation": "Temperature setpoint (thermo:SP)."
+      },
+      "instantiation_spec": {
+        "name": "thermo_setpoint",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["thermo:SP"],
+        "kwargs": {"name": "thermo_setpoint"},
+        "active": true
+      }
+    },
+
+    "thermo_K": {
+      "metadata": {
+        "name": "thermo_K",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "thermo:K"},
+        "documentation": "Decay constant for thermo simulation."
+      },
+      "instantiation_spec": {
+        "name": "thermo_K",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["thermo:K"],
+        "kwargs": {"name": "thermo_K"},
+        "active": true
+      }
+    },
+
+    "thermo_omega": {
+      "metadata": {
+        "name": "thermo_omega",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "thermo:omega"},
+        "documentation": "Oscillation frequency for thermo simulation."
+      },
+      "instantiation_spec": {
+        "name": "thermo_omega",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["thermo:omega"],
+        "kwargs": {"name": "thermo_omega"},
+        "active": true
+      }
+    },
+
+    "thermo_Tvar": {
+      "metadata": {
+        "name": "thermo_Tvar",
+        "device_label": "signal",
+        "ophyd_class": "EpicsSignal",
+        "module": "ophyd.signal",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {"readback": "thermo:Tvar"},
+        "documentation": "Oscillation amplitude for thermo simulation."
+      },
+      "instantiation_spec": {
+        "name": "thermo_Tvar",
+        "device_class": "ophyd.signal.EpicsSignal",
+        "args": ["thermo:Tvar"],
+        "kwargs": {"name": "thermo_Tvar"},
+        "active": true
+      }
+    }
+  },
+
+  "standalone_pv_alternatives": {
+    "_note": "If you want to register a PV WITHOUT a device wrapper (lighter; no lock semantics, just label-based grouping), POST one of these to /api/v1/pvs instead of /api/v1/devices. A PV cannot be both device-bound AND standalone — pick one.",
+
+    "random_walk_x": {
+      "pv_name": "random_walk:x",
+      "description": "Random-walk value",
+      "protocol": "ca",
+      "access_mode": "read-write",
+      "labels": ["random_walk", "diagnostic"]
+    },
+    "thermo_I": {
+      "pv_name": "thermo:I",
+      "description": "Thermo simulation readback",
+      "protocol": "ca",
+      "access_mode": "read-only",
+      "labels": ["temperature", "diagnostic"]
+    }
+  },
+
+  "update_examples": {
+    "_note": "PUT /api/v1/devices/{name} accepts partial bodies — only included fields change.",
+
+    "add_documentation_and_labels": {
+      "metadata": {
+        "documentation": "Updated description here.",
+        "labels": ["temperature", "sim", "demo"]
+      }
+    },
+    "deactivate_via_spec": {
+      "instantiation_spec": {"active": false}
+    },
+    "rename_pv_mapping": {
+      "metadata": {
+        "pvs": {
+          "readback": "thermo:I",
+          "setpoint": "thermo:SP"
+        }
+      }
+    }
+  }
+}

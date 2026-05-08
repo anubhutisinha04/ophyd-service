@@ -8,13 +8,17 @@
 #   ioc_random_walk_h  — caproto.ioc_examples.random_walk (random_walk:horiz-*)
 #   ioc_random_walk_v  — caproto.ioc_examples.random_walk (random_walk:vert-*)
 #   ioc_thermo         — caproto.ioc_examples.thermo_sim (thermo:*)
+#   ioc_fake_motor     — caproto.ioc_examples.fake_motor_record (sim:mtr1/2/3, full motor records)
 #   configuration_service / direct_control_service — same images as minimal
 #
-# Devices the registry knows about: spot, pinhole, edge, slit, thermo,
-# random_walk[_h|_v], plus motor scalars and compound leaves. See
-# integration/happi/happi_db.json (41 entries total).
+# Devices the registry knows about by default (from happi_db.json): spot,
+# pinhole, edge, slit, plus mini_beamline motor scalars and compound leaves.
+# Devices for ioc_random_walk[_h|_v], ioc_thermo, and ioc_fake_motor are NOT
+# pre-seeded — they exist to be added at runtime via the configuration_service
+# CRUD endpoints (see integration/happi/runtime_seed.json for ready-to-paste
+# request bodies).
 #
-# All five IOCs build from the same image at integration/ioc/Dockerfile;
+# All six IOCs build from the same image at integration/ioc/Dockerfile;
 # different `command:` overrides choose which caproto module + prefix runs.
 #
 # Usage:
@@ -72,6 +76,15 @@ services:
       timeout: 2s
       retries: 10
 
+  ioc_fake_motor:
+    <<: *ioc-base
+    command: ["python", "-m", "caproto.ioc_examples.fake_motor_record", "--list-pvs", "--interfaces", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f caproto.ioc_examples.fake_motor_record > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
   configuration_service:
     build:
       context: ../../../backend/configuration_service
@@ -93,7 +106,7 @@ services:
       # pyepics: list every IOC service so CA search reaches them all on the
       # compose network. Disable broadcast — explicit list keeps stray
       # search requests from leaving the docker net.
-      EPICS_CA_ADDR_LIST: "ioc ioc_random_walk ioc_random_walk_h ioc_random_walk_v ioc_thermo"
+      EPICS_CA_ADDR_LIST: "ioc ioc_random_walk ioc_random_walk_h ioc_random_walk_v ioc_thermo ioc_fake_motor"
       EPICS_CA_AUTO_ADDR_LIST: "NO"
     ports:
       - "8003:8003"
@@ -109,6 +122,8 @@ services:
       ioc_random_walk_v:
         condition: service_healthy
       ioc_thermo:
+        condition: service_healthy
+      ioc_fake_motor:
         condition: service_healthy
 
   frontend:
