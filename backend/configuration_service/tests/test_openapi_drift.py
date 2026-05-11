@@ -14,7 +14,8 @@ import json
 from pathlib import Path
 
 
-# repo root: backend/configuration_service/tests/<this> → ../../../..
+# repo root from this file's directory: tests → service → backend → repo,
+# i.e. ../../../ — which matches parents[3] (parents[0] is the tests dir).
 _COMMITTED_SCHEMA = (
     Path(__file__).resolve().parents[3]
     / "shared-schema"
@@ -22,9 +23,19 @@ _COMMITTED_SCHEMA = (
 )
 
 
-def test_committed_openapi_matches_app(client):
-    """`client` is the existing TestClient fixture (mock-data create_app)."""
-    live = json.loads(json.dumps(client.app.openapi()))
+def test_committed_openapi_matches_app(tmp_path):
+    """Build the app without entering TestClient so lifespan doesn't run.
+
+    The schema doesn't need lifespan to be generated, and avoiding it
+    sidesteps ``_maybe_export_openapi`` writing to the shared-schema
+    path if ``OPHYD_SERVICE_OPENAPI_EXPORT_PATH`` happens to be set
+    in the developer/CI environment.
+    """
+    from configuration_service.config import Settings
+    from configuration_service.main import create_app
+
+    app = create_app(Settings(use_mock_data=True, db_path=tmp_path / "t.db"))
+    live = json.loads(json.dumps(app.openapi()))
     committed = json.loads(_COMMITTED_SCHEMA.read_text())
 
     assert live == committed, (

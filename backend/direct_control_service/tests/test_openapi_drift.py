@@ -14,7 +14,8 @@ import json
 from pathlib import Path
 
 
-# repo root: backend/direct_control_service/tests/<this> → ../../../..
+# repo root from this file's directory: tests → service → backend → repo,
+# i.e. ../../../ — which matches parents[3] (parents[0] is the tests dir).
 _COMMITTED_SCHEMA = (
     Path(__file__).resolve().parents[3] / "shared-schema" / "direct_control.openapi.json"
 )

@@ -360,6 +360,33 @@ class TestPartialUpdateModelFieldParity:
                     f"{cls.__name__}.{field_name} must default to None, got {field_info.default!r}"
                 )
 
+    def test_partial_descriptions_match_canonical(self):
+        """Partial field descriptions must mirror their canonical source.
+
+        The partials reuse ``CanonicalModel.model_fields[name].description``
+        so the generated OpenAPI keeps per-field docs without duplication.
+        If anyone adds an inline ``description="..."`` literal that drifts
+        from the canonical, this test catches it.
+        """
+        from configuration_service.models import (
+            DeviceMetadata,
+            DeviceMetadataUpdate,
+            DeviceInstantiationSpec,
+            DeviceInstantiationSpecUpdate,
+        )
+
+        for src_cls, partial_cls in (
+            (DeviceMetadata, DeviceMetadataUpdate),
+            (DeviceInstantiationSpec, DeviceInstantiationSpecUpdate),
+        ):
+            for field_name, partial_field in partial_cls.model_fields.items():
+                src_desc = src_cls.model_fields[field_name].description
+                assert partial_field.description == src_desc, (
+                    f"{partial_cls.__name__}.{field_name} description "
+                    f"{partial_field.description!r} drifts from "
+                    f"{src_cls.__name__}.{field_name} {src_desc!r}"
+                )
+
     def test_partial_exclude_unset_round_trip(self):
         """exclude_unset must distinguish 'not sent' from 'sent as None'."""
         from configuration_service.models import DeviceMetadataUpdate

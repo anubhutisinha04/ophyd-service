@@ -1846,7 +1846,8 @@
                 "type": "null"
               }
             ],
-            "title": "Name"
+            "title": "Name",
+            "description": "Device name from profile collection"
           },
           "device_class": {
             "anyOf": [
@@ -1857,7 +1858,8 @@
                 "type": "null"
               }
             ],
-            "title": "Device Class"
+            "title": "Device Class",
+            "description": "Fully qualified class path (e.g., 'ophyd.EpicsMotor', 'ophyd.EpicsScaler')"
           },
           "args": {
             "anyOf": [
@@ -1869,7 +1871,8 @@
                 "type": "null"
               }
             ],
-            "title": "Args"
+            "title": "Args",
+            "description": "Positional arguments for device constructor (e.g., ['BL01:DET1:'])"
           },
           "kwargs": {
             "anyOf": [
@@ -1881,7 +1884,8 @@
                 "type": "null"
               }
             ],
-            "title": "Kwargs"
+            "title": "Kwargs",
+            "description": "Keyword arguments for device constructor (e.g., {'name': 'det1'})"
           },
           "active": {
             "anyOf": [
@@ -1892,7 +1896,8 @@
                 "type": "null"
               }
             ],
-            "title": "Active"
+            "title": "Active",
+            "description": "Whether this device should be instantiated"
           }
         },
         "type": "object",
@@ -2334,7 +2339,8 @@
                 "type": "null"
               }
             ],
-            "title": "Name"
+            "title": "Name",
+            "description": "Device name from profile collection"
           },
           "device_label": {
             "anyOf": [
@@ -2344,7 +2350,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Classification of device"
           },
           "ophyd_class": {
             "anyOf": [
@@ -2355,7 +2362,8 @@
                 "type": "null"
               }
             ],
-            "title": "Ophyd Class"
+            "title": "Ophyd Class",
+            "description": "Ophyd device class name"
           },
           "module": {
             "anyOf": [
@@ -2366,7 +2374,8 @@
                 "type": "null"
               }
             ],
-            "title": "Module"
+            "title": "Module",
+            "description": "Python module containing the device class"
           },
           "is_movable": {
             "anyOf": [
@@ -2377,7 +2386,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Movable"
+            "title": "Is Movable",
+            "description": "Implements Movable protocol"
           },
           "is_flyable": {
             "anyOf": [
@@ -2388,7 +2398,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Flyable"
+            "title": "Is Flyable",
+            "description": "Implements Flyable protocol"
           },
           "is_readable": {
             "anyOf": [
@@ -2399,7 +2410,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Readable"
+            "title": "Is Readable",
+            "description": "Implements Readable protocol"
           },
           "is_triggerable": {
             "anyOf": [
@@ -2410,7 +2422,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Triggerable"
+            "title": "Is Triggerable",
+            "description": "Implements Triggerable protocol (has trigger)"
           },
           "is_stageable": {
             "anyOf": [
@@ -2421,7 +2434,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Stageable"
+            "title": "Is Stageable",
+            "description": "Implements Stageable protocol (has stage/unstage)"
           },
           "is_configurable": {
             "anyOf": [
@@ -2432,7 +2446,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Configurable"
+            "title": "Is Configurable",
+            "description": "Implements Configurable protocol (has read_configuration/describe_configuration)"
           },
           "is_pausable": {
             "anyOf": [
@@ -2443,7 +2458,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Pausable"
+            "title": "Is Pausable",
+            "description": "Implements Pausable protocol (has pause/resume)"
           },
           "is_stoppable": {
             "anyOf": [
@@ -2454,7 +2470,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Stoppable"
+            "title": "Is Stoppable",
+            "description": "Implements Stoppable protocol (has stop)"
           },
           "is_subscribable": {
             "anyOf": [
@@ -2465,7 +2482,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Subscribable"
+            "title": "Is Subscribable",
+            "description": "Implements Subscribable protocol (has subscribe/clear_sub)"
           },
           "is_checkable": {
             "anyOf": [
@@ -2476,7 +2494,8 @@
                 "type": "null"
               }
             ],
-            "title": "Is Checkable"
+            "title": "Is Checkable",
+            "description": "Implements Checkable protocol (has check_value)"
           },
           "writes_external_assets": {
             "anyOf": [
@@ -2487,7 +2506,8 @@
                 "type": "null"
               }
             ],
-            "title": "Writes External Assets"
+            "title": "Writes External Assets",
+            "description": "Writes external assets (has collect_asset_docs)"
           },
           "pvs": {
             "anyOf": [
@@ -2501,7 +2521,8 @@
                 "type": "null"
               }
             ],
-            "title": "Pvs"
+            "title": "Pvs",
+            "description": "Component name to PV mapping"
           },
           "hints": {
             "anyOf": [
@@ -2513,7 +2534,8 @@
                 "type": "null"
               }
             ],
-            "title": "Hints"
+            "title": "Hints",
+            "description": "Bluesky hints for plotting/display"
           },
           "read_attrs": {
             "anyOf": [
@@ -2527,7 +2549,8 @@
                 "type": "null"
               }
             ],
-            "title": "Read Attrs"
+            "title": "Read Attrs",
+            "description": "Readable attributes"
           },
           "configuration_attrs": {
             "anyOf": [
@@ -2541,7 +2564,8 @@
                 "type": "null"
               }
             ],
-            "title": "Configuration Attrs"
+            "title": "Configuration Attrs",
+            "description": "Configuration attributes"
           },
           "parent": {
             "anyOf": [
@@ -2552,7 +2576,8 @@
                 "type": "null"
               }
             ],
-            "title": "Parent"
+            "title": "Parent",
+            "description": "Parent device if this is a component"
           },
           "labels": {
             "anyOf": [
@@ -2566,7 +2591,8 @@
                 "type": "null"
               }
             ],
-            "title": "Labels"
+            "title": "Labels",
+            "description": "Device labels for grouping (e.g., 'motors', 'detectors', 'baseline')"
           },
           "beamline": {
             "anyOf": [
@@ -2577,7 +2603,8 @@
                 "type": "null"
               }
             ],
-            "title": "Beamline"
+            "title": "Beamline",
+            "description": "Beamline identifier (from happi)"
           },
           "location_group": {
             "anyOf": [
@@ -2588,7 +2615,8 @@
                 "type": "null"
               }
             ],
-            "title": "Location Group"
+            "title": "Location Group",
+            "description": "Location grouping (from happi)"
           },
           "functional_group": {
             "anyOf": [
@@ -2599,7 +2627,8 @@
                 "type": "null"
               }
             ],
-            "title": "Functional Group"
+            "title": "Functional Group",
+            "description": "Functional grouping (from happi)"
           },
           "documentation": {
             "anyOf": [
@@ -2610,7 +2639,8 @@
                 "type": "null"
               }
             ],
-            "title": "Documentation"
+            "title": "Documentation",
+            "description": "Device documentation/description"
           }
         },
         "type": "object",

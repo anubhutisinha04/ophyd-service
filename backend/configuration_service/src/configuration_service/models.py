@@ -447,11 +447,25 @@ class DeviceInstantiationSpecUpdate(BaseModel):
     DeviceInstantiationSpec — enforced by test_partial_models_field_parity.
     """
 
-    name: Optional[str] = Field(default=None)
-    device_class: Optional[str] = Field(default=None)
-    args: Optional[List[Any]] = Field(default=None)
-    kwargs: Optional[Dict[str, Any]] = Field(default=None)
-    active: Optional[bool] = Field(default=None)
+    # Descriptions are sourced from the canonical class so the generated
+    # OpenAPI keeps per-field docs without manual duplication. Parity is
+    # enforced by TestPartialUpdateModelFieldParity.
+    name: Optional[str] = Field(
+        default=None, description=DeviceInstantiationSpec.model_fields["name"].description
+    )
+    device_class: Optional[str] = Field(
+        default=None,
+        description=DeviceInstantiationSpec.model_fields["device_class"].description,
+    )
+    args: Optional[List[Any]] = Field(
+        default=None, description=DeviceInstantiationSpec.model_fields["args"].description
+    )
+    kwargs: Optional[Dict[str, Any]] = Field(
+        default=None, description=DeviceInstantiationSpec.model_fields["kwargs"].description
+    )
+    active: Optional[bool] = Field(
+        default=None, description=DeviceInstantiationSpec.model_fields["active"].description
+    )
 
 
 class DeviceMetadataUpdate(BaseModel):
@@ -463,31 +477,62 @@ class DeviceMetadataUpdate(BaseModel):
     DeviceMetadata — enforced by test_partial_models_field_parity.
     """
 
-    name: Optional[str] = Field(default=None)
-    device_label: Optional[DeviceLabel] = Field(default=None)
-    ophyd_class: Optional[str] = Field(default=None)
-    module: Optional[str] = Field(default=None)
-    is_movable: Optional[bool] = Field(default=None)
-    is_flyable: Optional[bool] = Field(default=None)
-    is_readable: Optional[bool] = Field(default=None)
-    is_triggerable: Optional[bool] = Field(default=None)
-    is_stageable: Optional[bool] = Field(default=None)
-    is_configurable: Optional[bool] = Field(default=None)
-    is_pausable: Optional[bool] = Field(default=None)
-    is_stoppable: Optional[bool] = Field(default=None)
-    is_subscribable: Optional[bool] = Field(default=None)
-    is_checkable: Optional[bool] = Field(default=None)
-    writes_external_assets: Optional[bool] = Field(default=None)
-    pvs: Optional[Dict[str, str]] = Field(default=None)
-    hints: Optional[Dict[str, Any]] = Field(default=None)
-    read_attrs: Optional[List[str]] = Field(default=None)
-    configuration_attrs: Optional[List[str]] = Field(default=None)
-    parent: Optional[str] = Field(default=None)
-    labels: Optional[List[str]] = Field(default=None)
-    beamline: Optional[str] = Field(default=None)
-    location_group: Optional[str] = Field(default=None)
-    functional_group: Optional[str] = Field(default=None)
-    documentation: Optional[str] = Field(default=None)
+    # Descriptions are sourced from the canonical class so the generated
+    # OpenAPI keeps per-field docs without manual duplication. Parity is
+    # enforced by TestPartialUpdateModelFieldParity.
+    _src = DeviceMetadata.model_fields
+    name: Optional[str] = Field(default=None, description=_src["name"].description)
+    device_label: Optional[DeviceLabel] = Field(
+        default=None, description=_src["device_label"].description
+    )
+    ophyd_class: Optional[str] = Field(default=None, description=_src["ophyd_class"].description)
+    module: Optional[str] = Field(default=None, description=_src["module"].description)
+    is_movable: Optional[bool] = Field(default=None, description=_src["is_movable"].description)
+    is_flyable: Optional[bool] = Field(default=None, description=_src["is_flyable"].description)
+    is_readable: Optional[bool] = Field(default=None, description=_src["is_readable"].description)
+    is_triggerable: Optional[bool] = Field(
+        default=None, description=_src["is_triggerable"].description
+    )
+    is_stageable: Optional[bool] = Field(
+        default=None, description=_src["is_stageable"].description
+    )
+    is_configurable: Optional[bool] = Field(
+        default=None, description=_src["is_configurable"].description
+    )
+    is_pausable: Optional[bool] = Field(default=None, description=_src["is_pausable"].description)
+    is_stoppable: Optional[bool] = Field(
+        default=None, description=_src["is_stoppable"].description
+    )
+    is_subscribable: Optional[bool] = Field(
+        default=None, description=_src["is_subscribable"].description
+    )
+    is_checkable: Optional[bool] = Field(
+        default=None, description=_src["is_checkable"].description
+    )
+    writes_external_assets: Optional[bool] = Field(
+        default=None, description=_src["writes_external_assets"].description
+    )
+    pvs: Optional[Dict[str, str]] = Field(default=None, description=_src["pvs"].description)
+    hints: Optional[Dict[str, Any]] = Field(default=None, description=_src["hints"].description)
+    read_attrs: Optional[List[str]] = Field(
+        default=None, description=_src["read_attrs"].description
+    )
+    configuration_attrs: Optional[List[str]] = Field(
+        default=None, description=_src["configuration_attrs"].description
+    )
+    parent: Optional[str] = Field(default=None, description=_src["parent"].description)
+    labels: Optional[List[str]] = Field(default=None, description=_src["labels"].description)
+    beamline: Optional[str] = Field(default=None, description=_src["beamline"].description)
+    location_group: Optional[str] = Field(
+        default=None, description=_src["location_group"].description
+    )
+    functional_group: Optional[str] = Field(
+        default=None, description=_src["functional_group"].description
+    )
+    documentation: Optional[str] = Field(
+        default=None, description=_src["documentation"].description
+    )
+    del _src
 
 
 class DeviceUpdateRequest(BaseModel):
