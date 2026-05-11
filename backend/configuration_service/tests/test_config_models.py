@@ -381,6 +381,13 @@ class TestPartialUpdateModelFieldParity:
         ):
             for field_name, partial_field in partial_cls.model_fields.items():
                 src_desc = src_cls.model_fields[field_name].description
+                # Without this, a canonical field with no description would
+                # silently propagate None to the partial and the test below
+                # would pass on None == None — defeating the point.
+                assert src_desc is not None, (
+                    f"{src_cls.__name__}.{field_name} is missing a description; "
+                    f"add description=... to its Field()"
+                )
                 assert partial_field.description == src_desc, (
                     f"{partial_cls.__name__}.{field_name} description "
                     f"{partial_field.description!r} drifts from "
