@@ -12,7 +12,7 @@
           "Health"
         ],
         "summary": "Health Check",
-        "description": "Health check endpoint.",
+        "description": "Health check: state loaded AND registry DB queryable.\n\nRuns ``SELECT 1`` against the registry store (when DB mode is on)\nand returns 503 with the failure detail when it can't. Without\nthe DB ping, a mount-gone or permissions-revoked store would\nstill pass health while every CRUD call 500'd.",
         "operationId": "health_check_health_get",
         "responses": {
           "200": {
@@ -1901,7 +1901,8 @@
           }
         },
         "type": "object",
-        "title": "DeviceInstantiationSpecUpdate"
+        "title": "DeviceInstantiationSpecUpdate",
+        "description": "Partial of DeviceInstantiationSpec for PATCH/PUT updates.\n\nEvery field is Optional with default None so callers can send only\nthe fields they want to change. Pair with ``model_dump(exclude_unset=True)``\nto distinguish \"not sent\" from \"sent as None\". Field set must mirror\nDeviceInstantiationSpec \u2014 enforced by test_partial_models_field_parity."
       },
       "DeviceLabel": {
         "type": "string",
@@ -2643,7 +2644,8 @@
           }
         },
         "type": "object",
-        "title": "DeviceMetadataUpdate"
+        "title": "DeviceMetadataUpdate",
+        "description": "Partial of DeviceMetadata for PATCH/PUT updates.\n\nEvery field is Optional with default None so callers can send only\nthe fields they want to change. Pair with ``model_dump(exclude_unset=True)``\nto distinguish \"not sent\" from \"sent as None\". Field set must mirror\nDeviceMetadata \u2014 enforced by test_partial_models_field_parity."
       },
       "DeviceStatusResponse": {
         "properties": {

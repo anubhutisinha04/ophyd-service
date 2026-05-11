@@ -9,7 +9,7 @@
     "/health": {
       "get": {
         "summary": "Health Check",
-        "description": "Combined health check: coordination availability and monitoring stats.",
+        "description": "Combined health check: coordination availability and monitoring stats.\n\nReturns 503 when configuration_service is unreachable so LB readiness\nprobes can route away. ``coordination_service_detail`` carries the\nstructured reason (timeout / connect-refused / non-2xx).",
         "operationId": "health_check_health_get",
         "responses": {
           "200": {
@@ -796,6 +796,10 @@
         "properties": {
           "status": {
             "type": "string",
+            "enum": [
+              "healthy",
+              "unhealthy"
+            ],
             "title": "Status",
             "default": "healthy"
           },
@@ -807,6 +811,17 @@
           "coordination_service_available": {
             "type": "boolean",
             "title": "Coordination Service Available"
+          },
+          "coordination_service_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coordination Service Detail"
           },
           "active_subscriptions": {
             "type": "integer",
