@@ -158,21 +158,30 @@ def install_config_http_stub(app):
     Use in tests that need to stub the configuration_service-facing httpx
     client. Pass a handler ``(httpx.Request) -> httpx.Response`` and the
     fixture returns the mock client. MockTransport is in-memory (no real
-    sockets) so no async-close is needed; the override is torn down by
-    the ``app`` fixture's ``dependency_overrides.clear()``.
+    sockets), but created ``httpx.AsyncClient`` instances are still closed
+    during fixture teardown.
     """
     import httpx
 
     from direct_control.main import get_config_http
 
+    created_clients = []
+
     def install(handler):
         mock_client = httpx.AsyncClient(
             transport=httpx.MockTransport(handler), base_url="http://stub"
         )
+        created_clients.append(mock_client)
         app.dependency_overrides[get_config_http] = lambda: mock_client
         return mock_client
 
-    return install
+    try:
+        yield install
+    finally:
+        import anyio
+
+        for mock_client in reversed(created_clients):
+            anyio.from_thread.run(mock_client.aclose)
 
 
 @pytest.fixture
