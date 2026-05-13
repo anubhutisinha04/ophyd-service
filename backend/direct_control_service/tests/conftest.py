@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Iterator
 
 import pytest
+import pytest_asyncio
 
 
 _IOC_PORT = 5064  # default EPICS CA
@@ -151,15 +152,17 @@ def app():
         fastapi_app.dependency_overrides.clear()
 
 
-@pytest.fixture
-def install_config_http_stub(app):
+@pytest_asyncio.fixture
+async def install_config_http_stub(app):
     """Install a ``get_config_http`` override returning a MockTransport-backed client.
 
     Use in tests that need to stub the configuration_service-facing httpx
     client. Pass a handler ``(httpx.Request) -> httpx.Response`` and the
-    fixture returns the mock client. MockTransport is in-memory (no real
-    sockets), but created ``httpx.AsyncClient`` instances are still closed
-    during fixture teardown.
+    fixture returns the mock client. The async fixture lets us
+    ``await mock_client.aclose()`` in teardown — closing the AsyncClient
+    via GC alone fails on stricter CI runners with
+    ``anyio.NoEventLoopError`` because httpx registers anyio state at
+    construction.
     """
     import httpx
 
@@ -178,10 +181,8 @@ def install_config_http_stub(app):
     try:
         yield install
     finally:
-        import anyio
-
         for mock_client in reversed(created_clients):
-            anyio.from_thread.run(mock_client.aclose)
+            await mock_client.aclose()
 
 
 @pytest.fixture
