@@ -152,6 +152,36 @@ def app():
 
 
 @pytest.fixture
+async def install_config_http_stub(app):
+    """Install a ``get_config_http`` override returning a MockTransport-backed client.
+
+    Pass a handler ``(httpx.Request) -> httpx.Response`` and the fixture
+    returns the mock client. Async so teardown can ``await aclose()``;
+    httpx registers anyio state at construction, so GC-time close isn't
+    safe.
+    """
+    import httpx
+
+    from direct_control.main import get_config_http
+
+    mock_client: "httpx.AsyncClient | None" = None
+
+    def install(handler):
+        nonlocal mock_client
+        mock_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://stub"
+        )
+        app.dependency_overrides[get_config_http] = lambda: mock_client
+        return mock_client
+
+    try:
+        yield install
+    finally:
+        if mock_client is not None:
+            await mock_client.aclose()
+
+
+@pytest.fixture
 def client(app):
     """FastAPI TestClient. Entering the `with` block runs lifespan."""
     from fastapi.testclient import TestClient
