@@ -26,9 +26,16 @@ Limitations:
 from __future__ import annotations
 
 import importlib
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+
+
+# Strip any lowercase URI scheme (ca://, pva://, mock://, soft://, etc.).
+# ophyd-async backends are free to introduce new schemes; matching by shape
+# avoids hard-coding the current set.
+_URI_SCHEME_RE = re.compile(r"^[a-z]+://")
 
 
 class Outcome(str, Enum):
@@ -146,11 +153,14 @@ def _is_ophyd_async_class(cls) -> bool:
 
 
 def _strip_signal_source_scheme(source: str) -> str:
-    """``"ca://X:Y"`` → ``"X:Y"``. Leave other strings alone."""
-    for scheme in ("ca://", "pva://"):
-        if source.startswith(scheme):
-            return source[len(scheme):]
-    return source
+    """``"<scheme>://X:Y"`` → ``"X:Y"``. Leave scheme-less strings alone.
+
+    ophyd-async ``Signal.source`` URIs use scheme prefixes that name the
+    backend (``ca://`` / ``pva://`` for live EPICS, ``mock://`` /
+    ``soft://`` for in-memory backends). The downstream PV-write path
+    expects bare PV strings, so strip any single lowercase scheme.
+    """
+    return _URI_SCHEME_RE.sub("", source, count=1)
 
 
 def _walk_async_instance(device, parts: list[str]) -> tuple[Outcome, str, Optional[str]]:

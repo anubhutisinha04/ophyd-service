@@ -314,14 +314,19 @@ def test_resolve_ophyd_async_top_level_is_meaningless():
     assert "sub-attribute" in (r.message or "")
 
 
-def test_resolve_ophyd_async_strips_pva_scheme():
-    """Custom async device whose source is ``pva://...`` — scheme strip
-    is independent of which transport the backend chose."""
+def test_strip_signal_source_scheme_handles_all_async_backends():
+    """ophyd-async emits scheme-prefixed URIs from CA, PVA, mock, and
+    soft backends; the strip must handle any lowercase scheme so we
+    don't ship the raw URI downstream as a PV string."""
     from configuration_service.path_resolver import _strip_signal_source_scheme
 
     assert _strip_signal_source_scheme("ca://X:Y") == "X:Y"
     assert _strip_signal_source_scheme("pva://X:Y") == "X:Y"
+    assert _strip_signal_source_scheme("mock://X:Y") == "X:Y"
+    assert _strip_signal_source_scheme("soft://X:Y") == "X:Y"
     assert _strip_signal_source_scheme("X:Y") == "X:Y"  # already bare
+    # Only the leading scheme is stripped — embedded "://" stays put.
+    assert _strip_signal_source_scheme("ca://a.b/c://d") == "a.b/c://d"
 
 
 def test_resolve_dispatches_to_correct_framework():

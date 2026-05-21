@@ -1861,6 +1861,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         Resolution never opens EPICS connections. ophyd-async classes are
         instantiated locally (no ``.connect()``) so their Signal.source
         URIs can be read; classic-ophyd classes are walked at class level.
+
+        Top-level addresses (no sub-attribute) are framework-dependent:
+        for classic ophyd they resolve to the device's prefix (the happi
+        entry IS the leaf, e.g. a standalone ``EpicsSignal``); for
+        ophyd-async they return ``no_such_attr`` since async devices have
+        many signals and no canonical "the PV". Use
+        ``<device>.<attr>`` instead for async devices.
         """
         # Per-request cache for ophyd-async device instances. A batch that
         # addresses the same device multiple times (e.g. motor.user_setpoint
