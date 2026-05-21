@@ -1,0 +1,1904 @@
+{
+  "ga": {
+    "_id": "ga",
+    "name": "ga",
+    "active": true,
+    "device_class": "bmm_devs.GlancingAngle",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMB-CT{DIODE-Local:1}"
+    ],
+    "kwargs": {
+      "name": "glancing angle stage"
+    },
+    "prefix": "XF:06BMB-CT{DIODE-Local:1}",
+    "documentation": "BMM GlancingAngle ported from BMM/user_ns/bmm_end.py:62"
+  },
+  "dcm": {
+    "_id": "dcm",
+    "name": "dcm",
+    "active": true,
+    "device_class": "bmm_devs.DCM",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mono:DCM1-Ax:"
+    ],
+    "kwargs": {
+      "name": "dcm",
+      "crystal": "111"
+    },
+    "prefix": "XF:06BMA-OP{Mono:DCM1-Ax:",
+    "documentation": "BMM DCM ported from BMM/user_ns/dcm.py:23"
+  },
+  "quadem1": {
+    "_id": "quadem1",
+    "name": "quadem1",
+    "active": true,
+    "device_class": "bmm_devs.BMMQuadEM",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{EM:1}EM180:"
+    ],
+    "kwargs": {
+      "name": "quadem1"
+    },
+    "prefix": "XF:06BM-BI{EM:1}EM180:",
+    "documentation": "BMM BMMQuadEM ported from BMM/user_ns/detectors.py:115"
+  },
+  "ic0": {
+    "_id": "ic0",
+    "name": "ic0",
+    "active": true,
+    "device_class": "bmm_devs.IntegratedIC",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{IC:0}EM180:"
+    ],
+    "kwargs": {
+      "name": "Ic0"
+    },
+    "prefix": "XF:06BM-BI{IC:0}EM180:",
+    "documentation": "BMM IntegratedIC ported from BMM/user_ns/detectors.py:218"
+  },
+  "ic1": {
+    "_id": "ic1",
+    "name": "ic1",
+    "active": true,
+    "device_class": "bmm_devs.IntegratedIC",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{IC:1}EM180:"
+    ],
+    "kwargs": {
+      "name": "Ic1"
+    },
+    "prefix": "XF:06BM-BI{IC:1}EM180:",
+    "documentation": "BMM IntegratedIC ported from BMM/user_ns/detectors.py:239"
+  },
+  "ic2": {
+    "_id": "ic2",
+    "name": "ic2",
+    "active": true,
+    "device_class": "bmm_devs.IntegratedIC",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{IC:3}EM180:"
+    ],
+    "kwargs": {
+      "name": "Ic2"
+    },
+    "prefix": "XF:06BM-BI{IC:3}EM180:",
+    "documentation": "BMM IntegratedIC ported from BMM/user_ns/detectors.py:259"
+  },
+  "xascam": {
+    "_id": "xascam",
+    "name": "xascam",
+    "active": true,
+    "device_class": "bmm_devs.AxisCaprotoCam",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{AxisCaproto:6}:"
+    ],
+    "kwargs": {
+      "name": "webcam-1",
+      "root_dir": "f\"{PROPOSALS}/{RE.md['cycle']}/{RE.md['data_session']}/assets\""
+    },
+    "prefix": "XF:06BM-ES{AxisCaproto:6}:",
+    "documentation": "BMM AxisCaprotoCam ported from BMM/user_ns/detectors.py:313"
+  },
+  "xrdcam": {
+    "_id": "xrdcam",
+    "name": "xrdcam",
+    "active": true,
+    "device_class": "bmm_devs.AxisCaprotoCam",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{AxisCaproto:5}:"
+    ],
+    "kwargs": {
+      "name": "webcam-2",
+      "root_dir": "f\"{PROPOSALS}/{RE.md['cycle']}/{RE.md['data_session']}/assets\""
+    },
+    "prefix": "XF:06BM-ES{AxisCaproto:5}:",
+    "documentation": "BMM AxisCaprotoCam ported from BMM/user_ns/detectors.py:315"
+  },
+  "anacam": {
+    "_id": "anacam",
+    "name": "anacam",
+    "active": true,
+    "device_class": "bmm_devs.BMMSnapshot",
+    "type": "OphydItem",
+    "args": [],
+    "kwargs": {
+      "root": "temp_root",
+      "which": "analog",
+      "name": "anacam"
+    },
+    "documentation": "BMM BMMSnapshot ported from BMM/user_ns/detectors.py:325"
+  },
+  "usb1": {
+    "_id": "usb1",
+    "name": "usb1",
+    "active": true,
+    "device_class": "bmm_devs.BMMUVCSingleTrigger",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{UVC-Cam:1}"
+    ],
+    "kwargs": {
+      "name": "usbcam-1",
+      "read_attrs": [
+        "jpeg"
+      ]
+    },
+    "prefix": "XF:06BM-ES{UVC-Cam:1}",
+    "documentation": "BMM BMMUVCSingleTrigger ported from BMM/user_ns/detectors.py:335"
+  },
+  "usb2": {
+    "_id": "usb2",
+    "name": "usb2",
+    "active": true,
+    "device_class": "bmm_devs.BMMUVCSingleTrigger",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{UVC-Cam:2}"
+    ],
+    "kwargs": {
+      "name": "usbcam-2",
+      "read_attrs": [
+        "jpeg"
+      ]
+    },
+    "prefix": "XF:06BM-ES{UVC-Cam:2}",
+    "documentation": "BMM BMMUVCSingleTrigger ported from BMM/user_ns/detectors.py:340"
+  },
+  "cam8": {
+    "_id": "cam8",
+    "name": "cam8",
+    "active": true,
+    "device_class": "bmm_devs.BMMUVCSingleTrigger",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMB-BI{Cam:08}"
+    ],
+    "kwargs": {
+      "name": "cam-8",
+      "read_attrs": [
+        "jpeg"
+      ]
+    },
+    "prefix": "XF:06BMB-BI{Cam:08}",
+    "documentation": "BMM BMMUVCSingleTrigger ported from BMM/user_ns/detectors.py:345"
+  },
+  "cam9": {
+    "_id": "cam9",
+    "name": "cam9",
+    "active": true,
+    "device_class": "bmm_devs.BMMUVCSingleTrigger",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMB-BI{Cam:09}"
+    ],
+    "kwargs": {
+      "name": "cam-9",
+      "read_attrs": [
+        "jpeg"
+      ]
+    },
+    "prefix": "XF:06BMB-BI{Cam:09}",
+    "documentation": "BMM BMMUVCSingleTrigger ported from BMM/user_ns/detectors.py:350"
+  },
+  "cam7": {
+    "_id": "cam7",
+    "name": "cam7",
+    "active": true,
+    "device_class": "bmm_devs.BMMUVCSingleTrigger",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMB-BI{Scr:4}"
+    ],
+    "kwargs": {
+      "name": "cam-7",
+      "read_attrs": [
+        "jpeg"
+      ]
+    },
+    "prefix": "XF:06BMB-BI{Scr:4}",
+    "documentation": "BMM BMMUVCSingleTrigger ported from BMM/user_ns/detectors.py:355"
+  },
+  "pilatus": {
+    "_id": "pilatus",
+    "name": "pilatus",
+    "active": true,
+    "device_class": "bmm_devs.BMMPilatusSingleTrigger",
+    "type": "OphydItem",
+    "args": [
+      "pvbase"
+    ],
+    "kwargs": {
+      "name": "pilatus100k-1",
+      "read_attrs": [
+        "hdf5"
+      ]
+    },
+    "documentation": "BMM BMMPilatusSingleTrigger ported from BMM/user_ns/detectors.py:416"
+  },
+  "eiger": {
+    "_id": "eiger",
+    "name": "eiger",
+    "active": true,
+    "device_class": "bmm_devs.BMMEigerSingleTrigger",
+    "type": "OphydItem",
+    "args": [
+      "pvbase"
+    ],
+    "kwargs": {
+      "name": "eiger1m-1",
+      "read_attrs": [
+        "hdf5"
+      ]
+    },
+    "documentation": "BMM BMMEigerSingleTrigger ported from BMM/user_ns/detectors.py:476"
+  },
+  "dante": {
+    "_id": "dante",
+    "name": "dante",
+    "active": true,
+    "device_class": "bmm_devs.BMMDanteSingleTrigger",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{Dante-Det:1}"
+    ],
+    "kwargs": {
+      "name": "dante-1",
+      "read_attrs": [
+        "hdf5"
+      ]
+    },
+    "prefix": "XF:06BM-ES{Dante-Det:1}",
+    "documentation": "BMM BMMDanteSingleTrigger ported from BMM/user_ns/detectors.py:533"
+  },
+  "xs7": {
+    "_id": "xs7",
+    "name": "xs7",
+    "active": true,
+    "device_class": "bmm_devs.BMMXspress3Detector_7Element",
+    "type": "OphydItem",
+    "args": [],
+    "kwargs": {
+      "prefix": "XF:06BM-ES{Xsp:1}:",
+      "name": "7-element SDD",
+      "read_attrs": [
+        "hdf5"
+      ]
+    },
+    "prefix": "XF:06BM-ES{Xsp:1}:",
+    "documentation": "BMM BMMXspress3Detector_7Element ported from BMM/user_ns/detectors.py:639"
+  },
+  "xs1": {
+    "_id": "xs1",
+    "name": "xs1",
+    "active": true,
+    "device_class": "bmm_devs.BMMXspress3Detector_1Element",
+    "type": "OphydItem",
+    "args": [],
+    "kwargs": {
+      "prefix": "XF:06BM-ES{Xsp:1}:",
+      "name": "1-element SDD",
+      "read_attrs": [
+        "hdf5"
+      ]
+    },
+    "prefix": "XF:06BM-ES{Xsp:1}:",
+    "documentation": "BMM BMMXspress3Detector_1Element ported from BMM/user_ns/detectors.py:647"
+  },
+  "xs4": {
+    "_id": "xs4",
+    "name": "xs4",
+    "active": true,
+    "device_class": "bmm_devs.BMMXspress3Detector_4Element",
+    "type": "OphydItem",
+    "args": [],
+    "kwargs": {
+      "prefix": "XF:06BM-ES{Xsp:1}:",
+      "name": "4-element SDD",
+      "read_attrs": [
+        "hdf5"
+      ]
+    },
+    "prefix": "XF:06BM-ES{Xsp:1}:",
+    "documentation": "BMM BMMXspress3Detector_4Element ported from BMM/user_ns/detectors.py:655"
+  },
+  "_locked_dwell_time": {
+    "_id": "_locked_dwell_time",
+    "name": "_locked_dwell_time",
+    "active": true,
+    "device_class": "bmm_devs.LockedDwellTimes",
+    "type": "OphydItem",
+    "args": [
+      ""
+    ],
+    "kwargs": {
+      "name": "dwti"
+    },
+    "documentation": "BMM LockedDwellTimes ported from BMM/user_ns/dwelltime.py:81"
+  },
+  "slitsg": {
+    "_id": "slitsg",
+    "name": "slitsg",
+    "active": true,
+    "device_class": "bmm_devs.GonioSlits",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{SixC-Ax:Slt1_"
+    ],
+    "kwargs": {
+      "name": "slitsg"
+    },
+    "prefix": "XF:06BM-ES{SixC-Ax:Slt1_",
+    "documentation": "BMM GonioSlits ported from BMM/user_ns/gonio.py:40"
+  },
+  "m1": {
+    "_id": "m1",
+    "name": "m1",
+    "active": true,
+    "device_class": "bmm_devs.Mirrors",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-OP{Mir:M1-Ax:"
+    ],
+    "kwargs": {
+      "name": "m1",
+      "mirror_length": 556,
+      "mirror_width": 240
+    },
+    "prefix": "XF:06BM-OP{Mir:M1-Ax:",
+    "documentation": "BMM Mirrors ported from BMM/user_ns/instruments.py:84"
+  },
+  "m1_yu": {
+    "_id": "m1_yu",
+    "name": "m1_yu",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-OP{Mir:M1-Ax:YU}Mtr"
+    ],
+    "kwargs": {
+      "name": "m1_yu"
+    },
+    "prefix": "XF:06BM-OP{Mir:M1-Ax:YU}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:96"
+  },
+  "m1_ydo": {
+    "_id": "m1_ydo",
+    "name": "m1_ydo",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-OP{Mir:M1-Ax:YDO}Mtr"
+    ],
+    "kwargs": {
+      "name": "m1_ydo"
+    },
+    "prefix": "XF:06BM-OP{Mir:M1-Ax:YDO}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:97"
+  },
+  "m1_ydi": {
+    "_id": "m1_ydi",
+    "name": "m1_ydi",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-OP{Mir:M1-Ax:YDI}Mtr"
+    ],
+    "kwargs": {
+      "name": "m1_ydi"
+    },
+    "prefix": "XF:06BM-OP{Mir:M1-Ax:YDI}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:98"
+  },
+  "m1_xu": {
+    "_id": "m1_xu",
+    "name": "m1_xu",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-OP{Mir:M1-Ax:XU}Mtr"
+    ],
+    "kwargs": {
+      "name": "m1_xu"
+    },
+    "prefix": "XF:06BM-OP{Mir:M1-Ax:XU}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:99"
+  },
+  "m1_xd": {
+    "_id": "m1_xd",
+    "name": "m1_xd",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-OP{Mir:M1-Ax:XD}Mtr"
+    ],
+    "kwargs": {
+      "name": "m1_xd"
+    },
+    "prefix": "XF:06BM-OP{Mir:M1-Ax:XD}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:100"
+  },
+  "m2": {
+    "_id": "m2",
+    "name": "m2",
+    "active": true,
+    "device_class": "bmm_devs.Mirrors",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M2-Ax:"
+    ],
+    "kwargs": {
+      "name": "m2",
+      "mirror_length": 1288,
+      "mirror_width": 240
+    },
+    "prefix": "XF:06BMA-OP{Mir:M2-Ax:",
+    "documentation": "BMM Mirrors ported from BMM/user_ns/instruments.py:114"
+  },
+  "m2_yu": {
+    "_id": "m2_yu",
+    "name": "m2_yu",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M2-Ax:YU}Mtr"
+    ],
+    "kwargs": {
+      "name": "m2_yu"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M2-Ax:YU}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:126"
+  },
+  "m2_ydo": {
+    "_id": "m2_ydo",
+    "name": "m2_ydo",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M2-Ax:YDO}Mtr"
+    ],
+    "kwargs": {
+      "name": "m2_ydo"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M2-Ax:YDO}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:127"
+  },
+  "m2_ydi": {
+    "_id": "m2_ydi",
+    "name": "m2_ydi",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M2-Ax:YDI}Mtr"
+    ],
+    "kwargs": {
+      "name": "m2_ydi"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M2-Ax:YDI}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:128"
+  },
+  "m2_xu": {
+    "_id": "m2_xu",
+    "name": "m2_xu",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M2-Ax:XU}Mtr"
+    ],
+    "kwargs": {
+      "name": "m2_xu"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M2-Ax:XU}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:129"
+  },
+  "m2_xd": {
+    "_id": "m2_xd",
+    "name": "m2_xd",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M2-Ax:XD}Mtr"
+    ],
+    "kwargs": {
+      "name": "m2_yxd"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M2-Ax:XD}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:130"
+  },
+  "m2_bender": {
+    "_id": "m2_bender",
+    "name": "m2_bender",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M2-Ax:Bend}Mtr"
+    ],
+    "kwargs": {
+      "name": "m2_bender"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M2-Ax:Bend}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:131"
+  },
+  "m3": {
+    "_id": "m3",
+    "name": "m3",
+    "active": true,
+    "device_class": "bmm_devs.Mirrors",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M3-Ax:"
+    ],
+    "kwargs": {
+      "name": "m3",
+      "mirror_length": 667,
+      "mirror_width": 240
+    },
+    "prefix": "XF:06BMA-OP{Mir:M3-Ax:",
+    "documentation": "BMM Mirrors ported from BMM/user_ns/instruments.py:150"
+  },
+  "m3_yu": {
+    "_id": "m3_yu",
+    "name": "m3_yu",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M3-Ax:YU}Mtr"
+    ],
+    "kwargs": {
+      "name": "m3_yu"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M3-Ax:YU}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:161"
+  },
+  "m3_ydo": {
+    "_id": "m3_ydo",
+    "name": "m3_ydo",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M3-Ax:YDO}Mtr"
+    ],
+    "kwargs": {
+      "name": "m3_ydo"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M3-Ax:YDO}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:162"
+  },
+  "m3_ydi": {
+    "_id": "m3_ydi",
+    "name": "m3_ydi",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M3-Ax:YDI}Mtr"
+    ],
+    "kwargs": {
+      "name": "m3_ydi"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M3-Ax:YDI}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:163"
+  },
+  "m3_xu": {
+    "_id": "m3_xu",
+    "name": "m3_xu",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M3-Ax:XU}Mtr"
+    ],
+    "kwargs": {
+      "name": "m3_xu"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M3-Ax:XU}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:164"
+  },
+  "m3_xd": {
+    "_id": "m3_xd",
+    "name": "m3_xd",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Mir:M3-Ax:XD}Mtr"
+    ],
+    "kwargs": {
+      "name": "m3_xd"
+    },
+    "prefix": "XF:06BMA-OP{Mir:M3-Ax:XD}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:165"
+  },
+  "xt": {
+    "_id": "xt",
+    "name": "xt",
+    "active": true,
+    "device_class": "bmm_devs.XAFSTable",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Tbl_"
+    ],
+    "kwargs": {
+      "name": "xafs_table",
+      "mirror_length": 1160,
+      "mirror_width": 558
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Tbl_",
+    "documentation": "BMM XAFSTable ported from BMM/user_ns/instruments.py:192"
+  },
+  "xafs_table": {
+    "_id": "xafs_table",
+    "name": "xafs_table",
+    "active": true,
+    "device_class": "bmm_devs.XAFSTable",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Tbl_"
+    ],
+    "kwargs": {
+      "name": "xafs_table",
+      "mirror_length": 1160,
+      "mirror_width": 558
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Tbl_",
+    "documentation": "BMM XAFSTable ported from BMM/user_ns/instruments.py:192"
+  },
+  "xafs_yu": {
+    "_id": "xafs_yu",
+    "name": "xafs_yu",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Tbl_YU}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_yu"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Tbl_YU}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/instruments.py:196"
+  },
+  "xafs_ydo": {
+    "_id": "xafs_ydo",
+    "name": "xafs_ydo",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Tbl_YDO}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_ydo"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Tbl_YDO}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/instruments.py:197"
+  },
+  "xafs_ydi": {
+    "_id": "xafs_ydi",
+    "name": "xafs_ydi",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Tbl_YDI}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_ydi"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Tbl_YDI}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/instruments.py:198"
+  },
+  "xafs_xu": {
+    "_id": "xafs_xu",
+    "name": "xafs_xu",
+    "active": true,
+    "device_class": "ophyd.sim.SynAxis",
+    "type": "OphydItem",
+    "args": [],
+    "kwargs": {
+      "name": "xafs_xu"
+    },
+    "documentation": "BMM SynAxis ported from BMM/user_ns/instruments.py:205"
+  },
+  "xafs_xd": {
+    "_id": "xafs_xd",
+    "name": "xafs_xd",
+    "active": true,
+    "device_class": "ophyd.sim.SynAxis",
+    "type": "OphydItem",
+    "args": [],
+    "kwargs": {
+      "name": "xafs_xd"
+    },
+    "documentation": "BMM SynAxis ported from BMM/user_ns/instruments.py:206"
+  },
+  "sl": {
+    "_id": "sl",
+    "name": "sl",
+    "active": true,
+    "device_class": "bmm_devs.StandardSlits",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{Slt:02-Ax:"
+    ],
+    "kwargs": {
+      "name": "slits3"
+    },
+    "prefix": "XF:06BM-BI{Slt:02-Ax:",
+    "documentation": "BMM StandardSlits ported from BMM/user_ns/instruments.py:232"
+  },
+  "slits3": {
+    "_id": "slits3",
+    "name": "slits3",
+    "active": true,
+    "device_class": "bmm_devs.StandardSlits",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{Slt:02-Ax:"
+    ],
+    "kwargs": {
+      "name": "slits3"
+    },
+    "prefix": "XF:06BM-BI{Slt:02-Ax:",
+    "documentation": "BMM StandardSlits ported from BMM/user_ns/instruments.py:232"
+  },
+  "dm3_slits_o": {
+    "_id": "dm3_slits_o",
+    "name": "dm3_slits_o",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{Slt:02-Ax:O}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm3_slits_o"
+    },
+    "prefix": "XF:06BM-BI{Slt:02-Ax:O}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:237"
+  },
+  "dm3_slits_i": {
+    "_id": "dm3_slits_i",
+    "name": "dm3_slits_i",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{Slt:02-Ax:I}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm3_slits_i"
+    },
+    "prefix": "XF:06BM-BI{Slt:02-Ax:I}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:238"
+  },
+  "dm3_slits_t": {
+    "_id": "dm3_slits_t",
+    "name": "dm3_slits_t",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{Slt:02-Ax:T}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm3_slits_t"
+    },
+    "prefix": "XF:06BM-BI{Slt:02-Ax:T}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:239"
+  },
+  "dm3_slits_b": {
+    "_id": "dm3_slits_b",
+    "name": "dm3_slits_b",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{Slt:02-Ax:B}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm3_slits_b"
+    },
+    "prefix": "XF:06BM-BI{Slt:02-Ax:B}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:240"
+  },
+  "slits2": {
+    "_id": "slits2",
+    "name": "slits2",
+    "active": true,
+    "device_class": "bmm_devs.StandardSlits",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Slt:01-Ax:"
+    ],
+    "kwargs": {
+      "name": "slits2"
+    },
+    "prefix": "XF:06BMA-OP{Slt:01-Ax:",
+    "documentation": "BMM StandardSlits ported from BMM/user_ns/instruments.py:265"
+  },
+  "dm2_slits_o": {
+    "_id": "dm2_slits_o",
+    "name": "dm2_slits_o",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Slt:01-Ax:O}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm2_slits_o"
+    },
+    "prefix": "XF:06BMA-OP{Slt:01-Ax:O}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:274"
+  },
+  "dm2_slits_i": {
+    "_id": "dm2_slits_i",
+    "name": "dm2_slits_i",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Slt:01-Ax:I}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm2_slits_i"
+    },
+    "prefix": "XF:06BMA-OP{Slt:01-Ax:I}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:275"
+  },
+  "dm2_slits_t": {
+    "_id": "dm2_slits_t",
+    "name": "dm2_slits_t",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Slt:01-Ax:T}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm2_slits_o"
+    },
+    "prefix": "XF:06BMA-OP{Slt:01-Ax:T}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:276"
+  },
+  "dm2_slits_b": {
+    "_id": "dm2_slits_b",
+    "name": "dm2_slits_b",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{Slt:01-Ax:B}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm2_slits_b"
+    },
+    "prefix": "XF:06BMA-OP{Slt:01-Ax:B}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/instruments.py:277"
+  },
+  "xafs_wheel": {
+    "_id": "xafs_wheel",
+    "name": "xafs_wheel",
+    "active": true,
+    "device_class": "bmm_devs.WheelMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:RotB}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_wheel"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:RotB}Mtr",
+    "documentation": "BMM WheelMotor ported from BMM/user_ns/instruments.py:315"
+  },
+  "xafs_rotb": {
+    "_id": "xafs_rotb",
+    "name": "xafs_rotb",
+    "active": true,
+    "device_class": "bmm_devs.WheelMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:RotB}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_wheel"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:RotB}Mtr",
+    "documentation": "BMM WheelMotor ported from BMM/user_ns/instruments.py:315"
+  },
+  "xafs_ref": {
+    "_id": "xafs_ref",
+    "name": "xafs_ref",
+    "active": true,
+    "device_class": "bmm_devs.WheelMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Ref}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_ref"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Ref}Mtr",
+    "documentation": "BMM WheelMotor ported from BMM/user_ns/instruments.py:327"
+  },
+  "bmps": {
+    "_id": "bmps",
+    "name": "bmps",
+    "active": true,
+    "device_class": "bmm_devs.BMPS_Shutter",
+    "type": "OphydItem",
+    "args": [
+      "SR:C06-EPS{PLC:1}"
+    ],
+    "kwargs": {
+      "name": "BMPS"
+    },
+    "prefix": "SR:C06-EPS{PLC:1}",
+    "documentation": "BMM BMPS_Shutter ported from BMM/user_ns/instruments.py:520"
+  },
+  "idps": {
+    "_id": "idps",
+    "name": "idps",
+    "active": true,
+    "device_class": "bmm_devs.IDPS_Shutter",
+    "type": "OphydItem",
+    "args": [
+      "SR:C06-EPS{PLC:1}"
+    ],
+    "kwargs": {
+      "name": "IDPS"
+    },
+    "prefix": "SR:C06-EPS{PLC:1}",
+    "documentation": "BMM IDPS_Shutter ported from BMM/user_ns/instruments.py:525"
+  },
+  "sha": {
+    "_id": "sha",
+    "name": "sha",
+    "active": true,
+    "device_class": "bmm_devs.EPS_Shutter",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-PPS{Sh:FE}"
+    ],
+    "kwargs": {
+      "name": "Front-End Shutter"
+    },
+    "prefix": "XF:06BM-PPS{Sh:FE}",
+    "documentation": "BMM EPS_Shutter ported from BMM/user_ns/instruments.py:530"
+  },
+  "shb": {
+    "_id": "shb",
+    "name": "shb",
+    "active": true,
+    "device_class": "bmm_devs.EPS_Shutter",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-PPS{Sh:A}"
+    ],
+    "kwargs": {
+      "name": "Photon Shutter"
+    },
+    "prefix": "XF:06BM-PPS{Sh:A}",
+    "documentation": "BMM EPS_Shutter ported from BMM/user_ns/instruments.py:534"
+  },
+  "fs1": {
+    "_id": "fs1",
+    "name": "fs1",
+    "active": true,
+    "device_class": "bmm_devs.EPS_Shutter",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-OP{FS:1}"
+    ],
+    "kwargs": {
+      "name": "FS1"
+    },
+    "prefix": "XF:06BMA-OP{FS:1}",
+    "documentation": "BMM EPS_Shutter ported from BMM/user_ns/instruments.py:546"
+  },
+  "ln2": {
+    "_id": "ln2",
+    "name": "ln2",
+    "active": true,
+    "device_class": "bmm_devs.EPS_Shutter",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-PU{LN2-Main:IV}"
+    ],
+    "kwargs": {
+      "name": "LN2"
+    },
+    "prefix": "XF:06BM-PU{LN2-Main:IV}",
+    "documentation": "BMM EPS_Shutter ported from BMM/user_ns/instruments.py:552"
+  },
+  "bpm_upstream": {
+    "_id": "bpm_upstream",
+    "name": "bpm_upstream",
+    "active": true,
+    "device_class": "bmm_devs.FEBPM",
+    "type": "OphydItem",
+    "args": [
+      "SR:C06-BI{BPM:4}Pos:"
+    ],
+    "kwargs": {
+      "name": "bpm_upstream"
+    },
+    "prefix": "SR:C06-BI{BPM:4}Pos:",
+    "documentation": "BMM FEBPM ported from BMM/user_ns/instruments.py:593"
+  },
+  "bpm_downstream": {
+    "_id": "bpm_downstream",
+    "name": "bpm_downstream",
+    "active": true,
+    "device_class": "bmm_devs.FEBPM",
+    "type": "OphydItem",
+    "args": [
+      "SR:C06-BI{BPM:5}Pos:"
+    ],
+    "kwargs": {
+      "name": "bpm_downstream"
+    },
+    "prefix": "SR:C06-BI{BPM:5}Pos:",
+    "documentation": "BMM FEBPM ported from BMM/user_ns/instruments.py:594"
+  },
+  "busy": {
+    "_id": "busy",
+    "name": "busy",
+    "active": true,
+    "device_class": "bmm_devs.Busy",
+    "type": "OphydItem",
+    "args": [],
+    "kwargs": {
+      "name": "busy"
+    },
+    "documentation": "BMM Busy ported from BMM/user_ns/instruments.py:614"
+  },
+  "linkam": {
+    "_id": "linkam",
+    "name": "linkam",
+    "active": true,
+    "device_class": "bmm_devs.Linkam",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{LINKAM}:"
+    ],
+    "kwargs": {
+      "name": "linkam",
+      "egu": "\u00b0C",
+      "settle_time": 10,
+      "limits": [
+        -196.1,
+        560.0
+      ]
+    },
+    "prefix": "XF:06BM-ES{LINKAM}:",
+    "documentation": "BMM Linkam ported from BMM/user_ns/instruments.py:630"
+  },
+  "lakeshore": {
+    "_id": "lakeshore",
+    "name": "lakeshore",
+    "active": true,
+    "device_class": "bmm_devs.LakeShore",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{LS:331-1}:"
+    ],
+    "kwargs": {
+      "name": "LakeShore 331",
+      "egu": "K",
+      "settle_time": 10,
+      "limits": [
+        5,
+        400.0
+      ]
+    },
+    "prefix": "XF:06BM-BI{LS:331-1}:",
+    "documentation": "BMM LakeShore ported from BMM/user_ns/instruments.py:652"
+  },
+  "ks": {
+    "_id": "ks",
+    "name": "ks",
+    "active": true,
+    "device_class": "bmm_devs.KillSwitch",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMB-CT{DIODE-Local:4}"
+    ],
+    "kwargs": {
+      "name": "amplifier kill switches"
+    },
+    "prefix": "XF:06BMB-CT{DIODE-Local:4}",
+    "documentation": "BMM KillSwitch ported from BMM/user_ns/instruments.py:728"
+  },
+  "fe_slits_horizontal1": {
+    "_id": "fe_slits_horizontal1",
+    "name": "fe_slits_horizontal1",
+    "active": true,
+    "device_class": "ophyd.EpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:1-Ax:Hrz}Mtr"
+    ],
+    "kwargs": {
+      "name": "fe_slits_horizontal1"
+    },
+    "prefix": "FE:C06B-OP{Slt:1-Ax:Hrz}Mtr",
+    "documentation": "BMM EpicsMotor ported from BMM/user_ns/motors.py:25"
+  },
+  "fe_slits_incline1": {
+    "_id": "fe_slits_incline1",
+    "name": "fe_slits_incline1",
+    "active": true,
+    "device_class": "ophyd.EpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:1-Ax:Inc}Mtr"
+    ],
+    "kwargs": {
+      "name": "fe_slits_incline1"
+    },
+    "prefix": "FE:C06B-OP{Slt:1-Ax:Inc}Mtr",
+    "documentation": "BMM EpicsMotor ported from BMM/user_ns/motors.py:26"
+  },
+  "fe_slits_o": {
+    "_id": "fe_slits_o",
+    "name": "fe_slits_o",
+    "active": true,
+    "device_class": "ophyd.EpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:1-Ax:O}Mtr"
+    ],
+    "kwargs": {
+      "name": "fe_slits_o"
+    },
+    "prefix": "FE:C06B-OP{Slt:1-Ax:O}Mtr",
+    "documentation": "BMM EpicsMotor ported from BMM/user_ns/motors.py:27"
+  },
+  "fe_slits_t": {
+    "_id": "fe_slits_t",
+    "name": "fe_slits_t",
+    "active": true,
+    "device_class": "ophyd.EpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:1-Ax:T}Mtr"
+    ],
+    "kwargs": {
+      "name": "fe_slits_t"
+    },
+    "prefix": "FE:C06B-OP{Slt:1-Ax:T}Mtr",
+    "documentation": "BMM EpicsMotor ported from BMM/user_ns/motors.py:28"
+  },
+  "fe_slits_horizontal2": {
+    "_id": "fe_slits_horizontal2",
+    "name": "fe_slits_horizontal2",
+    "active": true,
+    "device_class": "ophyd.EpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:2-Ax:Hrz}Mtr"
+    ],
+    "kwargs": {
+      "name": "fe_slits_horizontal2"
+    },
+    "prefix": "FE:C06B-OP{Slt:2-Ax:Hrz}Mtr",
+    "documentation": "BMM EpicsMotor ported from BMM/user_ns/motors.py:29"
+  },
+  "fe_slits_incline2": {
+    "_id": "fe_slits_incline2",
+    "name": "fe_slits_incline2",
+    "active": true,
+    "device_class": "ophyd.EpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:2-Ax:Inc}Mtr"
+    ],
+    "kwargs": {
+      "name": "fe_slits_incline2"
+    },
+    "prefix": "FE:C06B-OP{Slt:2-Ax:Inc}Mtr",
+    "documentation": "BMM EpicsMotor ported from BMM/user_ns/motors.py:30"
+  },
+  "fe_slits_i": {
+    "_id": "fe_slits_i",
+    "name": "fe_slits_i",
+    "active": true,
+    "device_class": "ophyd.EpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:2-Ax:I}Mtr"
+    ],
+    "kwargs": {
+      "name": "fe_slits_i"
+    },
+    "prefix": "FE:C06B-OP{Slt:2-Ax:I}Mtr",
+    "documentation": "BMM EpicsMotor ported from BMM/user_ns/motors.py:31"
+  },
+  "fe_slits_b": {
+    "_id": "fe_slits_b",
+    "name": "fe_slits_b",
+    "active": true,
+    "device_class": "ophyd.EpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:2-Ax:B}Mtr"
+    ],
+    "kwargs": {
+      "name": "fe_slits_b"
+    },
+    "prefix": "FE:C06B-OP{Slt:2-Ax:B}Mtr",
+    "documentation": "BMM EpicsMotor ported from BMM/user_ns/motors.py:32"
+  },
+  "fe_slits_hsize": {
+    "_id": "fe_slits_hsize",
+    "name": "fe_slits_hsize",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:12-Ax:X}size"
+    ],
+    "kwargs": {
+      "name": "fe_slits_hsize"
+    },
+    "prefix": "FE:C06B-OP{Slt:12-Ax:X}size",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/motors.py:33"
+  },
+  "fe_slits_vsize": {
+    "_id": "fe_slits_vsize",
+    "name": "fe_slits_vsize",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:12-Ax:Y}size"
+    ],
+    "kwargs": {
+      "name": "fe_slits_vsize"
+    },
+    "prefix": "FE:C06B-OP{Slt:12-Ax:Y}size",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/motors.py:34"
+  },
+  "fe_slits_hcenter": {
+    "_id": "fe_slits_hcenter",
+    "name": "fe_slits_hcenter",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:12-Ax:X}center"
+    ],
+    "kwargs": {
+      "name": "fe_slits_hcenter"
+    },
+    "prefix": "FE:C06B-OP{Slt:12-Ax:X}center",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/motors.py:35"
+  },
+  "fe_slits_vcenter": {
+    "_id": "fe_slits_vcenter",
+    "name": "fe_slits_vcenter",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-OP{Slt:12-Ax:Y}center"
+    ],
+    "kwargs": {
+      "name": "fe_slits_vcenter"
+    },
+    "prefix": "FE:C06B-OP{Slt:12-Ax:Y}center",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/motors.py:36"
+  },
+  "dm1_filters1": {
+    "_id": "dm1_filters1",
+    "name": "dm1_filters1",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{Fltr:01-Ax:Y1}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm1_filters1"
+    },
+    "prefix": "XF:06BMA-BI{Fltr:01-Ax:Y1}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/motors.py:52"
+  },
+  "dm1_filters2": {
+    "_id": "dm1_filters2",
+    "name": "dm1_filters2",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{Fltr:01-Ax:Y2}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm1_filters2"
+    },
+    "prefix": "XF:06BMA-BI{Fltr:01-Ax:Y2}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/motors.py:53"
+  },
+  "dm2_fs": {
+    "_id": "dm2_fs",
+    "name": "dm2_fs",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{Diag:02-Ax:Y}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm2_fs"
+    },
+    "prefix": "XF:06BMA-BI{Diag:02-Ax:Y}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/motors.py:64"
+  },
+  "dm3_fs": {
+    "_id": "dm3_fs",
+    "name": "dm3_fs",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{FS:03-Ax:Y}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm3_fs"
+    },
+    "prefix": "XF:06BM-BI{FS:03-Ax:Y}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/motors.py:75"
+  },
+  "dm3_foils": {
+    "_id": "dm3_foils",
+    "name": "dm3_foils",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{Fltr:01-Ax:Y}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm3_foils"
+    },
+    "prefix": "XF:06BM-BI{Fltr:01-Ax:Y}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/motors.py:76"
+  },
+  "dm3_bct": {
+    "_id": "dm3_bct",
+    "name": "dm3_bct",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{BCT-Ax:Y}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm3_bct"
+    },
+    "prefix": "XF:06BM-BI{BCT-Ax:Y}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/motors.py:77"
+  },
+  "dm3_bpm": {
+    "_id": "dm3_bpm",
+    "name": "dm3_bpm",
+    "active": true,
+    "device_class": "bmm_devs.XAFSEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-BI{BPM:1-Ax:Y}Mtr"
+    ],
+    "kwargs": {
+      "name": "dm3_bpm"
+    },
+    "prefix": "XF:06BM-BI{BPM:1-Ax:Y}Mtr",
+    "documentation": "BMM XAFSEpicsMotor ported from BMM/user_ns/motors.py:78"
+  },
+  "xafs_rots": {
+    "_id": "xafs_rots",
+    "name": "xafs_rots",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:RotS}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_rots"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:RotS}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:114"
+  },
+  "xafs_detx": {
+    "_id": "xafs_detx",
+    "name": "xafs_detx",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Tbl_XD}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_detx"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Tbl_XD}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:116"
+  },
+  "xafs_det": {
+    "_id": "xafs_det",
+    "name": "xafs_det",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Tbl_XD}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_detx"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Tbl_XD}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:116"
+  },
+  "xafs_refy": {
+    "_id": "xafs_refy",
+    "name": "xafs_refy",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:LinXS}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_refy"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:LinXS}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:117"
+  },
+  "xafs_refx": {
+    "_id": "xafs_refx",
+    "name": "xafs_refx",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:RefX}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_refx"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:RefX}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:118"
+  },
+  "xafs_adx": {
+    "_id": "xafs_adx",
+    "name": "xafs_adx",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:LinX}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_adx"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:LinX}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:119"
+  },
+  "xafs_ady": {
+    "_id": "xafs_ady",
+    "name": "xafs_ady",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:LinY}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_ady"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:LinY}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:120"
+  },
+  "xafs_roll": {
+    "_id": "xafs_roll",
+    "name": "xafs_roll",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Pitch}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_roll"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Pitch}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:121"
+  },
+  "xafs_pitch": {
+    "_id": "xafs_pitch",
+    "name": "xafs_pitch",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Roll}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_pitch"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Roll}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:122"
+  },
+  "xafs_garot": {
+    "_id": "xafs_garot",
+    "name": "xafs_garot",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Mtr8}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_garot"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Mtr8}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:124"
+  },
+  "xafs_mtr8": {
+    "_id": "xafs_mtr8",
+    "name": "xafs_mtr8",
+    "active": true,
+    "device_class": "bmm_devs.EndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-BI{XAFS-Ax:Mtr8}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_garot"
+    },
+    "prefix": "XF:06BMA-BI{XAFS-Ax:Mtr8}Mtr",
+    "documentation": "BMM EndStationEpicsMotor ported from BMM/user_ns/motors.py:124"
+  },
+  "xafs_dety": {
+    "_id": "xafs_dety",
+    "name": "xafs_dety",
+    "active": true,
+    "device_class": "bmm_devs.EncodedEndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{MC:09-Ax:1}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_dety"
+    },
+    "prefix": "XF:06BM-ES{MC:09-Ax:1}Mtr",
+    "documentation": "BMM EncodedEndStationEpicsMotor ported from BMM/user_ns/motors.py:130"
+  },
+  "xafs_detz": {
+    "_id": "xafs_detz",
+    "name": "xafs_detz",
+    "active": true,
+    "device_class": "bmm_devs.EncodedEndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{MC:09-Ax:2}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_detz"
+    },
+    "prefix": "XF:06BM-ES{MC:09-Ax:2}Mtr",
+    "documentation": "BMM EncodedEndStationEpicsMotor ported from BMM/user_ns/motors.py:131"
+  },
+  "xafs_spare": {
+    "_id": "xafs_spare",
+    "name": "xafs_spare",
+    "active": true,
+    "device_class": "bmm_devs.EncodedEndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{MC:09-Ax:3}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_spare"
+    },
+    "prefix": "XF:06BM-ES{MC:09-Ax:3}Mtr",
+    "documentation": "BMM EncodedEndStationEpicsMotor ported from BMM/user_ns/motors.py:132"
+  },
+  "xafs_bsy": {
+    "_id": "xafs_bsy",
+    "name": "xafs_bsy",
+    "active": true,
+    "device_class": "bmm_devs.EncodedEndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{MC:09-Ax:4}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_bsy"
+    },
+    "prefix": "XF:06BM-ES{MC:09-Ax:4}Mtr",
+    "documentation": "BMM EncodedEndStationEpicsMotor ported from BMM/user_ns/motors.py:133"
+  },
+  "xafs_bsx": {
+    "_id": "xafs_bsx",
+    "name": "xafs_bsx",
+    "active": true,
+    "device_class": "bmm_devs.EncodedEndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{MC:09-Ax:5}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_bsx"
+    },
+    "prefix": "XF:06BM-ES{MC:09-Ax:5}Mtr",
+    "documentation": "BMM EncodedEndStationEpicsMotor ported from BMM/user_ns/motors.py:134"
+  },
+  "xafs_x": {
+    "_id": "xafs_x",
+    "name": "xafs_x",
+    "active": true,
+    "device_class": "bmm_devs.EncodedEndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{MC:09-Ax:6}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_x"
+    },
+    "prefix": "XF:06BM-ES{MC:09-Ax:6}Mtr",
+    "documentation": "BMM EncodedEndStationEpicsMotor ported from BMM/user_ns/motors.py:135"
+  },
+  "xafs_y": {
+    "_id": "xafs_y",
+    "name": "xafs_y",
+    "active": true,
+    "device_class": "bmm_devs.EncodedEndStationEpicsMotor",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-ES{MC:09-Ax:7}Mtr"
+    ],
+    "kwargs": {
+      "name": "xafs_y"
+    },
+    "prefix": "XF:06BM-ES{MC:09-Ax:7}Mtr",
+    "documentation": "BMM EncodedEndStationEpicsMotor ported from BMM/user_ns/motors.py:136"
+  },
+  "bl_enabled": {
+    "_id": "bl_enabled",
+    "name": "bl_enabled",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "SR:C06-EPS{PLC:1}Sts:BM_BE_Enbl-Sts"
+    ],
+    "kwargs": {
+      "name": "enabled"
+    },
+    "prefix": "SR:C06-EPS{PLC:1}Sts:BM_BE_Enbl-Sts",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/utilities.py:16"
+  },
+  "fev": {
+    "_id": "fev",
+    "name": "fev",
+    "active": true,
+    "device_class": "bmm_devs.FEVac",
+    "type": "OphydItem",
+    "args": [
+      "FE:C06B-VA{"
+    ],
+    "kwargs": {
+      "name": "FrontEndVacuum"
+    },
+    "prefix": "FE:C06B-VA{",
+    "documentation": "BMM FEVac ported from BMM/user_ns/utilities.py:67"
+  },
+  "flight_path": {
+    "_id": "flight_path",
+    "name": "flight_path",
+    "active": true,
+    "device_class": "bmm_devs.TCG",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMB-VA{FltPth:1"
+    ],
+    "kwargs": {
+      "name": "Flight Path"
+    },
+    "prefix": "XF:06BMB-VA{FltPth:1",
+    "documentation": "BMM TCG ported from BMM/user_ns/utilities.py:77"
+  },
+  "monotc_inboard": {
+    "_id": "monotc_inboard",
+    "name": "monotc_inboard",
+    "active": true,
+    "device_class": "bmm_devs.OneWireTC",
+    "type": "OphydItem",
+    "args": [
+      "XF:6BMA{SENS:001}T"
+    ],
+    "kwargs": {
+      "name": "monotc_inboard"
+    },
+    "prefix": "XF:6BMA{SENS:001}T",
+    "documentation": "BMM OneWireTC ported from BMM/user_ns/utilities.py:165"
+  },
+  "monotc_upstream_high": {
+    "_id": "monotc_upstream_high",
+    "name": "monotc_upstream_high",
+    "active": true,
+    "device_class": "bmm_devs.OneWireTC",
+    "type": "OphydItem",
+    "args": [
+      "XF:6BMA{SENS:002}T"
+    ],
+    "kwargs": {
+      "name": "monotc_upstream_high"
+    },
+    "prefix": "XF:6BMA{SENS:002}T",
+    "documentation": "BMM OneWireTC ported from BMM/user_ns/utilities.py:166"
+  },
+  "monotc_downstream": {
+    "_id": "monotc_downstream",
+    "name": "monotc_downstream",
+    "active": true,
+    "device_class": "bmm_devs.OneWireTC",
+    "type": "OphydItem",
+    "args": [
+      "XF:6BMA{SENS:003}T"
+    ],
+    "kwargs": {
+      "name": "monotc_downstream"
+    },
+    "prefix": "XF:6BMA{SENS:003}T",
+    "documentation": "BMM OneWireTC ported from BMM/user_ns/utilities.py:167"
+  },
+  "monotc_upstream_low": {
+    "_id": "monotc_upstream_low",
+    "name": "monotc_upstream_low",
+    "active": true,
+    "device_class": "bmm_devs.OneWireTC",
+    "type": "OphydItem",
+    "args": [
+      "XF:6BMA{SENS:004}T"
+    ],
+    "kwargs": {
+      "name": "monotc_upstream_low"
+    },
+    "prefix": "XF:6BMA{SENS:004}T",
+    "documentation": "BMM OneWireTC ported from BMM/user_ns/utilities.py:168"
+  },
+  "bmm_di": {
+    "_id": "bmm_di",
+    "name": "bmm_di",
+    "active": true,
+    "device_class": "bmm_devs.BMM_DIWater",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-UT{DI}"
+    ],
+    "kwargs": {
+      "name": "DI Water"
+    },
+    "prefix": "XF:06BMA-UT{DI}",
+    "documentation": "BMM BMM_DIWater ported from BMM/user_ns/utilities.py:182"
+  },
+  "pbs_di_a": {
+    "_id": "pbs_di_a",
+    "name": "pbs_di_a",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-PPS{DI}F:A1-I"
+    ],
+    "kwargs": {
+      "name": "PBS water flow A"
+    },
+    "prefix": "XF:06BM-PPS{DI}F:A1-I",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/utilities.py:189"
+  },
+  "pbs_di_b": {
+    "_id": "pbs_di_b",
+    "name": "pbs_di_b",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BM-PPS{DI}F:B1-I"
+    ],
+    "kwargs": {
+      "name": "PBS water flow B"
+    },
+    "prefix": "XF:06BM-PPS{DI}F:B1-I",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/utilities.py:190"
+  },
+  "pcw_supply_temperature": {
+    "_id": "pcw_supply_temperature",
+    "name": "pcw_supply_temperature",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-PU{PCW}T:Supply-I"
+    ],
+    "kwargs": {
+      "name": "PCW supply temperature"
+    },
+    "prefix": "XF:06BMA-PU{PCW}T:Supply-I",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/utilities.py:192"
+  },
+  "pcw_return_temperature": {
+    "_id": "pcw_return_temperature",
+    "name": "pcw_return_temperature",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-PU{PCW}T:Return-I"
+    ],
+    "kwargs": {
+      "name": "PCW return temperature"
+    },
+    "prefix": "XF:06BMA-PU{PCW}T:Return-I",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/utilities.py:193"
+  },
+  "foe_leak_detector": {
+    "_id": "foe_leak_detector",
+    "name": "foe_leak_detector",
+    "active": true,
+    "device_class": "ophyd.EpicsSignalRO",
+    "type": "OphydItem",
+    "args": [
+      "XF:06BMA-UT{LD:1}Alrm-Sts"
+    ],
+    "kwargs": {
+      "name": "FOE water leak detector"
+    },
+    "prefix": "XF:06BMA-UT{LD:1}Alrm-Sts",
+    "documentation": "BMM EpicsSignalRO ported from BMM/user_ns/utilities.py:195"
+  }
+}

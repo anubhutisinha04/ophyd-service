@@ -80,6 +80,45 @@
         }
       }
     },
+    "/api/v1/pv/set/batch": {
+      "post": {
+        "summary": "Set Pv Batch",
+        "description": "Apply a sequence of caputs with fail-hard semantics.\n\nCaputs are run in the order given. On the first failure, the loop\nhalts and the response is returned with ``ok=false`` \u2014 remaining items\nare NOT attempted. Items already applied are NOT rolled back (the IOC\nhas no notion of a transaction). The HTTP status of the batch call\nitself is always 200 on a well-formed request; per-item HTTP-equivalent\ncodes are in each result's ``status_code`` field so the caller can\nbranch the same way it would on a single ``/pv/set`` call.\n\nDesigned for \"configure beamline for edge X\" flows where the frontend\nbundles ~10\u201320 caputs from a preset table. If the half-applied state\nis unacceptable for your use case, do not catch ``ok=false`` and move\non \u2014 surface the failure to the operator.",
+        "operationId": "set_pv_batch_api_v1_pv_set_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PVSetBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PVSetBatchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/pv/{pv_name}/value": {
       "get": {
         "summary": "Get Pv Value From Controller",
@@ -925,6 +964,139 @@
         ],
         "title": "NestedDeviceResponse",
         "description": "Response from nested device access."
+      },
+      "PVSetBatchItemResult": {
+        "properties": {
+          "pv_name": {
+            "type": "string",
+            "title": "Pv Name"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "value_set": {
+            "title": "Value Set"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "coordination_checked": {
+            "type": "boolean",
+            "title": "Coordination Checked",
+            "default": false
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommandMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Type",
+            "description": "Exception class name when success=false (e.g. RegistryValidationError)"
+          },
+          "status_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Code",
+            "description": "HTTP status the equivalent single /pv/set call would have returned"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pv_name",
+          "success",
+          "timestamp"
+        ],
+        "title": "PVSetBatchItemResult",
+        "description": "Per-item outcome from a batch caput.\n\nCarries enough detail that a caller can recover the same diagnostic\nthey'd see from a single ``POST /api/v1/pv/set`` (status code + message)\nwhile still being part of a JSON list. ``status_code`` is the HTTP code\nthe equivalent single-item call would have returned\n(200 / 404 / 409 / 423 / 503 / 500) \u2014 direct_control returns the batch\nenvelope itself with 200 so the caller can read the full ``results``\nlist."
+      },
+      "PVSetBatchRequest": {
+        "properties": {
+          "caputs": {
+            "items": {
+              "$ref": "#/components/schemas/PVSetRequest"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Caputs",
+            "description": "PV writes to apply in order. Stops on first failure."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "caputs"
+        ],
+        "title": "PVSetBatchRequest",
+        "description": "Sequence of PV writes applied with fail-hard semantics.\n\nUsed for \"configure beamline for edge X\" flows where a partially-applied\npreset is worse than an explicit failure. The service runs caputs in the\norder given; on the first failure it stops and does *not* attempt the\nrest. Successful items remain applied \u2014 the IOC won't roll them back.\n\n``max_length`` is a soft sanity guard; a typical edge preset is ~15\ncaputs. Raise it if you have a real use case for larger batches."
+      },
+      "PVSetBatchResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "applied": {
+            "type": "integer",
+            "title": "Applied"
+          },
+          "requested": {
+            "type": "integer",
+            "title": "Requested"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/PVSetBatchItemResult"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ok",
+          "applied",
+          "requested",
+          "results"
+        ],
+        "title": "PVSetBatchResponse",
+        "description": "Aggregate response for a batch caput.\n\n``ok=true`` iff every item succeeded. ``applied`` is the count of items\nthat were applied before a halt (or the full batch on success).\n``results`` always contains exactly the items that were attempted \u2014\nitems past the failure point are absent, so ``requested - len(results)``\nis the count of items that were skipped after the halt."
       },
       "PVSetRequest": {
         "properties": {

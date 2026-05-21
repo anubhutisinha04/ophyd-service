@@ -25,6 +25,7 @@ in the Configuration Service before access is allowed.
 |--------|------|-------------|
 | GET | `/api/v1/pv/{pv_name}/value` | Read a PV value via caget. Returns `{pv_name, value, timestamp}` |
 | POST | `/api/v1/pv/set` | Write a PV value via caput. Body: `{pv_name, value}`. Checks A4 device locks before writing |
+| POST | `/api/v1/pv/set/batch` | Apply a sequence of caputs in order, fail-hard on first error. Body: `{caputs: [PVSetRequest, ...]}`. Returns `{ok, applied, requested, results[]}`. |
 
 ### Example: Read a PV
 
@@ -39,6 +40,23 @@ curl -X POST http://localhost:8003/api/v1/pv/set \
   -H "Content-Type: application/json" \
   -d '{"pv_name": "XF:31ID1-ES{SIM-Cam:2}cam1:GainX", "value": 2.5}'
 ```
+
+### Example: Batch caput (apply a preset)
+
+```bash
+curl -X POST http://localhost:8003/api/v1/pv/set/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "caputs": [
+      {"pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Val-SP", "value": "1",     "wait": true, "timeout": 2.0},
+      {"pv_name": "XF:23ID2-ES{Sclr:1}.TP",            "value": 0.5,     "wait": true, "timeout": 2.0}
+    ]
+  }'
+```
+
+Halts on the first failure; remaining items are not attempted. See
+[`docs/frontend-backend-integration.html`](../../../docs/frontend-backend-integration.html)
+in the repo root for the full periodic-table use case.
 
 ## Device Control (High-Fidelity Channel)
 

@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Frontend ↔ Backend integration — ophyd-service</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; line-height: 1.55; color: #222; }
+  h1 { border-bottom: 2px solid #444; padding-bottom: .3em; }
+  h2 { margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: .2em; }
+  h3 { margin-top: 1.5em; }
+  code, pre { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+  pre { background: #f4f4f4; padding: 1em; border-radius: 4px; overflow-x: auto; font-size: 0.9em; }
+  code { background: #f4f4f4; padding: 0.1em 0.3em; border-radius: 3px; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 0.5em 0.8em; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; }
+  .callout { background: #fff8e1; border-left: 4px solid #f0b400; padding: 0.8em 1em; margin: 1em 0; }
+  .callout.warn { background: #fde8e8; border-left-color: #d33; }
+  .callout.todo { background: #e7f0fd; border-left-color: #3a6dd1; }
+  .field { font-family: ui-monospace, monospace; color: #06509e; }
+</style>
+</head>
+<body>
+
+<h1>Frontend ↔ Backend integration guide</h1>
+
+<p><strong>Audience:</strong> the developer building the periodic-table UI and any
+other beamline-configuration widgets that need to write values to instrument
+hardware.</p>
+
+<p><strong>Scope:</strong> what the backend provides, what the frontend is responsible
+for, and exactly how to drive the new batch-caput endpoint for "configure the
+beamline for edge X" workflows.</p>
+
+<h2>1. The mental model</h2>
+
+<p>Three layers. Understand these and the rest of the doc is detail.</p>
+
+<h3>1.1 EPICS PVs — the bottom layer</h3>
+
+<p>A <strong>PV</strong> (Process Variable) is a single named value living inside an IOC
+(a controller program running on a beamline computer). Examples:</p>
+
+<ul>
+  <li><code>XF:23ID2-ES{CurrAmp:3}Gain:Val-SP</code> — the sample current amplifier's gain setpoint</li>
+  <li><code>XF:23ID2-ES{Vortex}mca1.PRTM</code> — the vortex MCA's preset counting time</li>
+</ul>
+
+<p>Each PV has a current value, and any program on the EPICS network can read it
+(<code>caget</code>) or write to it (<code>caput</code>). <strong>Configuring an experiment
+ultimately means doing a batch of caputs to put the right values into the right
+PVs.</strong> Everything else in this doc is plumbing around that single fact.</p>
+
+<h3>1.2 Ophyd — the object wrapper</h3>
+
+<p>PV name strings are ugly and easy to typo. Ophyd is a Python library that
+groups related PVs into Python objects. Instead of writing 50 PV strings, you
+get a tree of attributes:</p>
+
+<pre><code>vortex.mca.preset_real_time.put(0.5)         # corresponds to XF:23ID2-ES{Vortex}mca1.PRTM
+vortex.mca.rois.roi2.lo_chan.put(950)        # corresponds to XF:23ID2-ES{Vortex}mca1.R2LO</code></pre>
+
+<p>The shape of the tree is defined by a <em>device class</em>. As a frontend dev
+you mostly don't deal with ophyd directly — you'll address things by the
+device's friendly name (and, eventually, by dotted sub-component paths) and
+the backend resolves to PVs.</p>
+
+<h3>1.3 Configuration service — the registry</h3>
+
+<p>The configuration service is the <strong>device registry</strong>. It knows:</p>
+
+<ul>
+  <li>Which devices and standalone PVs exist on this beamline (its
+      <code>happi_db.json</code> equivalent, plus its CRUD API).</li>
+  <li>Whether each device is currently <strong>locked</strong> (a plan is running) or
+      <strong>disabled</strong> (administratively offline).</li>
+</ul>
+
+<p>The configuration service is read by direct-control on every write to validate
+that the target exists and isn't locked. The frontend usually doesn't talk to
+the configuration service directly — direct-control does it on your behalf
+when you make a caput request.</p>
+
+<h3>1.4 Direct-control — the write/read service</h3>
+
+<p>Direct-control is the service the frontend POSTs to. It:</p>
+
+<ul>
+  <li>Takes a PV name + value, asks the configuration service "is this PV
+      registered and unlocked?", and if so, issues the <code>caput</code> via
+      <a href="https://pyepics.github.io/pyepics/">pyepics</a>.</li>
+  <li>Same flow for reads (<code>caget</code>), plus WebSocket subscriptions for
+      streaming monitor updates.</li>
+</ul>
+
+<p><strong>Direct-control's API today is PV-name based.</strong> You send PV strings, not
+ophyd dotted paths. Resolving "friendly" addresses (like
+<code>vortex.mca.rois.roi2.lo_chan</code>) to PV strings is a separate concern — see
+<a href="#follow-ups">§7 Follow-ups</a>.</p>
+
+<h2>2. The periodic-table workflow</h2>
+
+<p>This is the use case the new batch-caput endpoint exists to serve. The scientist
+clicks an element in a periodic-table widget, and the beamline reconfigures
+for that absorption edge.</p>
+
+<h3>2.1 Sequence</h3>
+
+<pre><code>┌────────────┐                  ┌──────────────────────┐
+│  Frontend  │                  │   direct-control     │
+│ (periodic  │                  │   (port 8003)        │
+│   table)   │                  └──────────────────────┘
+└────────────┘                            │
+       │ 1. Operator clicks "Ni_L"        │
+       │ ──────────────────────────────►  │ (no traffic yet)
+       │                                  │
+       │ 2. Frontend looks up Ni_L in its │
+       │    edge-preset table (bundled    │
+       │    JSON or fetched from a future │
+       │    presets endpoint)             │
+       │                                  │
+       │ 3. POST /api/v1/pv/set/batch     │
+       │ ──────────────────────────────►  │ validates each PV via
+       │    { caputs: [12 entries] }      │ config-service, runs
+       │                                  │ caputs in order, halts
+       │                                  │ on first failure
+       │ ◄──────────────────────────────  │
+       │   200 OK                         │
+       │   { ok: true, applied: 12, ...}  │
+       │                                  │
+       │ 4. Frontend updates UI:          │
+       │    "Configured for Ni_L"         │
+       │    (or shows the failure row     │
+       │    from the response on error)   │
+       │                                  │</code></pre>
+
+<h3>2.2 Who owns the edge-preset table</h3>
+
+<p>The mapping from <code>edge_name → {PV: value, ...}</code> is the frontend's
+responsibility. The backend (configuration_service) is a device registry and
+device-lock store — not a metadata or presets store. Two practical options for
+where the presets actually live:</p>
+
+<table>
+<tr><th>Option</th><th>How</th><th>When to pick it</th></tr>
+<tr>
+<td>Static JSON bundled with the frontend</td>
+<td>Ship <code>edge_presets.json</code> alongside the periodic-table widget; rebuild and redeploy to change values.</td>
+<td>Values rarely change. Simplest possible thing.</td>
+</tr>
+<tr>
+<td>Redis (or similar small KV store)</td>
+<td>Frontend reads/writes <code>xas:presets:&lt;edge&gt;</code> keys against a small presets service.</td>
+<td>Scientists edit presets routinely without a frontend rebuild. The current xlsx workflow says this is the realistic case.</td>
+</tr>
+</table>
+
+<p>Either way, the JSON the frontend constructs <em>per click</em> is the same shape
+and gets POSTed to the same endpoint.</p>
+
+<h2 id="batch-endpoint">3. The batch caput endpoint</h2>
+
+<p><strong>Endpoint:</strong> <code>POST /api/v1/pv/set/batch</code></p>
+
+<h3>3.1 Request</h3>
+
+<pre><code>{
+  "caputs": [
+    {
+      "pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Val-SP",
+      "value": "1",
+      "wait": true,
+      "timeout": 2.0
+    },
+    {
+      "pv_name": "XF:23ID2-ES{Vortex}mca1.PRTM",
+      "value": 0.5,
+      "wait": true,
+      "timeout": 2.0
+    }
+    // ... up to 100 items per batch
+  ]
+}</code></pre>
+
+<p>Each item is the same shape as a single <code>POST /api/v1/pv/set</code>:</p>
+
+<table>
+<tr><th>Field</th><th>Type</th><th>Required</th><th>Notes</th></tr>
+<tr><td class="field">pv_name</td><td>string</td><td>yes</td><td>The EPICS PV string. Must be registered in configuration_service.</td></tr>
+<tr><td class="field">value</td><td>any</td><td>yes</td><td>Number, string (for enums), or array. Type must match the PV.</td></tr>
+<tr><td class="field">wait</td><td>bool</td><td>no, default <code>false</code></td><td>If <code>true</code>, block until the IOC reports put-completion. For experiment setup you almost always want <code>true</code> so you know it landed.</td></tr>
+<tr><td class="field">timeout</td><td>float</td><td>no</td><td>Seconds. Used with <code>wait=true</code> or <code>use_complete=true</code>.</td></tr>
+<tr><td class="field">use_complete</td><td>bool</td><td>no</td><td>Power-user knob; use put-callback completion instead of blocking a CA thread. Leave default for most cases.</td></tr>
+<tr><td class="field">connection_timeout</td><td>float</td><td>no</td><td>Max seconds to wait for the EPICS CA connection to come up.</td></tr>
+</table>
+
+<p>Constraints:</p>
+<ul>
+  <li>At least 1 item, at most 100 items per request (raise this if you have a real need).</li>
+  <li>Extra fields at the top level are rejected (typo-catching).</li>
+</ul>
+
+<h3>3.2 Response</h3>
+
+<pre><code>{
+  "ok": true,
+  "applied": 12,
+  "requested": 12,
+  "results": [
+    {
+      "pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Val-SP",
+      "success": true,
+      "value_set": "1",
+      "timestamp": "2026-05-21T14:32:01.123456",
+      "coordination_checked": true,
+      "mode": "put-completion",
+      "status_code": 200,
+      "message": null,
+      "error_type": null
+    }
+    // ... one entry per caput attempted
+  ]
+}</code></pre>
+
+<table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td class="field">ok</td><td><code>true</code> iff every item succeeded. <code>false</code> if any item failed (and the batch halted at that point).</td></tr>
+<tr><td class="field">applied</td><td>Count of items that succeeded before the halt (or all of them on success).</td></tr>
+<tr><td class="field">requested</td><td>Total items in the batch you sent.</td></tr>
+<tr><td class="field">results</td><td>One entry per item <em>attempted</em>. Items past the failure point are absent — that's how you know where the batch halted.</td></tr>
+</table>
+
+<p>Per-item <code>status_code</code> mirrors what the equivalent single <code>POST /api/v1/pv/set</code>
+call would have returned: <code>200</code> on success, <code>404</code> for unknown PV, <code>423</code> for
+locked device, <code>409</code> for disabled device, <code>503</code> for coordination-service
+trouble, <code>500</code> for an unexpected error.</p>
+
+<h3>3.3 Fail-hard semantics</h3>
+
+<div class="callout warn">
+<strong>The batch halts on the first failure. Items past the failure point are NOT attempted.</strong>
+Items already applied are NOT rolled back — the IOC has no concept of a transaction,
+so the partial state stays in place. This is intentional: continuing past a failure
+risks leaving the instrument in a worse, more inconsistent state.
+</div>
+
+<p>How to handle a partial-batch failure on the frontend:</p>
+
+<ol>
+  <li>Check <code>ok</code>. If <code>true</code>, you're done.</li>
+  <li>If <code>false</code>, the last entry in <code>results</code> is the failure. Look at its
+      <code>error_type</code>, <code>message</code>, and <code>status_code</code> to decide what to show.</li>
+  <li>The operator should see the failure — don't silently move on. The
+      instrument is now in a half-configured state.</li>
+</ol>
+
+<h3>3.4 HTTP status of the batch call itself</h3>
+
+<p>The batch call returns <strong>200</strong> on any well-formed request — even when items
+inside fail. This is deliberate so you can always read the structured
+<code>results</code> list. Non-2xx from this endpoint means the request itself was
+malformed (422 for empty list, bad value type, extra fields, etc.) or the
+service itself is down.</p>
+
+<h2>4. The single caput endpoint (still available)</h2>
+
+<p>For one-off sets (e.g. a slider widget that nudges one motor), use the
+existing single endpoint:</p>
+
+<pre><code>POST /api/v1/pv/set
+{ "pv_name": "...", "value": ..., "wait": true, "timeout": 2.0 }</code></pre>
+
+<p>It returns the per-item shape directly (not wrapped in a batch envelope) and
+uses standard HTTP status codes (200 / 404 / 423 / 503 / 500).</p>
+
+<h2>5. Reading values (caget)</h2>
+
+<p>One-shot read of a PV:</p>
+
+<pre><code>GET /api/v1/pv/{pv_name}/value?use_monitor=false&amp;timeout=2.0</code></pre>
+
+<p>Response is a tiled-style envelope with <code>value</code>, <code>shape</code>,
+<code>dtype</code>, <code>units</code>, alarm fields, etc. For streaming updates use the
+WebSocket endpoints (<code>/api/v1/pv-socket</code> and <code>/api/v1/device-socket</code>) — see the
+direct-control service README for those.</p>
+
+<h2>6. End-to-end example: configuring for Ni_L</h2>
+
+<p>Suppose the frontend's edge-preset table for Ni_L looks like:</p>
+
+<pre><code>{
+  "Ni_L": {
+    "sample_gain":     "1",
+    "sample_decade":   "1 nA/V",
+    "aumesh_gain":     "1",
+    "aumesh_decade":   "1 nA/V",
+    "pd_gain":         "5",
+    "pd_decade":       "1 uA/V",
+    "sclr_time":       0.5,
+    "vortex_preset":   0.5,
+    "au_mesh_y":       -130.2,
+    "m1b1_pid_sp":     378,
+    "epu1_offset":     0.2,
+    "epu_table":       4
+  }
+}</code></pre>
+
+<p>The frontend resolves each friendly key to the PV string (from configuration_service
+or a local mapping) and POSTs:</p>
+
+<pre><code>POST /api/v1/pv/set/batch
+{
+  "caputs": [
+    {"pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Val-SP",     "value": "1",       "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Decade-SP",  "value": "1 nA/V",  "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:2}Gain:Val-SP",     "value": "1",       "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:2}Gain:Decade-SP",  "value": "1 nA/V",  "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:1}Gain:Val-SP",     "value": "5",       "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:1}Gain:Decade-SP",  "value": "1 uA/V",  "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{Sclr:1}.TP",                "value": 0.5,       "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{Vortex}mca1.PRTM",          "value": 0.5,       "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-BI{AuMesh:1-Ax:Y}Mtr.VAL",     "value": -130.2,    "wait": true, "timeout": 30.0},
+    {"pv_name": "XF:23ID2-OP{FBck}PID-SP",               "value": 378,       "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID-ID{EPU:1-FLT}Val:InpOff1-SP",   "value": 0.2,       "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID-ID{EPU:1}Val:Table-Sel",        "value": 4,         "wait": true, "timeout": 2.0}
+  ]
+}</code></pre>
+
+<p>On success the UI flashes a "Configured for Ni_L" indicator. On failure it
+shows which caput failed (PV name + error message) and tells the operator
+the instrument is in a partial state.</p>
+
+<h2 id="follow-ups">7. Follow-ups (not yet wired up)</h2>
+
+<div class="callout todo">
+<strong>Dotted-path addressing.</strong> Today the frontend has to know the raw PV
+string for every preset value. We've discussed adding a "resolve" endpoint to
+configuration_service that takes a friendly address like
+<code>vortex.mca.rois.roi2.lo_chan</code> and returns the underlying PV string by
+walking the ophyd device class's Component tree. Once that lands, the
+frontend's preset table can use friendly addresses and the resolve call
+becomes part of the per-click flow (or once-at-load-time, with caching).
+Not in this PR.
+</div>
+
+<div class="callout todo">
+<strong>Presets storage.</strong> Where the per-edge preset table actually lives
+(frontend bundle vs redis vs something else) is an open call — see §2.2.
+This is a frontend decision; the backend doesn't constrain it.
+</div>
+
+<div class="callout todo">
+<strong>Plan kwargs (out of scope for caput).</strong> Some columns in the existing
+xlsx (<code>scan_count</code>, <code>intervals</code>, and arguably <code>start</code> /
+<code>stop</code> / <code>velocity</code> for fly scans) are not PVs at all — they're
+bluesky plan kwargs that the queueserver consumes when running a scan.
+Those don't go through this endpoint. When/if the queueserver integration
+lands, the frontend will need a separate "submit plan" API for them.
+</div>
+
+<h2>8. Things to watch out for</h2>
+
+<ul>
+  <li><strong>Don't silently swallow <code>ok: false</code>.</strong> If the batch halted
+      partway, the operator needs to know — the IOC is in a partial state.</li>
+  <li><strong>Use <code>wait: true</code> for setup caputs.</strong> Fire-and-forget
+      (<code>wait: false</code>) is fine for "nudge this slider" UIs but bad for
+      "configure for an edge" — you want to know the values actually landed
+      before the operator hits "start scan".</li>
+  <li><strong>Locks are first-class.</strong> When a plan is running, every device
+      it owns will return <code>423 Locked</code>. Surface this clearly in the UI
+      so the operator knows to wait or stop the plan, not retry.</li>
+  <li><strong>Empty batches are a frontend bug.</strong> The endpoint rejects them
+      with 422 rather than silently doing nothing.</li>
+</ul>
+
+<h2>9. Reference</h2>
+
+<ul>
+  <li>OpenAPI schema: <code>shared-schema/direct_control.openapi.json</code> — codegen-friendly source of truth.</li>
+  <li>Direct-control API docs (markdown): <code>backend/direct_control_service/docs/api.md</code></li>
+  <li>Configuration-service device registry: see its README under <code>backend/configuration_service/</code></li>
+  <li>Tests covering this endpoint: <code>backend/direct_control_service/tests/test_batch_caput.py</code></li>
+</ul>
+
+</body>
+</html>

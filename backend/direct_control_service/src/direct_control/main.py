@@ -37,6 +37,9 @@ from .models import (
     NestedDeviceResponse,
     PVNotFoundError,
     PVReadError,
+    PVSetBatchItemResult,
+    PVSetBatchRequest,
+    PVSetBatchResponse,
     PVSetRequest,
     PVSetResponse,
     PVValue,
@@ -461,6 +464,162 @@ async def set_pv(
     except Exception as e:
         logger.error("set_pv_error", pv_name=request.pv_name, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _batch_failure_result(
+    pv_name: str,
+    exc: Exception,
+    status_code: int,
+    *,
+    coordination_checked: bool,
+) -> PVSetBatchItemResult:
+    """Build a failure row for one item in a batch caput.
+
+    ``coordination_checked`` reflects whether the coord-gate ran before the
+    failure: False for failures that happen during registry validation
+    (we never get to the gate), True for failures raised by
+    ``device_controller.set_pv`` (registry passed, the call entered the
+    controller where the gate runs).
+    """
+    return PVSetBatchItemResult(
+        pv_name=pv_name,
+        success=False,
+        timestamp=datetime.now(),
+        coordination_checked=coordination_checked,
+        error_type=type(exc).__name__,
+        message=str(exc),
+        status_code=status_code,
+    )
+
+
+@app.post("/api/v1/pv/set/batch", response_model=PVSetBatchResponse)
+async def set_pv_batch(
+    request: PVSetBatchRequest,
+    device_controller: DeviceControl = Depends(get_device_controller),
+    registry_client: RegistryClient = Depends(get_registry_client),
+):
+    """Apply a sequence of caputs with fail-hard semantics.
+
+    Caputs are run in the order given. On the first failure, the loop
+    halts and the response is returned with ``ok=false`` — remaining items
+    are NOT attempted. Items already applied are NOT rolled back (the IOC
+    has no notion of a transaction). The HTTP status of the batch call
+    itself is always 200 on a well-formed request; per-item HTTP-equivalent
+    codes are in each result's ``status_code`` field so the caller can
+    branch the same way it would on a single ``/pv/set`` call.
+
+    Designed for "configure beamline for edge X" flows where the frontend
+    bundles ~10–20 caputs from a preset table. If the half-applied state
+    is unacceptable for your use case, do not catch ``ok=false`` and move
+    on — surface the failure to the operator.
+    """
+    results: List[PVSetBatchItemResult] = []
+    applied = 0
+
+    for item in request.caputs:
+        # Mirror the single /pv/set validation chain so a batch behaves
+        # exactly like a sequence of individual calls would (modulo the
+        # short-circuit on first failure).
+        try:
+            await registry_client.validate_pv(item.pv_name)
+        except RegistryValidationError as e:
+            results.append(
+                _batch_failure_result(item.pv_name, e, 404, coordination_checked=False)
+            )
+            logger.warning(
+                "pv_set_batch_registry_invalid",
+                pv_name=item.pv_name,
+                applied_before_halt=applied,
+            )
+            break
+        except RuntimeError as e:
+            results.append(
+                _batch_failure_result(item.pv_name, e, 503, coordination_checked=False)
+            )
+            logger.warning(
+                "pv_set_batch_registry_unavailable",
+                pv_name=item.pv_name,
+                applied_before_halt=applied,
+            )
+            break
+
+        try:
+            resp = await device_controller.set_pv(item)
+        except DeviceDisabledError as e:
+            results.append(
+                _batch_failure_result(item.pv_name, e, 409, coordination_checked=True)
+            )
+            logger.warning(
+                "pv_set_batch_device_disabled",
+                pv_name=item.pv_name,
+                applied_before_halt=applied,
+            )
+            break
+        except DeviceLockedError as e:
+            results.append(
+                _batch_failure_result(item.pv_name, e, 423, coordination_checked=True)
+            )
+            logger.warning(
+                "pv_set_batch_device_locked",
+                pv_name=item.pv_name,
+                applied_before_halt=applied,
+            )
+            break
+        except CoordinationCheckError as e:
+            results.append(
+                _batch_failure_result(item.pv_name, e, 503, coordination_checked=True)
+            )
+            logger.error(
+                "pv_set_batch_coordination_failed",
+                pv_name=item.pv_name,
+                applied_before_halt=applied,
+                error=str(e),
+            )
+            break
+        except Exception as e:
+            results.append(
+                _batch_failure_result(item.pv_name, e, 500, coordination_checked=True)
+            )
+            logger.error(
+                "pv_set_batch_item_error",
+                pv_name=item.pv_name,
+                applied_before_halt=applied,
+                error=str(e),
+                exc_info=True,
+            )
+            break
+
+        results.append(
+            PVSetBatchItemResult(
+                pv_name=resp.pv_name,
+                success=resp.success,
+                value_set=resp.value_set,
+                timestamp=resp.timestamp,
+                coordination_checked=resp.coordination_checked,
+                mode=resp.mode,
+                message=resp.message,
+                status_code=200,
+            )
+        )
+        if not resp.success:
+            # set_pv() returned success=False without raising — surface as
+            # a halt rather than continuing into items that may depend on it.
+            logger.warning(
+                "pv_set_batch_item_returned_failure",
+                pv_name=item.pv_name,
+                applied_before_halt=applied,
+                message=resp.message,
+            )
+            break
+        applied += 1
+
+    ok = applied == len(request.caputs)
+    return PVSetBatchResponse(
+        ok=ok,
+        applied=applied,
+        requested=len(request.caputs),
+        results=results,
+    )
 
 
 @app.get("/api/v1/pv/{pv_name}/value")

@@ -131,6 +131,76 @@ class PVSetResponse(BaseModel):
     message: Optional[str] = None
 
 
+class PVSetBatchRequest(BaseModel):
+    """Sequence of PV writes applied with fail-hard semantics.
+
+    Used for "configure beamline for edge X" flows where a partially-applied
+    preset is worse than an explicit failure. The service runs caputs in the
+    order given; on the first failure it stops and does *not* attempt the
+    rest. Successful items remain applied — the IOC won't roll them back.
+
+    ``max_length`` is a soft sanity guard; a typical edge preset is ~15
+    caputs. Raise it if you have a real use case for larger batches.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    caputs: List[PVSetRequest] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="PV writes to apply in order. Stops on first failure.",
+    )
+
+
+class PVSetBatchItemResult(BaseModel):
+    """Per-item outcome from a batch caput.
+
+    Carries enough detail that a caller can recover the same diagnostic
+    they'd see from a single ``POST /api/v1/pv/set`` (status code + message)
+    while still being part of a JSON list. ``status_code`` is the HTTP code
+    the equivalent single-item call would have returned
+    (200 / 404 / 409 / 423 / 503 / 500) — direct_control returns the batch
+    envelope itself with 200 so the caller can read the full ``results``
+    list.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pv_name: str
+    success: bool
+    value_set: Any = None
+    timestamp: datetime
+    coordination_checked: bool = False
+    mode: Optional[CommandMode] = None
+    message: Optional[str] = None
+    error_type: Optional[str] = Field(
+        None, description="Exception class name when success=false (e.g. RegistryValidationError)"
+    )
+    status_code: Optional[int] = Field(
+        None,
+        description="HTTP status the equivalent single /pv/set call would have returned",
+    )
+
+
+class PVSetBatchResponse(BaseModel):
+    """Aggregate response for a batch caput.
+
+    ``ok=true`` iff every item succeeded. ``applied`` is the count of items
+    that were applied before a halt (or the full batch on success).
+    ``results`` always contains exactly the items that were attempted —
+    items past the failure point are absent, so ``requested - len(results)``
+    is the count of items that were skipped after the halt.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    applied: int
+    requested: int
+    results: List[PVSetBatchItemResult]
+
+
 class DeviceCommandRequest(BaseModel):
     """
     Request to execute a device method (High Fidelity Channel).
