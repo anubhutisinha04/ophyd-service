@@ -1042,7 +1042,7 @@
           "timestamp"
         ],
         "title": "PVSetBatchItemResult",
-        "description": "Per-item outcome from a batch caput.\n\nCarries enough detail that a caller can recover the same diagnostic\nthey'd see from a single ``POST /api/v1/pv/set`` (status code + message)\nwhile still being part of a JSON list. ``status_code`` is the HTTP code\nthe equivalent single-item call would have returned (200 / 404 / 423 /\n503 / 500) \u2014 direct_control returns the batch envelope itself with 200\nso the caller can read the full ``results`` list."
+        "description": "Per-item outcome from a batch caput.\n\nCarries enough detail that a caller can recover the same diagnostic\nthey'd see from a single ``POST /api/v1/pv/set`` (status code + message)\nwhile still being part of a JSON list. ``status_code`` is the HTTP code\nthe equivalent single-item call would have returned\n(200 / 404 / 409 / 423 / 503 / 500) \u2014 direct_control returns the batch\nenvelope itself with 200 so the caller can read the full ``results``\nlist."
       },
       "PVSetBatchRequest": {
         "properties": {

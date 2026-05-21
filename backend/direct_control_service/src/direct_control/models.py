@@ -159,9 +159,10 @@ class PVSetBatchItemResult(BaseModel):
     Carries enough detail that a caller can recover the same diagnostic
     they'd see from a single ``POST /api/v1/pv/set`` (status code + message)
     while still being part of a JSON list. ``status_code`` is the HTTP code
-    the equivalent single-item call would have returned (200 / 404 / 423 /
-    503 / 500) — direct_control returns the batch envelope itself with 200
-    so the caller can read the full ``results`` list.
+    the equivalent single-item call would have returned
+    (200 / 404 / 409 / 423 / 503 / 500) — direct_control returns the batch
+    envelope itself with 200 so the caller can read the full ``results``
+    list.
     """
 
     model_config = ConfigDict(extra="forbid")
