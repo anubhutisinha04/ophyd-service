@@ -580,7 +580,7 @@ async def set_pv_batch(
                 coordination_checked=resp.coordination_checked,
                 mode=resp.mode,
                 message=resp.message,
-                status_code=200 if resp.success else 500,
+                status_code=200,
             )
         )
         if not resp.success:

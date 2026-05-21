@@ -1,13 +1,34 @@
 """Batch caput endpoint (``POST /api/v1/pv/set/batch``).
 
 Exercises the happy path and the fail-hard halt-on-first-failure contract.
-The registry-rejection test uses a per-test ``dependency_overrides`` stub
-since the default ``_StubRegistry`` accepts every PV.
+The registry-rejection tests use ``_RejectsBadPvRegistry`` via
+``dependency_overrides`` since the default ``_StubRegistry`` accepts every
+PV.
 """
 
 from __future__ import annotations
 
 import pytest
+
+from direct_control.registry_client import RegistryValidationError
+
+
+class _RejectsBadPvRegistry:
+    """Registry stub that rejects ``BAD:pv`` and accepts everything else."""
+
+    async def validate_pv(self, pv_name: str):
+        if pv_name == "BAD:pv":
+            raise RegistryValidationError(pv_name, "PV")
+        return None
+
+    async def validate_device(self, device_name: str):
+        return None
+
+    async def get_owning_device(self, pv_name: str):
+        return None
+
+    async def cleanup(self):
+        return None
 
 
 def test_batch_set_all_succeed(client):
@@ -77,22 +98,6 @@ def test_batch_set_unknown_pv_halts_immediately(app, client):
     attempted (no state change observable on IOC:m1).
     """
     from direct_control.main import get_registry_client
-    from direct_control.registry_client import RegistryValidationError
-
-    class _RejectingRegistry:
-        async def validate_pv(self, pv_name: str):
-            if pv_name == "BAD:pv":
-                raise RegistryValidationError(pv_name, "PV")
-            return None
-
-        async def validate_device(self, device_name: str):
-            return None
-
-        async def get_owning_device(self, pv_name: str):
-            return None
-
-        async def cleanup(self):
-            return None
 
     # Seed m1 with a known value so we can prove it wasn't touched.
     r = client.post(
@@ -101,7 +106,7 @@ def test_batch_set_unknown_pv_halts_immediately(app, client):
     )
     assert r.status_code == 200
 
-    app.dependency_overrides[get_registry_client] = lambda: _RejectingRegistry()
+    app.dependency_overrides[get_registry_client] = lambda: _RejectsBadPvRegistry()
     try:
         r = client.post(
             "/api/v1/pv/set/batch",
@@ -143,22 +148,6 @@ def test_batch_set_mid_failure_halts_after_first_success(app, client):
     exactly where the batch halted.
     """
     from direct_control.main import get_registry_client
-    from direct_control.registry_client import RegistryValidationError
-
-    class _RejectsBadPv:
-        async def validate_pv(self, pv_name: str):
-            if pv_name == "BAD:pv":
-                raise RegistryValidationError(pv_name, "PV")
-            return None
-
-        async def validate_device(self, device_name: str):
-            return None
-
-        async def get_owning_device(self, pv_name: str):
-            return None
-
-        async def cleanup(self):
-            return None
 
     # Seed counter so we can verify it wasn't touched.
     r = client.post(
@@ -167,7 +156,7 @@ def test_batch_set_mid_failure_halts_after_first_success(app, client):
     )
     assert r.status_code == 200
 
-    app.dependency_overrides[get_registry_client] = lambda: _RejectsBadPv()
+    app.dependency_overrides[get_registry_client] = lambda: _RejectsBadPvRegistry()
     try:
         r = client.post(
             "/api/v1/pv/set/batch",
