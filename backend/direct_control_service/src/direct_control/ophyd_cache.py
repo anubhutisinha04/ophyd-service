@@ -85,7 +85,7 @@ class OphydDeviceCache:
             if existing is not None:
                 return existing
 
-            entry = self._instantiate(device_class_path, prefix)
+            entry = _instantiate(device_class_path, prefix)
             self._entries[key] = entry
             return entry
 
@@ -93,6 +93,9 @@ class OphydDeviceCache:
         """Drop a cached entry. Returns True if something was evicted."""
         key = CacheKey(device_class_path=device_class_path, prefix=prefix)
         with self._dict_lock:
+            # Drop the orphaned per-key lock too — otherwise ``_key_locks``
+            # grows monotonically across evict/re-instantiate cycles.
+            self._key_locks.pop(key, None)
             return self._entries.pop(key, None) is not None
 
     def clear(self) -> int:
@@ -100,39 +103,40 @@ class OphydDeviceCache:
         with self._dict_lock:
             count = len(self._entries)
             self._entries.clear()
+            self._key_locks.clear()
             return count
 
     def size(self) -> int:
         return len(self._entries)
 
-    @staticmethod
-    def _instantiate(device_class_path: str, prefix: str) -> CacheEntry:
-        """Import the class and construct an instance with ``prefix``.
 
-        Errors at any step are captured into ``CacheEntry.error`` so the
-        cache can short-circuit subsequent identical requests.
-        """
-        if "." not in device_class_path:
-            return CacheEntry(
-                error=f"device_class '{device_class_path}' has no module prefix"
-            )
-        module_name, class_name = device_class_path.rsplit(".", 1)
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError as e:
-            return CacheEntry(error=f"ImportError: {e}")
+def _instantiate(device_class_path: str, prefix: str) -> CacheEntry:
+    """Import the class and construct an instance with ``prefix``.
 
-        cls = getattr(module, class_name, None)
-        if cls is None:
-            return CacheEntry(
-                error=f"module {module_name!r} has no attribute {class_name!r}"
-            )
+    Errors at any step are captured into ``CacheEntry.error`` so the
+    cache can short-circuit subsequent identical requests.
+    """
+    if "." not in device_class_path:
+        return CacheEntry(
+            error=f"device_class '{device_class_path}' has no module prefix"
+        )
+    module_name, class_name = device_class_path.rsplit(".", 1)
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as e:
+        return CacheEntry(error=f"ImportError: {e}")
 
-        # The "_enrich" name is a sentinel — it's purely cosmetic on the
-        # device object for logs; ophyd uses it in some error messages.
-        try:
-            device = cls(prefix, name="_enrich")
-        except Exception as e:  # noqa: BLE001 — propagate the actual reason
-            return CacheEntry(error=f"Instantiation failed: {type(e).__name__}: {e}")
+    cls = getattr(module, class_name, None)
+    if cls is None:
+        return CacheEntry(
+            error=f"module {module_name!r} has no attribute {class_name!r}"
+        )
 
-        return CacheEntry(device=device)
+    # The "_enrich" name is a sentinel — it's purely cosmetic on the
+    # device object for logs; ophyd uses it in some error messages.
+    try:
+        device = cls(prefix, name="_enrich")
+    except Exception as e:  # noqa: BLE001 — propagate the actual reason
+        return CacheEntry(error=f"Instantiation failed: {type(e).__name__}: {e}")
+
+    return CacheEntry(device=device)

@@ -20,7 +20,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Annotated, Type, TypeVar
+from typing import List, NamedTuple, Optional, Dict, Any, Annotated, Tuple, Type, TypeVar
 
 import structlog
 from fastapi import FastAPI, HTTPException, Depends, Query, status
@@ -170,6 +170,21 @@ def _get_device_prefix(device: "DeviceMetadata", registry: "DeviceRegistry") -> 
             if not prefix:
                 return None
     return prefix if prefix else None
+
+
+class _DeferredEnrichment(NamedTuple):
+    """One row in the resolve endpoint's deferred-enrichment queue.
+
+    ``result_idx`` is the index of the placeholder slot in ``results``;
+    ``address`` is the original frontend-facing string echoed back in
+    the response; ``cache_key`` is the ``(device_class, prefix, sub_path)``
+    triple used both as the direct-control request and the in-process
+    enrichment cache key.
+    """
+
+    result_idx: int
+    address: str
+    cache_key: Tuple[str, str, str]
 
 
 def _apply_standalone_pvs(registry, pv_store: StandalonePVStore, log) -> None:
@@ -1928,7 +1943,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         # First pass: static resolution. Slots that need enrichment get a
         # placeholder + an entry in `deferred`.
         results: List[Optional[PathResolveResultItem]] = []
-        deferred: List[tuple] = []  # (result_idx, address, cache_key)
+        deferred: List[_DeferredEnrichment] = []
 
         for address in request.addresses:
             head, _, sub_path = address.partition(".")
@@ -1996,7 +2011,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     )
                     continue
                 results.append(None)  # placeholder filled in by second pass
-                deferred.append((len(results) - 1, address, cache_key))
+                deferred.append(
+                    _DeferredEnrichment(
+                        result_idx=len(results) - 1,
+                        address=address,
+                        cache_key=cache_key,
+                    )
+                )
                 continue
 
             results.append(
@@ -2012,35 +2033,37 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if deferred:
             specs = [
                 EnrichmentSpec(
-                    device_class_path=key[0], prefix=key[1], sub_path=key[2]
+                    device_class_path=d.cache_key[0],
+                    prefix=d.cache_key[1],
+                    sub_path=d.cache_key[2],
                 )
-                for _, _, key in deferred
+                for d in deferred
             ]
             try:
                 enrichments = await dc_client.enrich(specs)  # type: ignore[union-attr]
             except DirectControlUnavailable as e:
                 # Mark every deferred slot as enrichment_unavailable.
-                for idx, address, _key in deferred:
-                    results[idx] = PathResolveResultItem(
-                        address=address,
+                for d in deferred:
+                    results[d.result_idx] = PathResolveResultItem(
+                        address=d.address,
                         outcome=Outcome.ENRICHMENT_UNAVAILABLE,
                         message=str(e),
                     )
             else:
-                for (idx, address, key), result in zip(deferred, enrichments):
+                for d, result in zip(deferred, enrichments):
                     if result.ok and result.pv_name:
                         # Cache success; failures are not cached because
                         # they may be transient (IOC down, etc.) and we
                         # want them re-attempted on the next request.
-                        enrich_cache[key] = result.pv_name
-                        results[idx] = PathResolveResultItem(
-                            address=address,
+                        enrich_cache[d.cache_key] = result.pv_name
+                        results[d.result_idx] = PathResolveResultItem(
+                            address=d.address,
                             outcome=Outcome.RESOLVED,
                             pv_name=result.pv_name,
                         )
                     else:
-                        results[idx] = PathResolveResultItem(
-                            address=address,
+                        results[d.result_idx] = PathResolveResultItem(
+                            address=d.address,
                             outcome=Outcome.ENRICHMENT_UNAVAILABLE,
                             message=(
                                 f"direct-control enrichment failed: "

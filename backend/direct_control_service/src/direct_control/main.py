@@ -631,6 +631,35 @@ async def set_pv_batch(
     )
 
 
+# ophyd-async Signal.source URIs carry a backend scheme prefix; the
+# downstream PV-write path expects bare PV strings. Listed schemes are
+# the ones ophyd-async ships today; any new transport would need to be
+# added here. (configuration_service uses a regex for the same purpose
+# at a different boundary; the explicit list here makes the supported
+# set visible at direct-control's edge.)
+_SIGNAL_SOURCE_SCHEMES = ("ca://", "pva://", "mock://", "soft://")
+
+
+def _extract_pv_name(leaf) -> Optional[str]:
+    """Read the PV name off a leaf signal, framework-agnostic.
+
+    Returns ``pvname`` for classic-ophyd ``EpicsSignal``-style leaves,
+    the scheme-stripped ``source`` for ophyd-async ``Signal`` leaves, or
+    ``None`` if the object exposes neither (i.e. not a PV-bearing leaf).
+    """
+    pvname = getattr(leaf, "pvname", None)
+    if pvname:
+        return pvname
+    source = getattr(leaf, "source", None)
+    if source:
+        pv = str(source)
+        for scheme in _SIGNAL_SOURCE_SCHEMES:
+            if pv.startswith(scheme):
+                return pv[len(scheme):]
+        return pv
+    return None
+
+
 def _enrich_one(
     cache: OphydDeviceCache,
     device_class_path: str,
@@ -643,8 +672,7 @@ def _enrich_one(
     Component descriptor's lazy ``create_component`` calls
     ``wait_for_connection``). For an ophyd-async device the source URI
     appears in ``.source`` once the signal is constructed — no connection
-    needed. We try ``pvname`` first (classic ophyd) and ``.source``
-    second (ophyd-async).
+    needed.
     """
     import operator
 
@@ -658,10 +686,7 @@ def _enrich_one(
 
     device = cache_entry.device
     try:
-        if sub_path:
-            leaf = operator.attrgetter(sub_path)(device)
-        else:
-            leaf = device
+        leaf = operator.attrgetter(sub_path)(device) if sub_path else device
     except AttributeError as e:
         return EnrichmentResultItem(
             ok=False,
@@ -675,20 +700,9 @@ def _enrich_one(
             message=str(e),
         )
 
-    # Prefer pvname (classic ophyd EpicsSignal-style). Fall back to
-    # source (ophyd-async Signal) and strip the scheme prefix.
-    pvname = getattr(leaf, "pvname", None)
-    if pvname:
-        return EnrichmentResultItem(ok=True, pv_name=pvname)
-
-    source = getattr(leaf, "source", None)
-    if source:
-        pv = str(source)
-        for scheme in ("ca://", "pva://", "mock://", "soft://"):
-            if pv.startswith(scheme):
-                pv = pv[len(scheme):]
-                break
-        return EnrichmentResultItem(ok=True, pv_name=pv)
+    pv_name = _extract_pv_name(leaf)
+    if pv_name:
+        return EnrichmentResultItem(ok=True, pv_name=pv_name)
 
     return EnrichmentResultItem(
         ok=False,
