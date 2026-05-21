@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import importlib
 import re
+import string
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -90,6 +91,27 @@ def _import_class(device_class_path: str):
     return cls
 
 
+def _has_format_placeholder(suffix: str) -> bool:
+    """True if ``suffix`` contains a real ``{...}`` format field.
+
+    ``string.Formatter().parse(s)`` yields ``(literal, field_name, ...)``
+    tuples — ``field_name`` is ``None`` only for trailing literal text
+    (and for escaped braces, since the formatter resolves ``{{``/``}}``
+    into literals before reporting fields). So ``"{X}"`` reports
+    ``field_name="X"`` and ``"{{X}}"`` (literal ``{X}``) reports only
+    literals — exactly the distinction we want.
+    """
+    try:
+        return any(
+            field_name is not None
+            for _literal, field_name, _spec, _conv in string.Formatter().parse(suffix)
+        )
+    except ValueError:
+        # Unbalanced braces or other malformed format string — caller can't
+        # safely format it either, so treat as needing enrichment.
+        return True
+
+
 def _walk_class(cls, parts: list[str]) -> tuple[Outcome, str, Optional[str]]:
     """Walk a chain of attribute names on a class, collecting PV-suffix pieces.
 
@@ -112,17 +134,19 @@ def _walk_class(cls, parts: list[str]) -> tuple[Outcome, str, Optional[str]]:
         if cpt is None:
             return Outcome.NO_SUCH_ATTR, path_so_far, attr
 
-        # FormattedComponent with {} placeholders depends on a live parent
-        # to interpolate (e.g. ``{self.parent.prefix}}}MOVE_CMD.PROC``).
-        # We refuse statically rather than emitting a wrong PV.
+        # FormattedComponent with real placeholders depends on a live
+        # parent to interpolate (e.g. ``{self.parent.prefix}}}MOVE_CMD``).
+        # We refuse statically rather than emitting a wrong PV. Escaped
+        # literal braces (``{{`` / ``}}``) carry no placeholder, so we
+        # treat them as static-resolvable and unescape via ``.format()``.
         if isinstance(cpt, FormattedComponent):
-            if "{" in cpt.suffix:
+            if _has_format_placeholder(cpt.suffix):
                 return (
                     Outcome.NEEDS_ENRICHMENT,
                     path_so_far + ("." if path_so_far else "") + attr,
                     f"FmtCpt suffix has placeholders: {cpt.suffix!r}",
                 )
-            suffix_pieces.append(cpt.suffix)
+            suffix_pieces.append(cpt.suffix.format())
             current = cpt.cls
         elif isinstance(cpt, DynamicDeviceComponent):
             # DDC carries a dynamically-built sub-class; walk into it.
@@ -192,7 +216,7 @@ def _walk_async_instance(device, parts: list[str]) -> tuple[Outcome, str, Option
 
 def _get_or_create_async_device(
     cls, prefix: str, cache: Optional[dict]
-) -> tuple[object, Optional[str]]:
+) -> tuple[Optional[object], Optional[str]]:
     """Return ``(device, error_message)``; exactly one is non-None.
 
     Honors the optional ``(cls, prefix) → (device, err)`` cache so a batch

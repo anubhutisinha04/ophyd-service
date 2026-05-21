@@ -1883,7 +1883,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 results.append(
                     PathResolveResultItem(
                         address=address,
-                        outcome=Outcome.DEVICE_NOT_FOUND.value,
+                        outcome=Outcome.DEVICE_NOT_FOUND,
                         message=f"no device named '{head}' in registry",
                     )
                 )
@@ -1894,7 +1894,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 results.append(
                     PathResolveResultItem(
                         address=address,
-                        outcome=Outcome.IMPORT_FAILED.value,
+                        outcome=Outcome.IMPORT_FAILED,
                         message=(
                             f"device '{head}' has no instantiation spec "
                             f"(can't resolve class to walk)"
@@ -1908,7 +1908,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 results.append(
                     PathResolveResultItem(
                         address=address,
-                        outcome=Outcome.IMPORT_FAILED.value,
+                        outcome=Outcome.IMPORT_FAILED,
                         message=(
                             f"device '{head}' has no derivable prefix "
                             f"(checked pvs['prefix'], spec.args[0], "
@@ -1927,7 +1927,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             results.append(
                 PathResolveResultItem(
                     address=address,
-                    outcome=resolution.outcome.value,
+                    outcome=resolution.outcome,
                     pv_name=resolution.pv_name,
                     message=resolution.message,
                 )

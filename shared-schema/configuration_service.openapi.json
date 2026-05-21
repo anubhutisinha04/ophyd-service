@@ -2925,6 +2925,18 @@
         "title": "NestedDeviceComponent",
         "description": "Information about a nested device component."
       },
+      "Outcome": {
+        "type": "string",
+        "enum": [
+          "resolved",
+          "device_not_found",
+          "import_failed",
+          "no_such_attr",
+          "needs_enrichment"
+        ],
+        "title": "Outcome",
+        "description": "Per-address result kind."
+      },
       "PVAccessMode": {
         "type": "string",
         "enum": [
@@ -3185,7 +3197,7 @@
           "addresses"
         ],
         "title": "PathResolveRequest",
-        "description": "Batch request to resolve dotted device addresses to PV names.\n\nEach address is one of:\n- ``\"<device>\"`` \u2014 top-level happi entry (e.g. a standalone EpicsSignal);\n  resolves to the device's prefix.\n- ``\"<device>.<attr>.<attr>...\"`` \u2014 walks the device class's Component\n  tree (Component / DynamicDeviceComponent / FormattedComponent).\n\nResolution is purely static: configuration_service imports the device\nclass and inspects its Components without instantiating the device and\nwithout opening any EPICS connections. ``FormattedComponent`` suffixes\nwith ``{}`` placeholders return ``needs_enrichment`` since they require\na live parent to evaluate."
+        "description": "Batch request to resolve dotted device addresses to PV names.\n\nEach address is one of:\n- ``\"<device>\"`` \u2014 top-level happi entry. For classic-ophyd entries\n  whose class is a single ``EpicsSignal`` / ``EpicsMotor`` this\n  resolves to the device's prefix. ophyd-async devices always need a\n  sub-attribute and return ``no_such_attr`` for top-level addressing.\n- ``\"<device>.<attr>.<attr>...\"`` \u2014 walks the device class structure.\n\nResolution never opens EPICS connections, but the per-framework\nintrospection differs:\n\n- **Classic ophyd**: configuration_service walks the class-level\n  ``Component`` / ``DynamicDeviceComponent`` / ``FormattedComponent``\n  declarations. No instantiation. ``FormattedComponent`` suffixes\n  with real ``{}`` placeholders return ``needs_enrichment`` since\n  they need a live parent to evaluate.\n- **ophyd-async**: signals are created in ``__init__``, so\n  configuration_service instantiates the device locally (without\n  calling ``.connect()``) and reads each leaf signal's\n  ``.source`` URI."
       },
       "PathResolveResponse": {
         "properties": {
@@ -3211,9 +3223,8 @@
             "title": "Address"
           },
           "outcome": {
-            "type": "string",
-            "title": "Outcome",
-            "description": "One of: resolved | device_not_found | import_failed | no_such_attr | needs_enrichment"
+            "$ref": "#/components/schemas/Outcome",
+            "description": "Per-address result kind. See ``PathResolveOutcome`` for the full set of values."
           },
           "pv_name": {
             "anyOf": [
@@ -3250,7 +3261,7 @@
           "ok"
         ],
         "title": "PathResolveResultItem",
-        "description": "One row in the batch response.\n\n``ok`` is derived from ``outcome`` (``True`` iff ``outcome == 'resolved'``);\ndeclared as a ``computed_field`` so the JSON output carries it for client\nconvenience but it cannot drift from ``outcome``. Other outcomes carry\ntheir reason in ``message`` so the frontend can show the operator why a\nparticular address couldn't be resolved."
+        "description": "One row in the batch response.\n\n``ok`` is derived from ``outcome`` (``True`` iff\n``outcome is Outcome.RESOLVED``); declared as a ``computed_field`` so\nthe JSON output carries it for client convenience but it cannot drift\nfrom ``outcome``. Other outcomes carry their reason in ``message`` so\nthe frontend can show the operator why a particular address couldn't\nbe resolved."
       },
       "StandalonePV": {
         "properties": {

@@ -168,6 +168,32 @@ def test_resolve_formatted_component_with_literal_suffix_resolves():
     assert suffix == "ABSOLUTE:PV"
 
 
+def test_resolve_formatted_component_with_escaped_braces_resolves_to_literal():
+    """``{{`` / ``}}`` are escape sequences that yield literal ``{`` / ``}``
+    after formatting — no placeholder, statically resolvable. A naive
+    ``'{' in suffix`` heuristic would flag these as ``needs_enrichment``
+    (false positive); ``string.Formatter().parse()`` does not."""
+    from ophyd import Device, EpicsSignal, FormattedComponent as FmtCpt
+    from configuration_service.path_resolver import _has_format_placeholder, _walk_class
+
+    # _has_format_placeholder is the predicate the walker uses.
+    assert _has_format_placeholder("{x}") is True
+    assert _has_format_placeholder("{self.parent.prefix}MOVE_CMD.PROC") is True
+    assert _has_format_placeholder("plain-suffix") is False
+    assert _has_format_placeholder("DEVICE{{INDEX}}PV") is False  # escaped → literal {INDEX}
+    # Malformed format string (unbalanced) → treat as needing enrichment.
+    assert _has_format_placeholder("{unclosed") is True
+
+    class _EscapedLiteral(Device):
+        # Suffix "DEV{{N}}PV" formats to "DEV{N}PV" — no placeholders to
+        # interpolate, just literal braces.
+        literal_braces = FmtCpt(EpicsSignal, "DEV{{N}}PV", add_prefix=())
+
+    outcome, suffix, _ = _walk_class(_EscapedLiteral, ["literal_braces"])
+    assert outcome is Outcome.RESOLVED
+    assert suffix == "DEV{N}PV"
+
+
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
