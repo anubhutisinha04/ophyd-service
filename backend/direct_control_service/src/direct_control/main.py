@@ -467,19 +467,25 @@ async def set_pv(
 
 
 def _batch_failure_result(
-    pv_name: str, exc: Exception, status_code: int
+    pv_name: str,
+    exc: Exception,
+    status_code: int,
+    *,
+    coordination_checked: bool,
 ) -> PVSetBatchItemResult:
     """Build a failure row for one item in a batch caput.
 
-    Mirrors the single-item endpoint's status-code mapping so callers can
-    branch on ``status_code`` the same way they'd branch on the HTTP code
-    of a ``/pv/set`` call.
+    ``coordination_checked`` reflects whether the coord-gate ran before the
+    failure: False for failures that happen during registry validation
+    (we never get to the gate), True for failures raised by
+    ``device_controller.set_pv`` (registry passed, the call entered the
+    controller where the gate runs).
     """
     return PVSetBatchItemResult(
         pv_name=pv_name,
         success=False,
         timestamp=datetime.now(),
-        coordination_checked=False,
+        coordination_checked=coordination_checked,
         error_type=type(exc).__name__,
         message=str(exc),
         status_code=status_code,
@@ -517,7 +523,9 @@ async def set_pv_batch(
         try:
             await registry_client.validate_pv(item.pv_name)
         except RegistryValidationError as e:
-            results.append(_batch_failure_result(item.pv_name, e, 404))
+            results.append(
+                _batch_failure_result(item.pv_name, e, 404, coordination_checked=False)
+            )
             logger.warning(
                 "pv_set_batch_registry_invalid",
                 pv_name=item.pv_name,
@@ -525,7 +533,9 @@ async def set_pv_batch(
             )
             break
         except RuntimeError as e:
-            results.append(_batch_failure_result(item.pv_name, e, 503))
+            results.append(
+                _batch_failure_result(item.pv_name, e, 503, coordination_checked=False)
+            )
             logger.warning(
                 "pv_set_batch_registry_unavailable",
                 pv_name=item.pv_name,
@@ -536,7 +546,9 @@ async def set_pv_batch(
         try:
             resp = await device_controller.set_pv(item)
         except DeviceDisabledError as e:
-            results.append(_batch_failure_result(item.pv_name, e, 409))
+            results.append(
+                _batch_failure_result(item.pv_name, e, 409, coordination_checked=True)
+            )
             logger.warning(
                 "pv_set_batch_device_disabled",
                 pv_name=item.pv_name,
@@ -544,7 +556,9 @@ async def set_pv_batch(
             )
             break
         except DeviceLockedError as e:
-            results.append(_batch_failure_result(item.pv_name, e, 423))
+            results.append(
+                _batch_failure_result(item.pv_name, e, 423, coordination_checked=True)
+            )
             logger.warning(
                 "pv_set_batch_device_locked",
                 pv_name=item.pv_name,
@@ -552,7 +566,9 @@ async def set_pv_batch(
             )
             break
         except CoordinationCheckError as e:
-            results.append(_batch_failure_result(item.pv_name, e, 503))
+            results.append(
+                _batch_failure_result(item.pv_name, e, 503, coordination_checked=True)
+            )
             logger.error(
                 "pv_set_batch_coordination_failed",
                 pv_name=item.pv_name,
@@ -561,7 +577,9 @@ async def set_pv_batch(
             )
             break
         except Exception as e:
-            results.append(_batch_failure_result(item.pv_name, e, 500))
+            results.append(
+                _batch_failure_result(item.pv_name, e, 500, coordination_checked=True)
+            )
             logger.error(
                 "pv_set_batch_item_error",
                 pv_name=item.pv_name,

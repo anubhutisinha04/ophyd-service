@@ -1,15 +1,24 @@
 """Batch caput endpoint (``POST /api/v1/pv/set/batch``).
 
-Exercises the happy path and the fail-hard halt-on-first-failure contract.
-The registry-rejection tests use ``_RejectsBadPvRegistry`` via
-``dependency_overrides`` since the default ``_StubRegistry`` accepts every
-PV.
+Exercises the happy path and every documented halt path (registry rejection,
+device locked/disabled, coordination failure, soft failure from set_pv).
+Per-test ``dependency_overrides`` are auto-cleaned by the ``app`` fixture's
+teardown, so no manual restore is needed.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
+from direct_control.models import (
+    CommandMode,
+    CoordinationCheckError,
+    DeviceDisabledError,
+    DeviceLockedError,
+    PVSetResponse,
+)
 from direct_control.registry_client import RegistryValidationError
 
 
@@ -29,6 +38,42 @@ class _RejectsBadPvRegistry:
 
     async def cleanup(self):
         return None
+
+
+class _ControllerRaises:
+    """Stub device controller whose ``set_pv`` raises a fixed exception.
+
+    Used for the device-state failure-mode tests (locked / disabled /
+    coordination-error / generic) — direct_control_controller raises these
+    exceptions when the coord-gate refuses or the underlying EPICS write
+    fails in a typed way.
+    """
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def set_pv(self, request):
+        raise self._exc
+
+
+class _ControllerSoftFails:
+    """Stub controller whose ``set_pv`` returns ``PVSetResponse(success=False)``.
+
+    Models the case where the controller didn't raise but the write was
+    rejected (e.g. put-completion timeout without an exception). The batch
+    loop must still halt — that's the contract.
+    """
+
+    async def set_pv(self, request):
+        return PVSetResponse(
+            pv_name=request.pv_name,
+            success=False,
+            value_set=request.value,
+            timestamp=datetime.now(),
+            coordination_checked=True,
+            mode=CommandMode.PUT_COMPLETION,
+            message="simulated soft failure",
+        )
 
 
 def test_batch_set_all_succeed(client):
@@ -91,12 +136,7 @@ def test_batch_set_extra_field_rejected(client):
 
 
 def test_batch_set_unknown_pv_halts_immediately(app, client):
-    """A registry rejection on the first item stops the batch.
-
-    Uses a per-test registry stub that raises for ``BAD:pv`` so we exercise
-    the 404 mapping inside the loop. The remaining items must not be
-    attempted (no state change observable on IOC:m1).
-    """
+    """A registry rejection on the first item stops the batch."""
     from direct_control.main import get_registry_client
 
     # Seed m1 with a known value so we can prove it wasn't touched.
@@ -107,21 +147,15 @@ def test_batch_set_unknown_pv_halts_immediately(app, client):
     assert r.status_code == 200
 
     app.dependency_overrides[get_registry_client] = lambda: _RejectsBadPvRegistry()
-    try:
-        r = client.post(
-            "/api/v1/pv/set/batch",
-            json={
-                "caputs": [
-                    {"pv_name": "BAD:pv", "value": 1.0},
-                    {"pv_name": "IOC:m1", "value": 99.0, "wait": True, "timeout": 2.0},
-                ]
-            },
-        )
-    finally:
-        # Restore the default stub registry so other tests aren't affected.
-        from tests.conftest import _StubRegistry
-
-        app.dependency_overrides[get_registry_client] = lambda: _StubRegistry()
+    r = client.post(
+        "/api/v1/pv/set/batch",
+        json={
+            "caputs": [
+                {"pv_name": "BAD:pv", "value": 1.0},
+                {"pv_name": "IOC:m1", "value": 99.0, "wait": True, "timeout": 2.0},
+            ]
+        },
+    )
 
     assert r.status_code == 200, r.text
     body = r.json()
@@ -134,6 +168,8 @@ def test_batch_set_unknown_pv_halts_immediately(app, client):
     assert failure["success"] is False
     assert failure["status_code"] == 404
     assert failure["error_type"] == "RegistryValidationError"
+    # Registry rejected before coord gate runs.
+    assert failure["coordination_checked"] is False
 
     # The second caput must not have run.
     r = client.get("/api/v1/pv/IOC:m1/value?use_monitor=false&timeout=2.0")
@@ -141,12 +177,7 @@ def test_batch_set_unknown_pv_halts_immediately(app, client):
 
 
 def test_batch_set_mid_failure_halts_after_first_success(app, client):
-    """Item 1 succeeds, item 2 fails registry, item 3 is never attempted.
-
-    Proves the response carries the successful first row *and* the failing
-    second row, and that the third item is absent — so callers can tell
-    exactly where the batch halted.
-    """
+    """Item 1 succeeds, item 2 fails registry, item 3 is never attempted."""
     from direct_control.main import get_registry_client
 
     # Seed counter so we can verify it wasn't touched.
@@ -157,21 +188,16 @@ def test_batch_set_mid_failure_halts_after_first_success(app, client):
     assert r.status_code == 200
 
     app.dependency_overrides[get_registry_client] = lambda: _RejectsBadPvRegistry()
-    try:
-        r = client.post(
-            "/api/v1/pv/set/batch",
-            json={
-                "caputs": [
-                    {"pv_name": "IOC:m1", "value": 4.2, "wait": True, "timeout": 2.0},
-                    {"pv_name": "BAD:pv", "value": 1.0},
-                    {"pv_name": "IOC:counter", "value": 42, "wait": True, "timeout": 2.0},
-                ]
-            },
-        )
-    finally:
-        from tests.conftest import _StubRegistry
-
-        app.dependency_overrides[get_registry_client] = lambda: _StubRegistry()
+    r = client.post(
+        "/api/v1/pv/set/batch",
+        json={
+            "caputs": [
+                {"pv_name": "IOC:m1", "value": 4.2, "wait": True, "timeout": 2.0},
+                {"pv_name": "BAD:pv", "value": 1.0},
+                {"pv_name": "IOC:counter", "value": 42, "wait": True, "timeout": 2.0},
+            ]
+        },
+    )
 
     assert r.status_code == 200, r.text
     body = r.json()
@@ -191,6 +217,114 @@ def test_batch_set_mid_failure_halts_after_first_success(app, client):
     assert r.json()["value"] == pytest.approx(4.2)
     r = client.get("/api/v1/pv/IOC:counter/value?use_monitor=false&timeout=2.0")
     assert r.json()["value"] == 0  # untouched
+
+
+def test_batch_set_device_locked_halts(app, client):
+    """DeviceLockedError → 423; coord gate ran (so coordination_checked=True)."""
+    from direct_control.main import get_device_controller
+
+    app.dependency_overrides[get_device_controller] = lambda: _ControllerRaises(
+        DeviceLockedError("IOC:m1 locked by plan_xyz")
+    )
+
+    r = client.post(
+        "/api/v1/pv/set/batch",
+        json={
+            "caputs": [
+                {"pv_name": "IOC:m1", "value": 1.0},
+                {"pv_name": "IOC:counter", "value": 5},
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert body["applied"] == 0
+    assert body["requested"] == 2
+    assert len(body["results"]) == 1
+    failure = body["results"][0]
+    assert failure["pv_name"] == "IOC:m1"
+    assert failure["status_code"] == 423
+    assert failure["error_type"] == "DeviceLockedError"
+    assert failure["coordination_checked"] is True
+
+
+def test_batch_set_device_disabled_halts(app, client):
+    """DeviceDisabledError → 409."""
+    from direct_control.main import get_device_controller
+
+    app.dependency_overrides[get_device_controller] = lambda: _ControllerRaises(
+        DeviceDisabledError("IOC:m1 administratively disabled")
+    )
+
+    r = client.post(
+        "/api/v1/pv/set/batch",
+        json={"caputs": [{"pv_name": "IOC:m1", "value": 1.0}]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert body["applied"] == 0
+    assert len(body["results"]) == 1
+    failure = body["results"][0]
+    assert failure["status_code"] == 409
+    assert failure["error_type"] == "DeviceDisabledError"
+    assert failure["coordination_checked"] is True
+
+
+def test_batch_set_coordination_error_halts(app, client):
+    """CoordinationCheckError → 503; coord gate attempted (so True)."""
+    from direct_control.main import get_device_controller
+
+    app.dependency_overrides[get_device_controller] = lambda: _ControllerRaises(
+        CoordinationCheckError("configuration_service unreachable")
+    )
+
+    r = client.post(
+        "/api/v1/pv/set/batch",
+        json={"caputs": [{"pv_name": "IOC:m1", "value": 1.0}]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert len(body["results"]) == 1
+    failure = body["results"][0]
+    assert failure["status_code"] == 503
+    assert failure["error_type"] == "CoordinationCheckError"
+    assert failure["coordination_checked"] is True
+
+
+def test_batch_set_soft_failure_halts(app, client):
+    """set_pv returning success=False (no exception) still halts the batch.
+
+    The success-row gets appended with status_code=200 (the call itself
+    returned 200; success=False carries the operational outcome), and the
+    next item is not attempted.
+    """
+    from direct_control.main import get_device_controller
+
+    app.dependency_overrides[get_device_controller] = lambda: _ControllerSoftFails()
+
+    r = client.post(
+        "/api/v1/pv/set/batch",
+        json={
+            "caputs": [
+                {"pv_name": "IOC:m1", "value": 1.0},
+                {"pv_name": "IOC:counter", "value": 2},
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert body["applied"] == 0
+    assert body["requested"] == 2
+    assert len(body["results"]) == 1
+    row = body["results"][0]
+    assert row["pv_name"] == "IOC:m1"
+    assert row["success"] is False
+    assert row["status_code"] == 200
+    assert row["message"] == "simulated soft failure"
 
 
 def test_batch_set_max_length_enforced(client):

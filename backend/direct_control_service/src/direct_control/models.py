@@ -188,9 +188,8 @@ class PVSetBatchResponse(BaseModel):
     ``ok=true`` iff every item succeeded. ``applied`` is the count of items
     that were applied before a halt (or the full batch on success).
     ``results`` always contains exactly the items that were attempted —
-    items past the failure point are absent. The caller can compute
-    ``requested - applied - (1 if not ok else 0)`` to see how many were
-    skipped.
+    items past the failure point are absent, so ``requested - len(results)``
+    is the count of items that were skipped after the halt.
     """
 
     model_config = ConfigDict(extra="forbid")

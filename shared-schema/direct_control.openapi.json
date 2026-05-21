@@ -1096,7 +1096,7 @@
           "results"
         ],
         "title": "PVSetBatchResponse",
-        "description": "Aggregate response for a batch caput.\n\n``ok=true`` iff every item succeeded. ``applied`` is the count of items\nthat were applied before a halt (or the full batch on success).\n``results`` always contains exactly the items that were attempted \u2014\nitems past the failure point are absent. The caller can compute\n``requested - applied - (1 if not ok else 0)`` to see how many were\nskipped."
+        "description": "Aggregate response for a batch caput.\n\n``ok=true`` iff every item succeeded. ``applied`` is the count of items\nthat were applied before a halt (or the full batch on success).\n``results`` always contains exactly the items that were attempted \u2014\nitems past the failure point are absent, so ``requested - len(results)``\nis the count of items that were skipped after the halt."
       },
       "PVSetRequest": {
         "properties": {
