@@ -797,3 +797,63 @@ class NestedDeviceComponent(BaseModel):
     pv: Optional[str] = Field(None, description="Associated EPICS PV")
     is_readable: bool = Field(default=True, description="Whether component is readable")
     is_settable: bool = Field(default=False, description="Whether component is settable")
+
+
+# ===== Path Resolver Models =====
+
+
+class PathResolveRequest(BaseModel):
+    """Batch request to resolve dotted device addresses to PV names.
+
+    Each address is one of:
+    - ``"<device>"`` — top-level happi entry (e.g. a standalone EpicsSignal);
+      resolves to the device's prefix.
+    - ``"<device>.<attr>.<attr>..."`` — walks the device class's Component
+      tree (Component / DynamicDeviceComponent / FormattedComponent).
+
+    Resolution is purely static: configuration_service imports the device
+    class and inspects its Components without instantiating the device and
+    without opening any EPICS connections. ``FormattedComponent`` suffixes
+    with ``{}`` placeholders return ``needs_enrichment`` since they require
+    a live parent to evaluate.
+    """
+
+    addresses: List[str] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Dotted device addresses to resolve.",
+    )
+
+
+class PathResolveResultItem(BaseModel):
+    """One row in the batch response.
+
+    ``ok=true`` iff ``outcome == 'resolved'`` and ``pv_name`` is set.
+    Other outcomes (``device_not_found``, ``import_failed``,
+    ``no_such_attr``, ``needs_enrichment``) carry their reason in
+    ``message`` so the frontend can show the operator why a particular
+    address couldn't be resolved.
+    """
+
+    address: str
+    ok: bool
+    outcome: str = Field(
+        description=(
+            "One of: resolved | device_not_found | import_failed | "
+            "no_such_attr | needs_enrichment"
+        )
+    )
+    pv_name: Optional[str] = None
+    message: Optional[str] = None
+
+
+class PathResolveResponse(BaseModel):
+    """Aggregate response for a batch resolve.
+
+    Always 200 — per-address outcomes are in the rows. Resolution is
+    read-only with no state change, so "best effort with per-item errors"
+    is the right semantic; unlike batch caput there's no halt-on-failure.
+    """
+
+    resolved: List[PathResolveResultItem]

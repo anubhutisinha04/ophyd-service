@@ -31,6 +31,15 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0",
     "structlog>=23.2.0",
+
+    # Device-class introspection for the path resolver. configuration_service
+    # never opens EPICS connections; ophyd is walked at class level, and
+    # ophyd-async devices are instantiated locally (no .connect()) so their
+    # Signal.source URIs can be read. The [ca] extra on ophyd-async pulls
+    # in the aioca backend that signal construction needs — imports only,
+    # never invoked.
+    "ophyd>=1.10",
+    "ophyd-async[ca]>=0.16",
 ]
 
 [dependency-groups]

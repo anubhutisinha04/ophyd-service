@@ -1481,6 +1481,48 @@
         }
       }
     },
+    "/api/v1/devices/resolve": {
+      "post": {
+        "tags": [
+          "Device Components"
+        ],
+        "summary": "Resolve Dotted Device Addresses to PV Names",
+        "description": "Walk the ophyd / ophyd-async device class for each address and return the underlying EPICS PV. Read-only, best-effort per-item \u2014 no halt-on-error. Used by the frontend to translate friendly addresses like 'vortex.mca.rois.roi2.lo_chan' into the PV strings needed by direct-control's batch caput.",
+        "operationId": "resolve_device_paths_api_v1_devices_resolve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PathResolveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/devices/{device_name}/components": {
       "get": {
         "tags": [
@@ -3124,6 +3166,90 @@
         ],
         "title": "PVStatusResponse",
         "description": "PV availability check (resolves PV to owning device lock state)."
+      },
+      "PathResolveRequest": {
+        "properties": {
+          "addresses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Addresses",
+            "description": "Dotted device addresses to resolve."
+          }
+        },
+        "type": "object",
+        "required": [
+          "addresses"
+        ],
+        "title": "PathResolveRequest",
+        "description": "Batch request to resolve dotted device addresses to PV names.\n\nEach address is one of:\n- ``\"<device>\"`` \u2014 top-level happi entry (e.g. a standalone EpicsSignal);\n  resolves to the device's prefix.\n- ``\"<device>.<attr>.<attr>...\"`` \u2014 walks the device class's Component\n  tree (Component / DynamicDeviceComponent / FormattedComponent).\n\nResolution is purely static: configuration_service imports the device\nclass and inspects its Components without instantiating the device and\nwithout opening any EPICS connections. ``FormattedComponent`` suffixes\nwith ``{}`` placeholders return ``needs_enrichment`` since they require\na live parent to evaluate."
+      },
+      "PathResolveResponse": {
+        "properties": {
+          "resolved": {
+            "items": {
+              "$ref": "#/components/schemas/PathResolveResultItem"
+            },
+            "type": "array",
+            "title": "Resolved"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolved"
+        ],
+        "title": "PathResolveResponse",
+        "description": "Aggregate response for a batch resolve.\n\nAlways 200 \u2014 per-address outcomes are in the rows. Resolution is\nread-only with no state change, so \"best effort with per-item errors\"\nis the right semantic; unlike batch caput there's no halt-on-failure."
+      },
+      "PathResolveResultItem": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome",
+            "description": "One of: resolved | device_not_found | import_failed | no_such_attr | needs_enrichment"
+          },
+          "pv_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pv Name"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "ok",
+          "outcome"
+        ],
+        "title": "PathResolveResultItem",
+        "description": "One row in the batch response.\n\n``ok=true`` iff ``outcome == 'resolved'`` and ``pv_name`` is set.\nOther outcomes (``device_not_found``, ``import_failed``,\n``no_such_attr``, ``needs_enrichment``) carry their reason in\n``message`` so the frontend can show the operator why a particular\naddress couldn't be resolved."
       },
       "StandalonePV": {
         "properties": {
