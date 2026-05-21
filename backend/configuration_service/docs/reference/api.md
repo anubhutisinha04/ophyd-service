@@ -93,3 +93,30 @@ Interactive documentation: `http://localhost:8004/docs` (Swagger UI)
 |--------|------|-------------|
 | GET | `/api/v1/devices/{device_name}/components` | List components. Query param: `max_depth` (0 = all) |
 | GET | `/api/v1/devices/{device_path}/component` | Single component by dot-path (e.g., `cam1.cam.acquire`) |
+| POST | `/api/v1/devices/resolve` | Batch resolve dotted addresses → EPICS PV names by walking the device class. Body: `{addresses: ["device.attr.attr", ...]}`. Returns per-item results. Supports both ophyd (class-level Components) and ophyd-async (instantiate-without-connect + read Signal.source). |
+
+### Example: Resolve dotted device addresses
+
+```bash
+curl -X POST http://localhost:8004/api/v1/devices/resolve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "addresses": [
+      "vortex.mca.rois.roi2.lo_chan",
+      "sample_sclr_gain"
+    ]
+  }'
+```
+
+Response — best-effort per item, no halt-on-failure:
+
+```json
+{
+  "resolved": [
+    {"address": "vortex.mca.rois.roi2.lo_chan", "ok": true,  "outcome": "resolved", "pv_name": "XF:23ID2-ES{Vortex}mca1.R2LO"},
+    {"address": "sample_sclr_gain",             "ok": true,  "outcome": "resolved", "pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Val-SP"}
+  ]
+}
+```
+
+Per-item `outcome` values: `resolved | device_not_found | import_failed | no_such_attr | needs_enrichment`. The last one means the path hit an ophyd `FormattedComponent` with `{}` interpolation placeholders (e.g. `{self.parent.prefix}`); static resolution can't continue, and a downstream service (direct-control) will need to instantiate the device to fill in the PV. Resolution never opens EPICS connections.

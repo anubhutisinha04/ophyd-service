@@ -6,7 +6,12 @@ These models represent the core entities for the device/PV registry.
 
 from typing import Dict, List, Literal, Optional, Any
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
+
+# Re-exported so the path-resolver response model has a single source of
+# truth for outcome values. Lazy to avoid pulling path_resolver's optional
+# ophyd / ophyd-async lazy imports into this module's import time.
+from .path_resolver import Outcome as PathResolveOutcome
 
 
 class DeviceLabel(str, Enum):
@@ -797,3 +802,76 @@ class NestedDeviceComponent(BaseModel):
     pv: Optional[str] = Field(None, description="Associated EPICS PV")
     is_readable: bool = Field(default=True, description="Whether component is readable")
     is_settable: bool = Field(default=False, description="Whether component is settable")
+
+
+# ===== Path Resolver Models =====
+
+
+class PathResolveRequest(BaseModel):
+    """Batch request to resolve dotted device addresses to PV names.
+
+    Each address is one of:
+    - ``"<device>"`` — top-level happi entry. For classic-ophyd entries
+      whose class is a single ``EpicsSignal`` / ``EpicsMotor`` this
+      resolves to the device's prefix. ophyd-async devices always need a
+      sub-attribute and return ``no_such_attr`` for top-level addressing.
+    - ``"<device>.<attr>.<attr>..."`` — walks the device class structure.
+
+    Resolution never opens EPICS connections, but the per-framework
+    introspection differs:
+
+    - **Classic ophyd**: configuration_service walks the class-level
+      ``Component`` / ``DynamicDeviceComponent`` / ``FormattedComponent``
+      declarations. No instantiation. ``FormattedComponent`` suffixes
+      with real ``{}`` placeholders return ``needs_enrichment`` since
+      they need a live parent to evaluate.
+    - **ophyd-async**: signals are created in ``__init__``, so
+      configuration_service instantiates the device locally (without
+      calling ``.connect()``) and reads each leaf signal's
+      ``.source`` URI.
+    """
+
+    addresses: List[str] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Dotted device addresses to resolve.",
+    )
+
+
+class PathResolveResultItem(BaseModel):
+    """One row in the batch response.
+
+    ``ok`` is derived from ``outcome`` (``True`` iff
+    ``outcome is Outcome.RESOLVED``); declared as a ``computed_field`` so
+    the JSON output carries it for client convenience but it cannot drift
+    from ``outcome``. Other outcomes carry their reason in ``message`` so
+    the frontend can show the operator why a particular address couldn't
+    be resolved.
+    """
+
+    address: str
+    outcome: PathResolveOutcome = Field(
+        description=(
+            "Per-address result kind. See ``PathResolveOutcome`` for the "
+            "full set of values."
+        )
+    )
+    pv_name: Optional[str] = None
+    message: Optional[str] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ok(self) -> bool:
+        return self.outcome is PathResolveOutcome.RESOLVED
+
+
+class PathResolveResponse(BaseModel):
+    """Aggregate response for a batch resolve.
+
+    Always 200 — per-address outcomes are in the rows. Resolution is
+    read-only with no state change, so "best effort with per-item errors"
+    is the right semantic; unlike batch caput there's no halt-on-failure.
+    """
+
+    resolved: List[PathResolveResultItem]

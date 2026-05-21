@@ -52,7 +52,11 @@ from .models import (
     StandalonePVCreateRequest,
     StandalonePVUpdateRequest,
     StandalonePVCRUDResponse,
+    PathResolveRequest,
+    PathResolveResponse,
+    PathResolveResultItem,
 )
+from .path_resolver import Outcome, resolve as resolve_path
 from .protocols import ConfigurationState
 from .loader import create_loader
 from .config import Settings
@@ -1825,6 +1829,111 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             is_readable=True,
             is_settable=is_settable,
         )
+
+    @app.post(
+        "/api/v1/devices/resolve",
+        response_model=PathResolveResponse,
+        summary="Resolve Dotted Device Addresses to PV Names",
+        description=(
+            "Walk the ophyd / ophyd-async device class for each address "
+            "and return the underlying EPICS PV. Read-only, best-effort "
+            "per-item — no halt-on-error. Used by the frontend to translate "
+            "friendly addresses like 'vortex.mca.rois.roi2.lo_chan' into "
+            "the PV strings needed by direct-control's batch caput."
+        ),
+        tags=["Device Components"],
+    )
+    async def resolve_device_paths(
+        state: StateDep, request: PathResolveRequest
+    ) -> PathResolveResponse:
+        """Resolve a batch of dotted device addresses to PV names.
+
+        For each address:
+        1. Split off the head segment as the device name and look it up
+           in the registry. Missing device → ``device_not_found``.
+        2. Pull the device's instantiation spec (which holds the
+           ``device_class`` import path) and resolve the prefix via the
+           shared ``_get_device_prefix`` helper.
+        3. Hand off to ``path_resolver.resolve`` which dispatches to the
+           classic-ophyd class walker or the ophyd-async
+           instantiate-then-walk path based on the class hierarchy.
+
+        Resolution never opens EPICS connections. ophyd-async classes are
+        instantiated locally (no ``.connect()``) so their Signal.source
+        URIs can be read; classic-ophyd classes are walked at class level.
+
+        Top-level addresses (no sub-attribute) are framework-dependent:
+        for classic ophyd they resolve to the device's prefix (the happi
+        entry IS the leaf, e.g. a standalone ``EpicsSignal``); for
+        ophyd-async they return ``no_such_attr`` since async devices have
+        many signals and no canonical "the PV". Use
+        ``<device>.<attr>`` instead for async devices.
+        """
+        # Per-request cache for ophyd-async device instances. A batch that
+        # addresses the same device multiple times (e.g. motor.user_setpoint
+        # + motor.velocity) instantiates the class once and reuses it.
+        # Classic-ophyd resolution is purely static and ignores this cache.
+        device_cache: dict = {}
+
+        results: List[PathResolveResultItem] = []
+        for address in request.addresses:
+            head, _, _ = address.partition(".")
+            device = state.registry.get_device(head)
+            if device is None:
+                results.append(
+                    PathResolveResultItem(
+                        address=address,
+                        outcome=Outcome.DEVICE_NOT_FOUND,
+                        message=f"no device named '{head}' in registry",
+                    )
+                )
+                continue
+
+            spec = state.registry.get_instantiation_spec(head)
+            if spec is None or not spec.device_class:
+                results.append(
+                    PathResolveResultItem(
+                        address=address,
+                        outcome=Outcome.IMPORT_FAILED,
+                        message=(
+                            f"device '{head}' has no instantiation spec "
+                            f"(can't resolve class to walk)"
+                        ),
+                    )
+                )
+                continue
+
+            prefix = _get_device_prefix(device, state.registry)
+            if prefix is None:
+                results.append(
+                    PathResolveResultItem(
+                        address=address,
+                        outcome=Outcome.IMPORT_FAILED,
+                        message=(
+                            f"device '{head}' has no derivable prefix "
+                            f"(checked pvs['prefix'], spec.args[0], "
+                            f"longest common PV prefix)"
+                        ),
+                    )
+                )
+                continue
+
+            resolution = resolve_path(
+                address,
+                device_class_path=spec.device_class,
+                prefix=prefix,
+                device_cache=device_cache,
+            )
+            results.append(
+                PathResolveResultItem(
+                    address=address,
+                    outcome=resolution.outcome,
+                    pv_name=resolution.pv_name,
+                    message=resolution.message,
+                )
+            )
+
+        return PathResolveResponse(resolved=results)
 
     @app.get(
         "/api/v1/devices/{device_name}/components",
