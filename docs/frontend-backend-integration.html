@@ -94,10 +94,10 @@ when you make a caput request.</p>
       streaming monitor updates.</li>
 </ul>
 
-<p><strong>Direct-control's API today is PV-name based.</strong> You send PV strings, not
-ophyd dotted paths. Resolving "friendly" addresses (like
-<code>vortex.mca.rois.roi2.lo_chan</code>) to PV strings is a separate concern — see
-<a href="#follow-ups">§7 Follow-ups</a>.</p>
+<p><strong>Direct-control's API is PV-name based.</strong> You send PV strings, not
+ophyd dotted paths. Translating friendly addresses (like
+<code>vortex.mca.rois.roi2.lo_chan</code>) to PV strings is configuration_service's
+job — see <a href="#resolve-endpoint">§3</a>.</p>
 
 <h2>2. The periodic-table workflow</h2>
 
@@ -107,33 +107,46 @@ for that absorption edge.</p>
 
 <h3>2.1 Sequence</h3>
 
-<pre><code>┌────────────┐                  ┌──────────────────────┐
-│  Frontend  │                  │   direct-control     │
-│ (periodic  │                  │   (port 8003)        │
-│   table)   │                  └──────────────────────┘
-└────────────┘                            │
-       │ 1. Operator clicks "Ni_L"        │
-       │ ──────────────────────────────►  │ (no traffic yet)
-       │                                  │
-       │ 2. Frontend looks up Ni_L in its │
-       │    edge-preset table (bundled    │
-       │    JSON or fetched from a future │
-       │    presets endpoint)             │
-       │                                  │
-       │ 3. POST /api/v1/pv/set/batch     │
-       │ ──────────────────────────────►  │ validates each PV via
-       │    { caputs: [12 entries] }      │ config-service, runs
-       │                                  │ caputs in order, halts
-       │                                  │ on first failure
-       │ ◄──────────────────────────────  │
-       │   200 OK                         │
-       │   { ok: true, applied: 12, ...}  │
-       │                                  │
-       │ 4. Frontend updates UI:          │
-       │    "Configured for Ni_L"         │
-       │    (or shows the failure row     │
-       │    from the response on error)   │
-       │                                  │</code></pre>
+<pre><code>┌────────────┐         ┌──────────────────────┐  ┌──────────────────┐
+│  Frontend  │         │ configuration_service│  │  direct-control  │
+│ (periodic  │         │      (port 8004)     │  │   (port 8003)    │
+│   table)   │         └──────────────────────┘  └──────────────────┘
+└────────────┘                    │                       │
+       │ 1. Operator clicks "Ni_L"│                       │
+       │ ────────────────►        │                       │ (no traffic yet)
+       │                          │                       │
+       │ 2. Look up Ni_L in the   │                       │
+       │    preset table → list   │                       │
+       │    of friendly addresses │                       │
+       │    + values.             │                       │
+       │                          │                       │
+       │ 3. (Optional, if the     │                       │
+       │    address→PV map isn't  │                       │
+       │    cached yet)           │                       │
+       │ POST /api/v1/devices/    │                       │
+       │      resolve             │                       │
+       │ ───────────────────────► │  walks device classes │
+       │   { addresses: [...] }   │  (no EPICS I/O)       │
+       │ ◄──────────────────────  │                       │
+       │   { resolved: [          │                       │
+       │     {address, pv_name},  │                       │
+       │     ...] }               │                       │
+       │                          │                       │
+       │ 4. POST /api/v1/pv/set/batch                     │
+       │ ─────────────────────────────────────────────►   │ validates each PV
+       │   { caputs: [12 entries] }                       │ via config-service,
+       │                                                  │ caputs in order,
+       │                                                  │ halts on first
+       │                                                  │ failure
+       │ ◄─────────────────────────────────────────────   │
+       │   200 OK                                         │
+       │   { ok: true, applied: 12, results: [...] }      │
+       │                                                  │
+       │ 5. Update UI: "Configured for Ni_L" (or show     │
+       │    the failure row from the response on error)   │</code></pre>
+
+<p>Step 3 is optional: if the frontend resolved its address→PV map once at
+app-load and cached it, every click goes straight from step 2 to step 4.</p>
 
 <h3>2.2 Who owns the edge-preset table</h3>
 
@@ -159,11 +172,111 @@ where the presets actually live:</p>
 <p>Either way, the JSON the frontend constructs <em>per click</em> is the same shape
 and gets POSTed to the same endpoint.</p>
 
-<h2 id="batch-endpoint">3. The batch caput endpoint</h2>
+<h2 id="resolve-endpoint">3. Resolving friendly addresses to PV names</h2>
 
-<p><strong>Endpoint:</strong> <code>POST /api/v1/pv/set/batch</code></p>
+<p>Storing raw PV strings in your preset table is fragile: PV names follow
+site-specific conventions and change when IOCs are reconfigured. The
+<strong>resolve endpoint</strong> on configuration_service lets you store
+friendly addresses like <code>vortex.mca.rois.roi2.lo_chan</code> and ask the
+backend to translate them to PV strings on demand.</p>
+
+<p><strong>Endpoint:</strong> <code>POST /api/v1/devices/resolve</code> on
+configuration_service (port 8004 in the default compose). Read-only — never
+opens EPICS connections.</p>
 
 <h3>3.1 Request</h3>
+
+<pre><code>{
+  "addresses": [
+    "vortex.mca.rois.roi2.lo_chan",
+    "sample_sclr_gain",
+    "ioxas_x.user_setpoint"
+  ]
+}</code></pre>
+
+<p>Each address is either:</p>
+<ul>
+  <li><code>"&lt;device&gt;"</code> — top-level happi entry whose class is a
+      single signal (e.g. a standalone <code>EpicsSignal</code>). Classic-ophyd
+      only; resolves to the device's prefix.</li>
+  <li><code>"&lt;device&gt;.&lt;attr&gt;.&lt;attr&gt;..."</code> — walks the
+      device class structure. Works for both ophyd and ophyd-async.</li>
+</ul>
+
+<p>Up to 200 addresses per request.</p>
+
+<h3>3.2 Response</h3>
+
+<pre><code>{
+  "resolved": [
+    {"address": "vortex.mca.rois.roi2.lo_chan", "ok": true, "outcome": "resolved",
+     "pv_name": "XF:23ID2-ES{Vortex}mca1.R2LO"},
+    {"address": "sample_sclr_gain",             "ok": true, "outcome": "resolved",
+     "pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Val-SP"},
+    {"address": "ioxas_x.user_setpoint",        "ok": true, "outcome": "resolved",
+     "pv_name": "XF:23ID2-BI{IOXAS:1-Ax:X}Mtr.VAL"}
+  ]
+}</code></pre>
+
+<p>One row per address, in request order. Always HTTP 200 on a well-formed
+request — per-address outcomes are in the rows. Resolution is best-effort
+per item; one bad address doesn't fail the whole call (unlike batch caput,
+which halts on first failure).</p>
+
+<h3>3.3 Outcome values</h3>
+
+<table>
+<tr><th>outcome</th><th>Meaning</th><th>What to do</th></tr>
+<tr><td class="field">resolved</td><td>PV string is in <code>pv_name</code>.</td><td>Use it.</td></tr>
+<tr><td class="field">device_not_found</td><td>The head segment (before the first dot) isn't a registered device.</td><td>Frontend bug or stale preset — surface to the operator.</td></tr>
+<tr><td class="field">no_such_attr</td><td>The path is wrong somewhere — typo'd a sub-component, or the device class changed.</td><td>Frontend bug or out-of-date preset against the current device class.</td></tr>
+<tr><td class="field">import_failed</td><td>The device's class can't be imported. Either the class module is missing from the deploy or the happi entry is malformed.</td><td>Deploy issue — surface as an error + alert; operator can't fix it.</td></tr>
+<tr><td class="field">needs_enrichment</td><td>The path hit an ophyd <code>FormattedComponent</code> with a runtime placeholder (e.g. <code>{self.parent.prefix}</code>). Static introspection can't fill that in.</td><td>For now, send the raw PV string for these. A follow-up PR will have direct-control instantiate the device once and report the resolved PV back to config-service — see §8.</td></tr>
+</table>
+
+<p>Per-item <code>ok</code> is a derived convenience field — it's <code>true</code>
+iff <code>outcome == "resolved"</code>. Filter by <code>ok</code> when copying
+results into a batch caput payload; show the rest to the operator.</p>
+
+<h3>3.4 Both ophyd frameworks supported</h3>
+
+<p>configuration_service walks classic-ophyd device classes statically (no
+instantiation). For ophyd-async classes, it instantiates the class locally
+to read each <code>Signal.source</code> URI — still no EPICS connections,
+since ophyd-async only opens connections on the explicit
+<code>await device.connect()</code> call. The frontend doesn't need to know
+which framework a given device class uses; dispatch is automatic.</p>
+
+<p>One caveat for ophyd-async: top-level addressing (just the device name with
+no sub-attribute) returns <code>no_such_attr</code> with a hint. Async
+devices typically have many signals and no canonical "the PV" for the device
+itself — use <code>&lt;device&gt;.&lt;attr&gt;</code> instead.</p>
+
+<h3>3.5 When to call resolve</h3>
+
+<p>Two reasonable patterns:</p>
+
+<ul>
+  <li><strong>Once at app-load.</strong> Bundle the preset table with friendly
+      addresses, call resolve once on startup to build an in-memory
+      <code>address → pv_name</code> map, then use that map for every
+      periodic-table click. Lowest latency per click; cache invalidates on
+      page reload (or after an admin updates the registry, if you build a
+      refresh button).</li>
+  <li><strong>Per-click.</strong> Resolve on every preset apply. Fine for
+      low-frequency operations but adds a round-trip the operator notices.</li>
+</ul>
+
+<p>Pick load-time unless presets are edited at runtime. Either way, the
+resolve result feeds into a <code>POST /api/v1/pv/set/batch</code> — see
+<a href="#batch-endpoint">§4</a>.</p>
+
+<h2 id="batch-endpoint">4. The batch caput endpoint</h2>
+
+<p><strong>Endpoint:</strong> <code>POST /api/v1/pv/set/batch</code> on direct-control
+(port 8003 in the default compose).</p>
+
+<h3>4.1 Request</h3>
 
 <pre><code>{
   "caputs": [
@@ -201,7 +314,7 @@ and gets POSTed to the same endpoint.</p>
   <li>Extra fields at the top level are rejected (typo-catching).</li>
 </ul>
 
-<h3>3.2 Response</h3>
+<h3>4.2 Response</h3>
 
 <pre><code>{
   "ok": true,
@@ -236,7 +349,7 @@ call would have returned: <code>200</code> on success, <code>404</code> for unkn
 locked device, <code>409</code> for disabled device, <code>503</code> for coordination-service
 trouble, <code>500</code> for an unexpected error.</p>
 
-<h3>3.3 Fail-hard semantics</h3>
+<h3>4.3 Fail-hard semantics</h3>
 
 <div class="callout warn">
 <strong>The batch halts on the first failure. Items past the failure point are NOT attempted.</strong>
@@ -255,7 +368,7 @@ risks leaving the instrument in a worse, more inconsistent state.
       instrument is now in a half-configured state.</li>
 </ol>
 
-<h3>3.4 HTTP status of the batch call itself</h3>
+<h3>4.4 HTTP status of the batch call itself</h3>
 
 <p>The batch call returns <strong>200</strong> on any well-formed request — even when items
 inside fail. This is deliberate so you can always read the structured
@@ -263,7 +376,7 @@ inside fail. This is deliberate so you can always read the structured
 malformed (422 for empty list, bad value type, extra fields, etc.) or the
 service itself is down.</p>
 
-<h2>4. The single caput endpoint (still available)</h2>
+<h2>5. The single caput endpoint (still available)</h2>
 
 <p>For one-off sets (e.g. a slider widget that nudges one motor), use the
 existing single endpoint:</p>
@@ -274,7 +387,7 @@ existing single endpoint:</p>
 <p>It returns the per-item shape directly (not wrapped in a batch envelope) and
 uses standard HTTP status codes (200 / 404 / 423 / 503 / 500).</p>
 
-<h2>5. Reading values (caget)</h2>
+<h2>6. Reading values (caget)</h2>
 
 <p>One-shot read of a PV:</p>
 
@@ -285,45 +398,70 @@ uses standard HTTP status codes (200 / 404 / 423 / 503 / 500).</p>
 WebSocket endpoints (<code>/api/v1/pv-socket</code> and <code>/api/v1/device-socket</code>) — see the
 direct-control service README for those.</p>
 
-<h2>6. End-to-end example: configuring for Ni_L</h2>
+<h2>7. End-to-end example: configuring for Ni_L</h2>
 
-<p>Suppose the frontend's edge-preset table for Ni_L looks like:</p>
+<p>The frontend's preset table stores friendly addresses keyed by edge:</p>
 
 <pre><code>{
   "Ni_L": {
-    "sample_gain":     "1",
-    "sample_decade":   "1 nA/V",
-    "aumesh_gain":     "1",
-    "aumesh_decade":   "1 nA/V",
-    "pd_gain":         "5",
-    "pd_decade":       "1 uA/V",
-    "sclr_time":       0.5,
-    "vortex_preset":   0.5,
-    "au_mesh_y":       -130.2,
-    "m1b1_pid_sp":     378,
-    "epu1_offset":     0.2,
-    "epu_table":       4
+    "sample_sclr_gain":      "1",
+    "sample_sclr_decade":    "1 nA/V",
+    "aumesh_sclr_gain":      "1",
+    "aumesh_sclr_decade":    "1 nA/V",
+    "pd_sclr_gain":          "5",
+    "pd_sclr_decade":        "1 uA/V",
+    "sclr_time":             0.5,
+    "vortex.mca.preset_real_time": 0.5,
+    "au_mesh.user_setpoint": -130.2,
+    "m1b1_setpoint":         378,
+    "epu1offset":            0.2,
+    "epu1table":             4
   }
 }</code></pre>
 
-<p>The frontend resolves each friendly key to the PV string (from configuration_service
-or a local mapping) and POSTs:</p>
+<p>Each key is either a top-level happi entry name (resolves to its prefix) or
+a dotted address (walks the device class). No raw PV strings — the frontend
+doesn't know or care what they look like.</p>
 
-<pre><code>POST /api/v1/pv/set/batch
+<p><strong>Step 1: resolve once at app-load.</strong> Collect every unique address
+across all edges and ask config-service to translate them:</p>
+
+<pre><code>POST :8004/api/v1/devices/resolve
+{
+  "addresses": [
+    "sample_sclr_gain", "sample_sclr_decade",
+    "aumesh_sclr_gain", "aumesh_sclr_decade",
+    "pd_sclr_gain", "pd_sclr_decade",
+    "sclr_time",
+    "vortex.mca.preset_real_time",
+    "au_mesh.user_setpoint",
+    "m1b1_setpoint",
+    "epu1offset", "epu1table"
+  ]
+}
+</code></pre>
+
+<p>The response gives you an <code>address → pv_name</code> map. Cache it for the
+session.</p>
+
+<p><strong>Step 2: when the operator clicks Ni_L</strong>, look up the row, translate
+each address through the cached map, and POST the batch:</p>
+
+<pre><code>POST :8003/api/v1/pv/set/batch
 {
   "caputs": [
-    {"pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Val-SP",     "value": "1",       "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Decade-SP",  "value": "1 nA/V",  "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID2-ES{CurrAmp:2}Gain:Val-SP",     "value": "1",       "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID2-ES{CurrAmp:2}Gain:Decade-SP",  "value": "1 nA/V",  "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID2-ES{CurrAmp:1}Gain:Val-SP",     "value": "5",       "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID2-ES{CurrAmp:1}Gain:Decade-SP",  "value": "1 uA/V",  "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID2-ES{Sclr:1}.TP",                "value": 0.5,       "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID2-ES{Vortex}mca1.PRTM",          "value": 0.5,       "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID2-BI{AuMesh:1-Ax:Y}Mtr.VAL",     "value": -130.2,    "wait": true, "timeout": 30.0},
-    {"pv_name": "XF:23ID2-OP{FBck}PID-SP",               "value": 378,       "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID-ID{EPU:1-FLT}Val:InpOff1-SP",   "value": 0.2,       "wait": true, "timeout": 2.0},
-    {"pv_name": "XF:23ID-ID{EPU:1}Val:Table-Sel",        "value": 4,         "wait": true, "timeout": 2.0}
+    {"pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Val-SP",    "value": "1",      "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:3}Gain:Decade-SP", "value": "1 nA/V", "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:2}Gain:Val-SP",    "value": "1",      "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:2}Gain:Decade-SP", "value": "1 nA/V", "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:1}Gain:Val-SP",    "value": "5",      "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{CurrAmp:1}Gain:Decade-SP", "value": "1 uA/V", "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{Sclr:1}.TP",               "value": 0.5,      "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-ES{Vortex}mca1.PRTM",         "value": 0.5,      "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID2-BI{AuMesh:1-Ax:Y}Mtr.VAL",    "value": -130.2,   "wait": true, "timeout": 30.0},
+    {"pv_name": "XF:23ID2-OP{FBck}PID-SP",              "value": 378,      "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID-ID{EPU:1-FLT}Val:InpOff1-SP",  "value": 0.2,      "wait": true, "timeout": 2.0},
+    {"pv_name": "XF:23ID-ID{EPU:1}Val:Table-Sel",       "value": 4,        "wait": true, "timeout": 2.0}
   ]
 }</code></pre>
 
@@ -331,17 +469,38 @@ or a local mapping) and POSTs:</p>
 shows which caput failed (PV name + error message) and tells the operator
 the instrument is in a partial state.</p>
 
-<h2 id="follow-ups">7. Follow-ups (not yet wired up)</h2>
+<p><strong>If any resolve step came back with <code>outcome != "resolved"</code></strong>,
+do not silently drop it. Show the operator that the preset references an
+address the backend can't translate — it usually means the preset is stale
+against the current device registry.</p>
+
+<h2 id="follow-ups">8. Follow-ups (not yet wired up)</h2>
 
 <div class="callout todo">
-<strong>Dotted-path addressing.</strong> Today the frontend has to know the raw PV
-string for every preset value. We've discussed adding a "resolve" endpoint to
-configuration_service that takes a friendly address like
-<code>vortex.mca.rois.roi2.lo_chan</code> and returns the underlying PV string by
-walking the ophyd device class's Component tree. Once that lands, the
-frontend's preset table can use friendly addresses and the resolve call
-becomes part of the per-click flow (or once-at-load-time, with caching).
-Not in this PR.
+<strong>FmtCpt enrichment for paths returning <code>needs_enrichment</code>.</strong>
+Some classic-ophyd device classes use <code>FormattedComponent</code> with
+runtime placeholders like <code>{self.parent.prefix}</code>. The static
+resolver can't fill those in and returns <code>outcome=needs_enrichment</code>.
+The follow-up plan: direct-control instantiates each affected device once
+(no <code>.connect()</code> needed for ophyd-async; classic ophyd needs a
+small instantiate-and-introspect pass), harvests the resolved PV strings,
+and POSTs them back to a new ingestion endpoint on configuration_service.
+The static resolver then checks the cached enrichment data as a fallback.
+Until that ships, the frontend should fall back to a raw PV string for
+those specific addresses (or omit them from the resolve call and store
+the PV directly in the preset table).
+</div>
+
+<div class="callout todo">
+<strong>PV health flags in the device registry.</strong> When a caput fails
+(EPICS timeout, put rejection, IOC unreachable), the failure surfaces in
+the batch response but doesn't persist anywhere the operator UI can see.
+Planned follow-up: direct-control reports failed caputs back to
+configuration_service, which exposes a per-PV
+<code>healthy / degraded / unresponsive</code> flag in the device registry.
+Frontend can colour-code the affected device on the periodic table or its
+device tree until the operator clears it (or auto-clear on the next
+successful caput).
 </div>
 
 <div class="callout todo">
@@ -359,7 +518,7 @@ Those don't go through this endpoint. When/if the queueserver integration
 lands, the frontend will need a separate "submit plan" API for them.
 </div>
 
-<h2>8. Things to watch out for</h2>
+<h2>9. Things to watch out for</h2>
 
 <ul>
   <li><strong>Don't silently swallow <code>ok: false</code>.</strong> If the batch halted
@@ -375,13 +534,28 @@ lands, the frontend will need a separate "submit plan" API for them.
       with 422 rather than silently doing nothing.</li>
 </ul>
 
-<h2>9. Reference</h2>
+<h2>10. Reference</h2>
 
 <ul>
-  <li>OpenAPI schema: <code>shared-schema/direct_control.openapi.json</code> — codegen-friendly source of truth.</li>
-  <li>Direct-control API docs (markdown): <code>backend/direct_control_service/docs/api.md</code></li>
-  <li>Configuration-service device registry: see its README under <code>backend/configuration_service/</code></li>
-  <li>Tests covering this endpoint: <code>backend/direct_control_service/tests/test_batch_caput.py</code></li>
+  <li>OpenAPI schemas (codegen-friendly source of truth):
+    <ul>
+      <li><code>shared-schema/direct_control.openapi.json</code> — caput/caget surface (port 8003)</li>
+      <li><code>shared-schema/configuration_service.openapi.json</code> — registry, locks, resolve (port 8004)</li>
+    </ul>
+  </li>
+  <li>API references (markdown):
+    <ul>
+      <li><code>backend/direct_control_service/docs/api.md</code></li>
+      <li><code>backend/configuration_service/docs/reference/api.md</code></li>
+    </ul>
+  </li>
+  <li>Tests covering these endpoints:
+    <ul>
+      <li><code>backend/direct_control_service/tests/test_batch_caput.py</code></li>
+      <li><code>backend/configuration_service/tests/test_path_resolver.py</code> (unit)</li>
+      <li><code>backend/configuration_service/tests/test_resolve_endpoint.py</code> (integration)</li>
+    </ul>
+  </li>
 </ul>
 
 </body>
