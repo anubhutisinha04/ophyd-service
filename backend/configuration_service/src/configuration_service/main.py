@@ -1862,6 +1862,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         instantiated locally (no ``.connect()``) so their Signal.source
         URIs can be read; classic-ophyd classes are walked at class level.
         """
+        # Per-request cache for ophyd-async device instances. A batch that
+        # addresses the same device multiple times (e.g. motor.user_setpoint
+        # + motor.velocity) instantiates the class once and reuses it.
+        # Classic-ophyd resolution is purely static and ignores this cache.
+        device_cache: dict = {}
+
         results: List[PathResolveResultItem] = []
         for address in request.addresses:
             head, _, _ = address.partition(".")
@@ -1870,7 +1876,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 results.append(
                     PathResolveResultItem(
                         address=address,
-                        ok=False,
                         outcome=Outcome.DEVICE_NOT_FOUND.value,
                         message=f"no device named '{head}' in registry",
                     )
@@ -1882,7 +1887,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 results.append(
                     PathResolveResultItem(
                         address=address,
-                        ok=False,
                         outcome=Outcome.IMPORT_FAILED.value,
                         message=(
                             f"device '{head}' has no instantiation spec "
@@ -1897,7 +1901,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 results.append(
                     PathResolveResultItem(
                         address=address,
-                        ok=False,
                         outcome=Outcome.IMPORT_FAILED.value,
                         message=(
                             f"device '{head}' has no derivable prefix "
@@ -1912,11 +1915,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 address,
                 device_class_path=spec.device_class,
                 prefix=prefix,
+                device_cache=device_cache,
             )
             results.append(
                 PathResolveResultItem(
                     address=address,
-                    ok=resolution.ok,
                     outcome=resolution.outcome.value,
                     pv_name=resolution.pv_name,
                     message=resolution.message,

@@ -341,6 +341,55 @@ def test_resolve_dispatches_to_correct_framework():
     assert async_.ok and async_.pv_name == "XF:ASY{MOT}.VAL"
 
 
+def test_resolve_ophyd_async_device_cache_reuses_instance():
+    """A batch of sibling addresses on the same (class, prefix) should
+    instantiate the device once and reuse it."""
+    from ophyd_async.epics.motor import Motor
+
+    cache: dict = {}
+    r1 = resolve(
+        "m.user_setpoint",
+        device_class_path="ophyd_async.epics.motor.Motor",
+        prefix="XF:CACHE{MOT}",
+        device_cache=cache,
+    )
+    r2 = resolve(
+        "m.velocity",
+        device_class_path="ophyd_async.epics.motor.Motor",
+        prefix="XF:CACHE{MOT}",
+        device_cache=cache,
+    )
+    assert r1.ok and r2.ok
+    assert len(cache) == 1
+    # The cached value is the (device, error) tuple; both addresses see
+    # the same device instance.
+    cached_device, cached_err = cache[(Motor, "XF:CACHE{MOT}")]
+    assert cached_err is None
+    assert cached_device is not None
+
+
+def test_resolve_ophyd_async_device_cache_caches_failures():
+    """Instantiation failure should be cached so subsequent addresses on
+    the same (cls, prefix) short-circuit without retrying."""
+    from ophyd_async.core import Device as AsyncDevice
+    from configuration_service.path_resolver import _get_or_create_async_device
+
+    construction_calls = 0
+
+    class _AlwaysFails(AsyncDevice):
+        def __init__(self, prefix, name=""):
+            nonlocal construction_calls
+            construction_calls += 1
+            raise RuntimeError("simulated failure")
+
+    cache: dict = {}
+    device1, err1 = _get_or_create_async_device(_AlwaysFails, "X:Y", cache)
+    device2, err2 = _get_or_create_async_device(_AlwaysFails, "X:Y", cache)
+    assert construction_calls == 1  # second call short-circuited
+    assert device1 is None and device2 is None
+    assert err1 == err2 and "simulated failure" in err1
+
+
 def test_resolve_ophyd_async_instantiation_failure_returns_import_failed():
     """A class that needs extra kwargs raises during instantiation;
     the resolver translates this to ``IMPORT_FAILED`` with the reason."""

@@ -6,7 +6,7 @@ These models represent the core entities for the device/PV registry.
 
 from typing import Dict, List, Literal, Optional, Any
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class DeviceLabel(str, Enum):
@@ -829,15 +829,14 @@ class PathResolveRequest(BaseModel):
 class PathResolveResultItem(BaseModel):
     """One row in the batch response.
 
-    ``ok=true`` iff ``outcome == 'resolved'`` and ``pv_name`` is set.
-    Other outcomes (``device_not_found``, ``import_failed``,
-    ``no_such_attr``, ``needs_enrichment``) carry their reason in
-    ``message`` so the frontend can show the operator why a particular
-    address couldn't be resolved.
+    ``ok`` is derived from ``outcome`` (``True`` iff ``outcome == 'resolved'``);
+    declared as a ``computed_field`` so the JSON output carries it for client
+    convenience but it cannot drift from ``outcome``. Other outcomes carry
+    their reason in ``message`` so the frontend can show the operator why a
+    particular address couldn't be resolved.
     """
 
     address: str
-    ok: bool
     outcome: str = Field(
         description=(
             "One of: resolved | device_not_found | import_failed | "
@@ -846,6 +845,11 @@ class PathResolveResultItem(BaseModel):
     )
     pv_name: Optional[str] = None
     message: Optional[str] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ok(self) -> bool:
+        return self.outcome == "resolved"
 
 
 class PathResolveResponse(BaseModel):

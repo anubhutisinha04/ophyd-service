@@ -180,17 +180,54 @@ def _walk_async_instance(device, parts: list[str]) -> tuple[Outcome, str, Option
     return Outcome.RESOLVED, _strip_signal_source_scheme(str(source)), None
 
 
-def _resolve_ophyd_async(address: str, cls, prefix: str, sub_path: str) -> Resolution:
-    """Instantiate-without-connect, then walk ``.source`` URIs."""
-    # The "_resolve" name is a sentinel: it never reaches EPICS, just gets
-    # attached to the in-memory device object for debugging in logs.
+def _get_or_create_async_device(
+    cls, prefix: str, cache: Optional[dict]
+) -> tuple[object, Optional[str]]:
+    """Return ``(device, error_message)``; exactly one is non-None.
+
+    Honors the optional ``(cls, prefix) → (device, err)`` cache so a batch
+    of addresses against the same device reuses one instantiation. A failed
+    instantiation is cached too — every subsequent address for that same
+    (cls, prefix) short-circuits with the same error rather than retrying.
+    """
+    key = (cls, prefix)
+    if cache is not None and key in cache:
+        return cache[key]
+
     try:
-        device = cls(prefix, name="_resolve")
+        # The "_resolve" name is a sentinel: never reaches EPICS, just gets
+        # attached to the in-memory device object for log readability.
+        result = (cls(prefix, name="_resolve"), None)
     except Exception as e:  # noqa: BLE001 — propagate the actual reason
+        result = (None, f"Instantiation failed: {type(e).__name__}: {e}")
+
+    if cache is not None:
+        cache[key] = result
+    return result
+
+
+def _resolve_ophyd_async(
+    address: str,
+    cls,
+    prefix: str,
+    sub_path: str,
+    *,
+    device_cache: Optional[dict] = None,
+) -> Resolution:
+    """Instantiate-without-connect, then walk ``.source`` URIs.
+
+    ``device_cache``: optional dict keyed by ``(cls, prefix)`` to reuse a
+    single instantiation across multiple sibling addresses (e.g. a 12-item
+    batch all targeting ``motor.X``). The cache stores either the live
+    device or a (None, error_message) tuple so a failed instantiation
+    short-circuits subsequent addresses on the same device.
+    """
+    device, err = _get_or_create_async_device(cls, prefix, device_cache)
+    if err is not None:
         return Resolution(
             address=address,
             outcome=Outcome.IMPORT_FAILED,
-            message=f"Instantiation failed: {type(e).__name__}: {e}",
+            message=err,
         )
 
     if not sub_path:
@@ -262,6 +299,7 @@ def resolve(
     *,
     device_class_path: str,
     prefix: str,
+    device_cache: Optional[dict] = None,
 ) -> Resolution:
     """Resolve a single dotted address to a PV name.
 
@@ -278,6 +316,11 @@ def resolve(
     subclasses are instantiated and walked at the instance level (no
     EPICS connection is opened); everything else is walked statically
     via class-level Components.
+
+    ``device_cache`` (optional dict) is honored only by the ophyd-async
+    path. Pass an empty dict per request to amortize instantiation across
+    a batch of sibling addresses; the classic path is purely static and
+    already costs nothing.
     """
     _, sub_path = _split_address(address)
 
@@ -291,5 +334,7 @@ def resolve(
         )
 
     if _is_ophyd_async_class(cls):
-        return _resolve_ophyd_async(address, cls, prefix, sub_path)
+        return _resolve_ophyd_async(
+            address, cls, prefix, sub_path, device_cache=device_cache
+        )
     return _resolve_ophyd_classic(address, cls, prefix, sub_path)

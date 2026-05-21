@@ -3210,10 +3210,6 @@
             "type": "string",
             "title": "Address"
           },
-          "ok": {
-            "type": "boolean",
-            "title": "Ok"
-          },
           "outcome": {
             "type": "string",
             "title": "Outcome",
@@ -3240,16 +3236,21 @@
               }
             ],
             "title": "Message"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "readOnly": true
           }
         },
         "type": "object",
         "required": [
           "address",
-          "ok",
-          "outcome"
+          "outcome",
+          "ok"
         ],
         "title": "PathResolveResultItem",
-        "description": "One row in the batch response.\n\n``ok=true`` iff ``outcome == 'resolved'`` and ``pv_name`` is set.\nOther outcomes (``device_not_found``, ``import_failed``,\n``no_such_attr``, ``needs_enrichment``) carry their reason in\n``message`` so the frontend can show the operator why a particular\naddress couldn't be resolved."
+        "description": "One row in the batch response.\n\n``ok`` is derived from ``outcome`` (``True`` iff ``outcome == 'resolved'``);\ndeclared as a ``computed_field`` so the JSON output carries it for client\nconvenience but it cannot drift from ``outcome``. Other outcomes carry\ntheir reason in ``message`` so the frontend can show the operator why a\nparticular address couldn't be resolved."
       },
       "StandalonePV": {
         "properties": {
