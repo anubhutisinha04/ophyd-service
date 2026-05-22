@@ -72,19 +72,35 @@ class PVHealthManager:
         of how many failures preceded it — the underlying assumption
         being that a recent success is stronger evidence than older
         failures.
+
+        **Bounded growth:** if there's no existing record for the PV
+        (i.e. it's never failed since service start), we return a
+        synthetic healthy record without storing it. The dict therefore
+        only retains entries for PVs that have actually failed at some
+        point — *not* every PV that's ever been caput'd. For a busy
+        beamline that writes to thousands of PVs without any of them
+        failing, ``_records`` stays empty.
         """
         async with self._lock:
             existing = self._records.get(pv_name)
-            last_failure_at = existing.last_failure_at if existing else None
-            last_failure_message = (
-                existing.last_failure_message if existing else None
-            )
+            now = datetime.now(timezone.utc)
+            if existing is None:
+                # Never-failed PV — return a transient record for the
+                # endpoint's response without growing the dict.
+                return PVHealthRecord(
+                    pv_name=pv_name,
+                    consecutive_failures=0,
+                    last_success_at=now,
+                )
+            # Existing record: flip to healthy but preserve the
+            # last-failure metadata so the operator UI can show
+            # "recovered from <error> at <timestamp>".
             record = PVHealthRecord(
                 pv_name=pv_name,
                 consecutive_failures=0,
-                last_failure_at=last_failure_at,
-                last_failure_message=last_failure_message,
-                last_success_at=datetime.now(timezone.utc),
+                last_failure_at=existing.last_failure_at,
+                last_failure_message=existing.last_failure_message,
+                last_success_at=now,
             )
             self._records[pv_name] = record
             return record

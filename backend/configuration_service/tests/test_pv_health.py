@@ -82,14 +82,52 @@ async def test_success_then_failure_starts_fresh_count():
 
 
 @pytest.mark.asyncio
+async def test_record_success_on_never_failed_pv_does_not_grow_dict():
+    """A success on a PV that's never failed returns a synthetic healthy
+    record but does NOT add to the internal dict. Otherwise ``_records``
+    would grow to every PV ever caput'd, not just the ones that have
+    failed.
+    """
+    mgr = PVHealthManager()
+    record = await mgr.record_success("IOC:never_failed")
+    assert record.state is PVHealthState.HEALTHY
+    assert record.consecutive_failures == 0
+    assert record.last_success_at is not None
+    # No record is stored — the bulk lookup confirms it's not there.
+    assert await mgr.get_health("IOC:never_failed") is None
+    rollup = await mgr.get_health_many(["IOC:never_failed"])
+    assert rollup == {}
+
+
+@pytest.mark.asyncio
+async def test_record_success_after_failure_is_stored():
+    """The first success on a PV that HAS failed must persist so the
+    operator UI can still see 'recovered at <time>' diagnostics."""
+    mgr = PVHealthManager()
+    await mgr.record_failure("IOC:m1", "timeout")
+    record = await mgr.record_success("IOC:m1")
+    assert record.state is PVHealthState.HEALTHY
+    # The record IS stored — last-failure metadata preserved.
+    persisted = await mgr.get_health("IOC:m1")
+    assert persisted is not None
+    assert persisted.last_failure_message == "timeout"
+    assert persisted.last_success_at is not None
+
+
+@pytest.mark.asyncio
 async def test_get_health_many_only_returns_pvs_with_records():
-    """Bulk lookup returns only the PVs that have records; the caller
-    treats absent PVs as healthy."""
+    """Bulk lookup returns only the PVs with stored records. Successes
+    on never-failed PVs are intentionally not stored (see
+    ``record_success`` docstring), so ``IOC:b`` below is absent."""
     mgr = PVHealthManager()
     await mgr.record_failure("IOC:a")
-    await mgr.record_success("IOC:b")
-    result = await mgr.get_health_many(["IOC:a", "IOC:b", "IOC:never_reported"])
-    assert set(result.keys()) == {"IOC:a", "IOC:b"}
+    await mgr.record_success("IOC:b")  # synthetic; not stored
+    await mgr.record_failure("IOC:c")
+    await mgr.record_success("IOC:c")  # updates the existing record
+    result = await mgr.get_health_many(
+        ["IOC:a", "IOC:b", "IOC:c", "IOC:never_reported"]
+    )
+    assert set(result.keys()) == {"IOC:a", "IOC:c"}
 
 
 @pytest.mark.asyncio
@@ -161,6 +199,32 @@ def test_extra_fields_on_report_rejected(client):
     assert r.status_code == 422
 
 
+def test_dotted_pv_names_route_correctly(client):
+    """EpicsMotor's ``.RBV`` / ``.VAL`` / ``.VELO`` PVs all contain dots.
+    The endpoint routes use ``{pv_name:path}`` to accept them; this test
+    pins the routing so a refactor to plain ``{pv_name}`` (which doesn't
+    match dots in starlette's default str converter) would fail loudly
+    rather than silently break ~every motor PV in the wild."""
+    r = client.post(
+        "/api/v1/pvs/BL01:SAMPLE:X.RBV/failure",
+        json={"message": "lost CA"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pv_name"] == "BL01:SAMPLE:X.RBV"
+    assert body["consecutive_failures"] == 1
+
+    # Round-trip through the GET endpoint too.
+    r = client.get("/api/v1/pvs/BL01:SAMPLE:X.RBV/health")
+    assert r.status_code == 200
+    assert r.json()["pv_name"] == "BL01:SAMPLE:X.RBV"
+
+    # And success after failure.
+    r = client.post("/api/v1/pvs/BL01:SAMPLE:X.RBV/success", json={})
+    assert r.status_code == 200
+    assert r.json()["state"] == "healthy"
+
+
 # ---------------------------------------------------------------------------
 # Device-status response rollup
 # ---------------------------------------------------------------------------
@@ -168,25 +232,45 @@ def test_extra_fields_on_report_rejected(client):
 
 def test_device_status_includes_pv_health_for_reported_pvs(client):
     """The device-status response should roll up health for the PVs the
-    device claims (via ``device.pvs``). PVs without records are absent
-    from the dict — the frontend treats absence as healthy.
+    device claims (via ``device.pvs``). The rollup only includes PVs
+    that have failed at some point — successes on never-failed PVs are
+    not stored, by design (see ``PVHealthManager.record_success``).
     """
     # sample_x's mock registry entry has user_readback, user_setpoint, velocity.
-    # Report failure on one, success on another; the third stays absent.
+    # Report failure on one (creates a record), then a success on the
+    # *same* PV (updates the existing record back to healthy). Also report
+    # a success on a never-failed PV — that one should stay absent from
+    # the rollup.
     client.post(
         "/api/v1/pvs/BL01:SAMPLE:X.RBV/failure", json={"message": "lost CA"}
     )
+    # A success on a never-failed PV is intentionally not persisted.
     client.post("/api/v1/pvs/BL01:SAMPLE:X/success", json={})
 
     r = client.get("/api/v1/devices/sample_x/status")
     assert r.status_code == 200
     body = r.json()
     pv_health = body["pv_health"]
-    assert set(pv_health.keys()) == {"BL01:SAMPLE:X.RBV", "BL01:SAMPLE:X"}
+    # Only the failed-then-not-yet-recovered PV appears.
+    assert set(pv_health.keys()) == {"BL01:SAMPLE:X.RBV"}
     assert pv_health["BL01:SAMPLE:X.RBV"]["state"] == "degraded"
-    assert pv_health["BL01:SAMPLE:X"]["state"] == "healthy"
-    # The velocity PV had no reports so it's omitted.
-    assert "BL01:SAMPLE:X.VELO" not in pv_health
+
+
+def test_device_status_pv_health_after_failure_then_recovery(client):
+    """A failure then a success on the same PV keeps the record (so the
+    UI can show 'recovered at <time>') with state flipped to healthy."""
+    client.post(
+        "/api/v1/pvs/BL01:SAMPLE:X.RBV/failure", json={"message": "lost CA"}
+    )
+    client.post("/api/v1/pvs/BL01:SAMPLE:X.RBV/success", json={})
+
+    r = client.get("/api/v1/devices/sample_x/status")
+    pv_health = r.json()["pv_health"]
+    assert "BL01:SAMPLE:X.RBV" in pv_health
+    row = pv_health["BL01:SAMPLE:X.RBV"]
+    assert row["state"] == "healthy"
+    assert row["last_failure_message"] == "lost CA"
+    assert row["last_success_at"] is not None
 
 
 def test_device_status_with_no_health_reports_yields_empty_pv_health(client):

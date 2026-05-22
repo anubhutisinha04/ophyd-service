@@ -112,7 +112,10 @@ class PVHealthReporter:
         """Wait for any in-flight reports to complete during shutdown.
 
         Cancels anything still pending after ``timeout`` so a hung
-        config-service can't block service shutdown indefinitely.
+        config-service can't block service shutdown indefinitely. After
+        cancelling we await the gather once more so the cancellations
+        actually propagate before the caller closes shared resources
+        (notably the httpx client the tasks depend on).
         """
         if not self._inflight:
             return
@@ -123,12 +126,16 @@ class PVHealthReporter:
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
+            still_pending = list(self._inflight)
             logger.warning(
                 "pv_health_reporter_drain_timeout",
-                pending=len(self._inflight),
+                pending=len(still_pending),
             )
-            for task in self._inflight:
+            for task in still_pending:
                 task.cancel()
+            # Await again so CancelledError reaches the tasks before
+            # the caller closes resources they're still using.
+            await asyncio.gather(*still_pending, return_exceptions=True)
 
     def inflight_count(self) -> int:
         return len(self._inflight)
