@@ -554,9 +554,9 @@ dashboard "purge after IOC maintenance" action:</p>
 
 <table>
 <tr><th>Method</th><th>Path</th><th>Description</th></tr>
-<tr><td>DELETE</td><td><code>/api/v1/pvs/{pv_name}/health</code></td><td>Drop the health record for one PV. Idempotent — returns <code>{cleared: 1}</code> if a record was removed, <code>{cleared: 0}</code> if there was nothing to remove (still 200, so the UI can fire-and-forget).</td></tr>
-<tr><td>DELETE</td><td><code>/api/v1/admin/pv-health</code></td><td>Wipe every health record. Returns <code>{cleared: N}</code>. Intended for ops use after IOC maintenance / mass-restart events. No per-PV gate, so call deliberately.</td></tr>
-<tr><td>GET</td><td><code>/api/v1/admin/pv-health/stats</code></td><td>At-a-glance count: <code>{tracked_pvs: N, by_state: {healthy: N, degraded: M, unresponsive: K}}</code>. Every state key is always present (zero if no records match), so dashboards don't have to special-case missing keys.</td></tr>
+<tr><td>DELETE</td><td><code>/api/v1/pvs/{pv_name}/health</code></td><td>Drop the health record for one PV. Idempotent — returns <code>{"cleared": 1}</code> if a record was removed, <code>{"cleared": 0}</code> if there was nothing to remove (still 200, so the UI can fire-and-forget).</td></tr>
+<tr><td>DELETE</td><td><code>/api/v1/admin/pv-health</code></td><td>Wipe every health record. Returns <code>{"cleared": N}</code>. Intended for ops use after IOC maintenance / mass-restart events. No per-PV gate, so call deliberately.</td></tr>
+<tr><td>GET</td><td><code>/api/v1/admin/pv-health/stats</code></td><td>At-a-glance count: <code>{"tracked_pvs": N, "by_state": {"healthy": N, "degraded": M, "unresponsive": K}}</code>. All three state fields are always present (zero if no records match), so dashboards don't have to special-case missing keys.</td></tr>
 </table>
 
 <p>None of these endpoints have built-in auth — they inherit the

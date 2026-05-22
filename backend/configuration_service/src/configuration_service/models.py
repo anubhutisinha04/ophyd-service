@@ -886,23 +886,39 @@ class PVHealthClearResponse(BaseModel):
     )
 
 
-class PVHealthStats(BaseModel):
-    """At-a-glance count of PV-health records grouped by state.
+class PVHealthStateCounts(BaseModel):
+    """Per-state PV-health record counts.
 
-    Every ``PVHealthState`` value is present as a key in ``by_state``
-    (zero if no records match), so frontends can render the three-state
-    tally without checking for missing keys. ``tracked_pvs`` is a
-    ``computed_field`` derived from ``by_state``, so the two can never
-    drift out of sync.
+    Three explicit fields (one per :class:`PVHealthState` value) rather
+    than ``Dict[str, int]`` so the OpenAPI schema actually enforces the
+    "every state is always present" contract — generated SDK clients
+    get proper accessors and can't drift on a future state-machine
+    addition without updating this model in lockstep.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    by_state: Dict[str, int] = Field(
+    healthy: int = Field(0, ge=0, description="PVs in the ``healthy`` state.")
+    degraded: int = Field(0, ge=0, description="PVs in the ``degraded`` state.")
+    unresponsive: int = Field(
+        0, ge=0, description="PVs in the ``unresponsive`` state."
+    )
+
+
+class PVHealthStats(BaseModel):
+    """At-a-glance count of PV-health records grouped by state.
+
+    ``tracked_pvs`` is a ``computed_field`` derived from ``by_state``,
+    so the two can never drift out of sync.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    by_state: PVHealthStateCounts = Field(
         ...,
         description=(
-            "Count of records grouped by state: "
-            "``healthy / degraded / unresponsive``."
+            "Count of records grouped by state. All three states are "
+            "always present as fields, zero if no records match."
         ),
     )
 
@@ -910,7 +926,11 @@ class PVHealthStats(BaseModel):
     @property
     def tracked_pvs(self) -> int:
         """Total number of PVs with at least one health record."""
-        return sum(self.by_state.values())
+        return (
+            self.by_state.healthy
+            + self.by_state.degraded
+            + self.by_state.unresponsive
+        )
 
 
 class NestedDeviceComponent(BaseModel):

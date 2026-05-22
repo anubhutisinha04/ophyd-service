@@ -3296,15 +3296,40 @@
         "title": "PVHealthState",
         "description": "Per-PV health state derived from recent caput outcomes.\n\nDirect-control reports each caput's outcome (success or failure) back\nto configuration_service. The state is computed from the consecutive-\nfailure counter so a single successful caput always resets to healthy.\n\nFrontends should color-code by state and surface ``unresponsive`` PVs\nprominently \u2014 they typically mean the IOC is down or a PV has been\ndeleted from it."
       },
+      "PVHealthStateCounts": {
+        "properties": {
+          "healthy": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Healthy",
+            "description": "PVs in the ``healthy`` state.",
+            "default": 0
+          },
+          "degraded": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Degraded",
+            "description": "PVs in the ``degraded`` state.",
+            "default": 0
+          },
+          "unresponsive": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unresponsive",
+            "description": "PVs in the ``unresponsive`` state.",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PVHealthStateCounts",
+        "description": "Per-state PV-health record counts.\n\nThree explicit fields (one per :class:`PVHealthState` value) rather\nthan ``Dict[str, int]`` so the OpenAPI schema actually enforces the\n\"every state is always present\" contract \u2014 generated SDK clients\nget proper accessors and can't drift on a future state-machine\naddition without updating this model in lockstep."
+      },
       "PVHealthStats": {
         "properties": {
           "by_state": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "type": "object",
-            "title": "By State",
-            "description": "Count of records grouped by state: ``healthy / degraded / unresponsive``."
+            "$ref": "#/components/schemas/PVHealthStateCounts",
+            "description": "Count of records grouped by state. All three states are always present as fields, zero if no records match."
           },
           "tracked_pvs": {
             "type": "integer",
@@ -3320,7 +3345,7 @@
           "tracked_pvs"
         ],
         "title": "PVHealthStats",
-        "description": "At-a-glance count of PV-health records grouped by state.\n\nEvery ``PVHealthState`` value is present as a key in ``by_state``\n(zero if no records match), so frontends can render the three-state\ntally without checking for missing keys. ``tracked_pvs`` is a\n``computed_field`` derived from ``by_state``, so the two can never\ndrift out of sync."
+        "description": "At-a-glance count of PV-health records grouped by state.\n\n``tracked_pvs`` is a ``computed_field`` derived from ``by_state``,\nso the two can never drift out of sync."
       },
       "PVMetadata": {
         "properties": {
