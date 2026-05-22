@@ -44,7 +44,7 @@
     "/api/v1/pv/set": {
       "post": {
         "summary": "Set Pv",
-        "description": "Set EPICS PV value with coordination check (Low Fidelity Channel).\n\nTwo modes:\n- wait=False (fire-and-forget, default): Issues write, returns immediately.\n- wait=True (put-completion): Waits for EPICS put-completion callback.\n\nRaises 404 if PV not in registry, 423 if device locked, 503 if\ncoordination service unavailable.",
+        "description": "Set EPICS PV value with coordination check (Low Fidelity Channel).\n\nTwo modes:\n- wait=False (fire-and-forget, default): Issues write, returns immediately.\n- wait=True (put-completion): Waits for EPICS put-completion callback.\n\nRaises 404 if PV not in registry, 423 if device locked, 503 if\ncoordination service unavailable.\n\nAfter the caput, fires a background report to configuration_service's\nPV-health endpoint (``/api/v1/pvs/{pv_name}/{success|failure}``) so\nthe operator UI can see degraded/unresponsive PVs. The report runs\nin a fire-and-forget task; the response returns without waiting on it.\nGate failures (locked / disabled / coordination) are NOT reported \u2014\nthose reflect orchestration policy, not PV health.",
         "operationId": "set_pv_api_v1_pv_set_post",
         "requestBody": {
           "content": {

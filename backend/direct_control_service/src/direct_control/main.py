@@ -48,6 +48,7 @@ from .models import (
     PVValue,
 )
 from .ophyd_cache import OphydDeviceCache
+from .pv_health_reporter import PVHealthReporter
 from .protocols import CoordinationService, DeviceControl, PVMonitor
 from .registry_client import RegistryClient, RegistryValidationError
 
@@ -128,6 +129,7 @@ async def lifespan(app: FastAPI):
     app.state.ws_manager = ws_manager
     app.state.device_ws_manager = device_ws_manager
     app.state.ophyd_cache = OphydDeviceCache()
+    app.state.pv_health_reporter = PVHealthReporter(config_http)
 
     logger.info(
         "Service initialized",
@@ -140,6 +142,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("Shutting down service")
+        # Drain in-flight PV-health reports before closing the httpx
+        # client they need. 5s cap so a hung config-service can't block
+        # shutdown indefinitely.
+        await app.state.pv_health_reporter.drain(timeout=5.0)
         await ws_manager.close_all()
         await device_ws_manager.cleanup()
         await coordination_client.cleanup()
@@ -204,6 +210,10 @@ def get_device_ws_manager():
 
 def get_ophyd_cache() -> OphydDeviceCache:
     return app.state.ophyd_cache
+
+
+def get_pv_health_reporter() -> PVHealthReporter:
+    return app.state.pv_health_reporter
 
 
 # ----- PV value response builder (tiled-style content negotiation) -----
@@ -445,6 +455,7 @@ async def set_pv(
     request: PVSetRequest,
     device_controller: DeviceControl = Depends(get_device_controller),
     registry_client: RegistryClient = Depends(get_registry_client),
+    pv_health_reporter: PVHealthReporter = Depends(get_pv_health_reporter),
 ):
     """
     Set EPICS PV value with coordination check (Low Fidelity Channel).
@@ -455,6 +466,13 @@ async def set_pv(
 
     Raises 404 if PV not in registry, 423 if device locked, 503 if
     coordination service unavailable.
+
+    After the caput, fires a background report to configuration_service's
+    PV-health endpoint (``/api/v1/pvs/{pv_name}/{success|failure}``) so
+    the operator UI can see degraded/unresponsive PVs. The report runs
+    in a fire-and-forget task; the response returns without waiting on it.
+    Gate failures (locked / disabled / coordination) are NOT reported —
+    those reflect orchestration policy, not PV health.
     """
     try:
         await registry_client.validate_pv(request.pv_name)
@@ -464,15 +482,28 @@ async def set_pv(
         raise HTTPException(status_code=503, detail=str(e))
 
     try:
-        return await device_controller.set_pv(request)
+        resp = await device_controller.set_pv(request)
     except (DeviceDisabledError, DeviceLockedError) as e:
+        # Gate refusal — not a PV-health event.
         _raise_http_for_device_unavailable(e, "pv", pv_name=request.pv_name)
     except CoordinationCheckError as e:
+        # Coordination unavailability — not a PV-health event.
         logger.error("coordination_check_failed", pv_name=request.pv_name, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
     except Exception as e:
+        # An unexpected error after we got past the gates almost always
+        # means a pyepics CA failure (timeout, put-rejected, etc.) —
+        # that's a PV-health event.
+        pv_health_reporter.report(request.pv_name, success=False, message=str(e))
         logger.error("set_pv_error", pv_name=request.pv_name, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+    pv_health_reporter.report(
+        request.pv_name,
+        success=resp.success,
+        message=None if resp.success else resp.message,
+    )
+    return resp
 
 
 def _batch_failure_result(
@@ -506,6 +537,7 @@ async def set_pv_batch(
     request: PVSetBatchRequest,
     device_controller: DeviceControl = Depends(get_device_controller),
     registry_client: RegistryClient = Depends(get_registry_client),
+    pv_health_reporter: PVHealthReporter = Depends(get_pv_health_reporter),
 ):
     """Apply a sequence of caputs with fail-hard semantics.
 
@@ -586,6 +618,9 @@ async def set_pv_batch(
             )
             break
         except Exception as e:
+            # Past the coord gate — this is a real PV-health event
+            # (typically a pyepics CA timeout or rejected put).
+            pv_health_reporter.report(item.pv_name, success=False, message=str(e))
             results.append(
                 _batch_failure_result(item.pv_name, e, 500, coordination_checked=True)
             )
@@ -598,6 +633,11 @@ async def set_pv_batch(
             )
             break
 
+        pv_health_reporter.report(
+            item.pv_name,
+            success=resp.success,
+            message=None if resp.success else resp.message,
+        )
         results.append(
             PVSetBatchItemResult(
                 pv_name=resp.pv_name,

@@ -475,19 +475,75 @@ do not silently drop it. Show the operator that the preset references an
 address the backend can't translate — it usually means the preset is stale
 against the current device registry.</p>
 
-<h2 id="follow-ups">8. Follow-ups (not yet wired up)</h2>
+<h2 id="pv-health">8. PV health tracking</h2>
 
-<div class="callout todo">
-<strong>PV health flags in the device registry.</strong> When a caput fails
-(EPICS timeout, put rejection, IOC unreachable), the failure surfaces in
-the batch response but doesn't persist anywhere the operator UI can see.
-Planned follow-up: direct-control reports failed caputs back to
-configuration_service, which exposes a per-PV
-<code>healthy / degraded / unresponsive</code> flag in the device registry.
-Frontend can colour-code the affected device on the periodic table or its
-device tree until the operator clears it (or auto-clear on the next
-successful caput).
-</div>
+<p>Configuration_service tracks per-PV health from the caput outcomes
+direct-control reports back. The state surfaces on the existing
+<code>GET /api/v1/devices/{device_name}/status</code> response in a new
+<code>pv_health</code> dict, keyed by PV name. Frontends colour-code the
+affected PV (or its parent device) accordingly.</p>
+
+<h3>8.1 State machine</h3>
+
+<table>
+<tr><th>state</th><th>Meaning</th><th>Trigger</th></tr>
+<tr><td class="field">healthy</td><td>Last reported outcome was a success — or no reports yet.</td><td>Any successful caput, or absence from the response.</td></tr>
+<tr><td class="field">degraded</td><td>1–2 consecutive failures since the last success.</td><td>1 failed caput; flips back to healthy on next success.</td></tr>
+<tr><td class="field">unresponsive</td><td>3+ consecutive failures with no intervening success.</td><td>Sustained inability to caput — typically the IOC is down or the PV no longer exists.</td></tr>
+</table>
+
+<p>The threshold (3) is currently a constant; tunable per-beamline if real
+deployments argue for it.</p>
+
+<h3>8.2 What's in the device-status response</h3>
+
+<p>The existing <code>GET /api/v1/devices/{device_name}/status</code>
+response gains a <code>pv_health</code> dict. Only PVs with at least one
+reported outcome appear; an empty dict means "no failures observed."</p>
+
+<pre><code>{
+  "device_name": "sample_x",
+  "available": true,
+  "enabled": true,
+  "lock_status": "unlocked",
+  "pv_health": {
+    "BL01:SAMPLE:X.RBV": {
+      "pv_name": "BL01:SAMPLE:X.RBV",
+      "consecutive_failures": 2,
+      "state": "degraded",
+      "last_failure_at": "2026-05-22T12:34:56.789012+00:00",
+      "last_failure_message": "Channel access timeout",
+      "last_success_at": "2026-05-22T12:30:00.000000+00:00"
+    }
+  }
+}</code></pre>
+
+<h3>8.3 Per-PV lookup</h3>
+
+<p>For an ad-hoc check (e.g. an admin tool drilling into one PV),
+<code>GET /api/v1/pvs/{pv_name}/health</code> returns the same record.
+Responds <code>404</code> for a PV that's never been reported on — frontends
+treat that as healthy.</p>
+
+<h3>8.4 What direct-control reports vs. skips</h3>
+
+<p>After every caput, direct-control fires a background report:</p>
+
+<ul>
+  <li><strong>Reports success</strong> when the caput returns
+      <code>success=true</code>.</li>
+  <li><strong>Reports failure</strong> when the caput raises an unexpected
+      exception (pyepics CA timeout, put-rejected, etc.) <em>or</em> returns
+      <code>success=false</code> without raising.</li>
+  <li><strong>Skips reporting</strong> for gate failures — device locked
+      (423), device disabled (409), coordination unreachable (503).
+      Those reflect orchestration policy, not PV health.</li>
+</ul>
+
+<p>Reports are fire-and-forget: a slow or unreachable configuration_service
+never blocks the caput response.</p>
+
+<h2 id="follow-ups">9. Follow-ups (not yet wired up)</h2>
 
 <div class="callout todo">
 <strong>Presets storage.</strong> Where the per-edge preset table actually lives
@@ -504,7 +560,7 @@ Those don't go through this endpoint. When/if the queueserver integration
 lands, the frontend will need a separate "submit plan" API for them.
 </div>
 
-<h2>9. Things to watch out for</h2>
+<h2>10. Things to watch out for</h2>
 
 <ul>
   <li><strong>Don't silently swallow <code>ok: false</code>.</strong> If the batch halted
@@ -520,7 +576,7 @@ lands, the frontend will need a separate "submit plan" API for them.
       with 422 rather than silently doing nothing.</li>
 </ul>
 
-<h2>10. Reference</h2>
+<h2>11. Reference</h2>
 
 <ul>
   <li>OpenAPI schemas (codegen-friendly source of truth):

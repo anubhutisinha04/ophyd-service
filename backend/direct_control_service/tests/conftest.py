@@ -172,6 +172,13 @@ async def install_config_http_stub(app):
             transport=httpx.MockTransport(handler), base_url="http://stub"
         )
         app.dependency_overrides[get_config_http] = lambda: mock_client
+        # The PVHealthReporter (added during PR C) is constructed in
+        # lifespan with the real config_http and stored on app.state.
+        # dependency_overrides only affects future Depends() calls, so
+        # we also rebind the reporter's underlying client so its
+        # fire-and-forget POSTs hit MockTransport.
+        if hasattr(app.state, "pv_health_reporter"):
+            app.state.pv_health_reporter._client = mock_client
         return mock_client
 
     try:
