@@ -930,6 +930,22 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     # ad-hoc operator lookups (the device-status endpoint above provides
     # the device-rollup view the frontend periodic table needs).
 
+    def _ensure_pv_registered(state: ConfigurationState, pv_name: str) -> None:
+        """Reject health reports / lookups for PVs not in the registry.
+
+        Without this gate, any caller could POST to /failure with arbitrary
+        strings and grow PVHealthManager's records dict unbounded with
+        garbage entries. Direct-control already validates pv_name against
+        the registry before caputting (RegistryClient → /api/v1/pvs/lookup),
+        so this matches the existing trust model: only registered PVs
+        flow through the caput→report pipeline.
+        """
+        if state.registry.get_pv(pv_name) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"PV not registered: {pv_name}",
+            )
+
     @app.post(
         "/api/v1/pvs/{pv_name:path}/failure",
         response_model=PVHealthRecord,
@@ -939,15 +955,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "put-rejection, IOC unreachable, etc.). Increments the PV's "
             "consecutive-failure counter and updates last_failure_at. The "
             "``message`` body field carries the diagnostic the operator UI "
-            "shows next to the unhealthy PV."
+            "shows next to the unhealthy PV. Returns 404 if ``pv_name`` is "
+            "not registered."
         ),
         tags=["PV Health"],
     )
     async def report_pv_failure(
         pv_name: str,
         report: PVHealthReport,
+        state: StateDep,
         pv_health: PVHealthDep,
     ) -> PVHealthRecord:
+        _ensure_pv_registered(state, pv_name)
         return await pv_health.record_failure(pv_name, report.message)
 
     @app.post(
@@ -955,21 +974,28 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         response_model=PVHealthRecord,
         summary="Report Successful Caput",
         description=(
-            "Direct-control calls this after a caput succeeds. Resets the "
-            "PV's consecutive-failure counter to zero, flipping the state "
-            "back to ``healthy`` regardless of prior failures — a recent "
-            "success is stronger evidence than older failures."
+            "Direct-control calls this after a caput succeeds. If a record "
+            "exists for the PV (i.e. it had previously failed), resets the "
+            "consecutive-failure counter to zero and flips the state back "
+            "to ``healthy`` — a recent success is stronger evidence than "
+            "older failures. For PVs that have never failed since service "
+            "start, the response carries a synthetic healthy record but "
+            "no record is persisted (keeps the health store bounded by the "
+            "PVs that have actually failed, not every PV ever caput'd). "
+            "Returns 404 if ``pv_name`` is not registered."
         ),
         tags=["PV Health"],
     )
     async def report_pv_success(
         pv_name: str,
         report: PVHealthReport,
+        state: StateDep,
         pv_health: PVHealthDep,
     ) -> PVHealthRecord:
         # ``report.message`` is allowed but ignored for success reports —
         # the schema is symmetric with /failure so direct-control can
         # POST the same request shape to either endpoint.
+        _ensure_pv_registered(state, pv_name)
         return await pv_health.record_success(pv_name)
 
     @app.get(
@@ -978,8 +1004,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         summary="Get PV Health",
         description=(
             "Returns the current health record for ``pv_name``. 404 if no "
-            "caput outcome has ever been reported for this PV — frontends "
-            "should treat a 404 as 'no data, assume healthy'."
+            "failures have been recorded for this PV (i.e. either it has "
+            "only succeeded since service start, or never been written to "
+            "at all). Successes on never-failed PVs are intentionally not "
+            "persisted, so a 404 here does not mean 'never touched' — "
+            "frontends should treat it as 'no failures observed, assume "
+            "healthy'."
         ),
         tags=["PV Health"],
     )
@@ -992,8 +1022,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=(
-                    f"No health record for PV '{pv_name}'. No caput has "
-                    f"been reported against it yet; treat as healthy."
+                    f"No health record for PV '{pv_name}'. No failures "
+                    f"recorded; treat as healthy."
                 ),
             )
         return record

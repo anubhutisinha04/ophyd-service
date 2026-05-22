@@ -498,8 +498,12 @@ deployments argue for it.</p>
 <h3>8.2 What's in the device-status response</h3>
 
 <p>The existing <code>GET /api/v1/devices/{device_name}/status</code>
-response gains a <code>pv_health</code> dict. Only PVs with at least one
-reported outcome appear; an empty dict means "no failures observed."</p>
+response gains a <code>pv_health</code> dict. Only PVs that have failed
+at least once since service start appear here — PVs with no failures
+(or only successes) are intentionally not persisted, which keeps the
+store bounded by "PVs needing attention" rather than "every PV ever
+written to." Absence therefore means "no failures observed, assume
+healthy."</p>
 
 <pre><code>{
   "device_name": "sample_x",

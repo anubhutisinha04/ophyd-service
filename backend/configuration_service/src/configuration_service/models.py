@@ -771,9 +771,12 @@ class DeviceStatusResponse(BaseModel):
     pv_health: Dict[str, "PVHealthRecord"] = Field(
         default_factory=dict,
         description=(
-            "PV-level health records keyed by PV name. Only PVs with at "
-            "least one reported caput outcome appear here; absence means "
-            "'no reports yet, assume healthy'."
+            "PV-level health records keyed by PV name. Only PVs that have "
+            "failed at least once since service start appear here — PVs "
+            "with no failures (or only successes) are intentionally not "
+            "persisted to keep the store bounded by 'PVs needing attention' "
+            "rather than 'PVs ever caput'd'. Absence therefore means "
+            "'no failures observed, assume healthy'."
         ),
     )
 

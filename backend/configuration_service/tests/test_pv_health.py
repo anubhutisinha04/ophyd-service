@@ -33,7 +33,7 @@ async def test_unknown_pv_returns_none():
 async def test_first_failure_transitions_to_degraded():
     """One failure flips state from healthy → degraded."""
     mgr = PVHealthManager()
-    record = await mgr.record_failure("IOC:m1", "timeout after 5s")
+    record = await mgr.record_failure("BL01:SAMPLE:X.RBV", "timeout after 5s")
     assert record.consecutive_failures == 1
     assert record.state is PVHealthState.DEGRADED
     assert record.last_failure_message == "timeout after 5s"
@@ -47,7 +47,7 @@ async def test_threshold_consecutive_failures_flips_to_unresponsive():
     classifies the PV as unresponsive."""
     mgr = PVHealthManager()
     for _ in range(PV_HEALTH_UNRESPONSIVE_THRESHOLD):
-        record = await mgr.record_failure("IOC:m1")
+        record = await mgr.record_failure("BL01:SAMPLE:X.RBV")
     assert record.consecutive_failures == PV_HEALTH_UNRESPONSIVE_THRESHOLD
     assert record.state is PVHealthState.UNRESPONSIVE
 
@@ -58,8 +58,8 @@ async def test_success_resets_state_to_healthy():
     mgr = PVHealthManager()
     # Drive it deep into unresponsive territory.
     for _ in range(5):
-        await mgr.record_failure("IOC:m1", "timeout")
-    record = await mgr.record_success("IOC:m1")
+        await mgr.record_failure("BL01:SAMPLE:X.RBV", "timeout")
+    record = await mgr.record_success("BL01:SAMPLE:X.RBV")
     assert record.consecutive_failures == 0
     assert record.state is PVHealthState.HEALTHY
     # Last-failure timestamps preserved for diagnostics.
@@ -73,10 +73,10 @@ async def test_success_then_failure_starts_fresh_count():
     """After a success, the next failure resumes from 1, not from the
     pre-success count."""
     mgr = PVHealthManager()
-    await mgr.record_failure("IOC:m1")
-    await mgr.record_failure("IOC:m1")
-    await mgr.record_success("IOC:m1")
-    record = await mgr.record_failure("IOC:m1")
+    await mgr.record_failure("BL01:SAMPLE:X.RBV")
+    await mgr.record_failure("BL01:SAMPLE:X.RBV")
+    await mgr.record_success("BL01:SAMPLE:X.RBV")
+    record = await mgr.record_failure("BL01:SAMPLE:X.RBV")
     assert record.consecutive_failures == 1
     assert record.state is PVHealthState.DEGRADED
 
@@ -104,11 +104,11 @@ async def test_record_success_after_failure_is_stored():
     """The first success on a PV that HAS failed must persist so the
     operator UI can still see 'recovered at <time>' diagnostics."""
     mgr = PVHealthManager()
-    await mgr.record_failure("IOC:m1", "timeout")
-    record = await mgr.record_success("IOC:m1")
+    await mgr.record_failure("BL01:SAMPLE:X.RBV", "timeout")
+    record = await mgr.record_success("BL01:SAMPLE:X.RBV")
     assert record.state is PVHealthState.HEALTHY
     # The record IS stored — last-failure metadata preserved.
-    persisted = await mgr.get_health("IOC:m1")
+    persisted = await mgr.get_health("BL01:SAMPLE:X.RBV")
     assert persisted is not None
     assert persisted.last_failure_message == "timeout"
     assert persisted.last_success_at is not None
@@ -133,9 +133,9 @@ async def test_get_health_many_only_returns_pvs_with_records():
 @pytest.mark.asyncio
 async def test_clear_drops_record():
     mgr = PVHealthManager()
-    await mgr.record_failure("IOC:m1")
-    assert await mgr.clear("IOC:m1") is True
-    assert await mgr.get_health("IOC:m1") is None
+    await mgr.record_failure("BL01:SAMPLE:X.RBV")
+    assert await mgr.clear("BL01:SAMPLE:X.RBV") is True
+    assert await mgr.get_health("BL01:SAMPLE:X.RBV") is None
     # Clear a never-reported PV — returns False, no exception.
     assert await mgr.clear("IOC:never") is False
 
@@ -146,10 +146,10 @@ async def test_clear_drops_record():
 
 
 def test_post_pv_failure_returns_record(client):
-    r = client.post("/api/v1/pvs/IOC:m1/failure", json={"message": "timeout"})
+    r = client.post("/api/v1/pvs/BL01:SAMPLE:X.RBV/failure", json={"message": "timeout"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["pv_name"] == "IOC:m1"
+    assert body["pv_name"] == "BL01:SAMPLE:X.RBV"
     assert body["consecutive_failures"] == 1
     assert body["state"] == "degraded"
     assert body["last_failure_message"] == "timeout"
@@ -158,8 +158,8 @@ def test_post_pv_failure_returns_record(client):
 def test_post_pv_success_resets_counter(client):
     # Drive into unresponsive territory.
     for _ in range(PV_HEALTH_UNRESPONSIVE_THRESHOLD):
-        client.post("/api/v1/pvs/IOC:m1/failure", json={})
-    r = client.post("/api/v1/pvs/IOC:m1/success", json={})
+        client.post("/api/v1/pvs/BL01:SAMPLE:X.RBV/failure", json={})
+    r = client.post("/api/v1/pvs/BL01:SAMPLE:X.RBV/success", json={})
     assert r.status_code == 200
     body = r.json()
     assert body["consecutive_failures"] == 0
@@ -169,7 +169,7 @@ def test_post_pv_success_resets_counter(client):
 def test_post_pv_success_accepts_message_field_but_ignores_it(client):
     """Schema is symmetric so direct-control can POST the same body to
     either endpoint; success ignores the message field."""
-    r = client.post("/api/v1/pvs/IOC:m1/success", json={"message": "ignored"})
+    r = client.post("/api/v1/pvs/BL01:SAMPLE:X.RBV/success", json={"message": "ignored"})
     assert r.status_code == 200
 
 
@@ -180,9 +180,9 @@ def test_get_pv_health_unknown_pv_returns_404(client):
 
 
 def test_get_pv_health_returns_current_record(client):
-    client.post("/api/v1/pvs/IOC:m1/failure", json={"message": "x"})
-    client.post("/api/v1/pvs/IOC:m1/failure", json={"message": "y"})
-    r = client.get("/api/v1/pvs/IOC:m1/health")
+    client.post("/api/v1/pvs/BL01:SAMPLE:X.RBV/failure", json={"message": "x"})
+    client.post("/api/v1/pvs/BL01:SAMPLE:X.RBV/failure", json={"message": "y"})
+    r = client.get("/api/v1/pvs/BL01:SAMPLE:X.RBV/health")
     assert r.status_code == 200
     body = r.json()
     assert body["consecutive_failures"] == 2
@@ -194,17 +194,38 @@ def test_get_pv_health_returns_current_record(client):
 def test_extra_fields_on_report_rejected(client):
     """extra='forbid' catches typo'd request keys."""
     r = client.post(
-        "/api/v1/pvs/IOC:m1/failure", json={"message": "ok", "extra": True}
+        "/api/v1/pvs/BL01:SAMPLE:X.RBV/failure", json={"message": "ok", "extra": True}
     )
     assert r.status_code == 422
 
 
+def test_post_failure_unknown_pv_returns_404(client):
+    """Health-report endpoints reject PVs not in the registry — otherwise
+    a typo'd report (or an untrusted caller) could grow the health store
+    unbounded with garbage entries. Matches direct-control's caput path,
+    which validates pv_name against the registry before writing."""
+    r = client.post(
+        "/api/v1/pvs/IOC:not_registered/failure", json={"message": "nope"}
+    )
+    assert r.status_code == 404
+    assert "not registered" in r.json()["detail"]
+
+
+def test_post_success_unknown_pv_returns_404(client):
+    r = client.post("/api/v1/pvs/IOC:not_registered/success", json={})
+    assert r.status_code == 404
+    assert "not registered" in r.json()["detail"]
+
+
 def test_dotted_pv_names_route_correctly(client):
-    """EpicsMotor's ``.RBV`` / ``.VAL`` / ``.VELO`` PVs all contain dots.
-    The endpoint routes use ``{pv_name:path}`` to accept them; this test
-    pins the routing so a refactor to plain ``{pv_name}`` (which doesn't
-    match dots in starlette's default str converter) would fail loudly
-    rather than silently break ~every motor PV in the wild."""
+    """EpicsMotor's ``.RBV`` / ``.VAL`` / ``.VELO`` PVs all contain dots,
+    and most beamline PVs use colons and braces as well. Starlette's
+    default ``{param}`` converter actually does match dots (only slashes
+    require ``:path``), so this test isn't strictly required to defend
+    against a converter change — but it pins the end-to-end routing +
+    record-roundtrip for a realistic motor-record PV name shape so the
+    next person who touches the URL grammar gets an immediate failure
+    instead of a Postman-only discovery."""
     r = client.post(
         "/api/v1/pvs/BL01:SAMPLE:X.RBV/failure",
         json={"message": "lost CA"},

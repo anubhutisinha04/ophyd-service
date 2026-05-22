@@ -618,7 +618,7 @@
           "PV Health"
         ],
         "summary": "Report Failed Caput",
-        "description": "Direct-control calls this after a caput fails (EPICS timeout, put-rejection, IOC unreachable, etc.). Increments the PV's consecutive-failure counter and updates last_failure_at. The ``message`` body field carries the diagnostic the operator UI shows next to the unhealthy PV.",
+        "description": "Direct-control calls this after a caput fails (EPICS timeout, put-rejection, IOC unreachable, etc.). Increments the PV's consecutive-failure counter and updates last_failure_at. The ``message`` body field carries the diagnostic the operator UI shows next to the unhealthy PV. Returns 404 if ``pv_name`` is not registered.",
         "operationId": "report_pv_failure_api_v1_pvs__pv_name__failure_post",
         "parameters": [
           {
@@ -671,7 +671,7 @@
           "PV Health"
         ],
         "summary": "Report Successful Caput",
-        "description": "Direct-control calls this after a caput succeeds. Resets the PV's consecutive-failure counter to zero, flipping the state back to ``healthy`` regardless of prior failures \u2014 a recent success is stronger evidence than older failures.",
+        "description": "Direct-control calls this after a caput succeeds. If a record exists for the PV (i.e. it had previously failed), resets the consecutive-failure counter to zero and flips the state back to ``healthy`` \u2014 a recent success is stronger evidence than older failures. For PVs that have never failed since service start, the response carries a synthetic healthy record but no record is persisted (keeps the health store bounded by the PVs that have actually failed, not every PV ever caput'd). Returns 404 if ``pv_name`` is not registered.",
         "operationId": "report_pv_success_api_v1_pvs__pv_name__success_post",
         "parameters": [
           {
@@ -724,7 +724,7 @@
           "PV Health"
         ],
         "summary": "Get PV Health",
-        "description": "Returns the current health record for ``pv_name``. 404 if no caput outcome has ever been reported for this PV \u2014 frontends should treat a 404 as 'no data, assume healthy'.",
+        "description": "Returns the current health record for ``pv_name``. 404 if no failures have been recorded for this PV (i.e. either it has only succeeded since service start, or never been written to at all). Successes on never-failed PVs are intentionally not persisted, so a 404 here does not mean 'never touched' \u2014 frontends should treat it as 'no failures observed, assume healthy'.",
         "operationId": "get_pv_health_api_v1_pvs__pv_name__health_get",
         "parameters": [
           {
@@ -2902,7 +2902,7 @@
             },
             "type": "object",
             "title": "Pv Health",
-            "description": "PV-level health records keyed by PV name. Only PVs with at least one reported caput outcome appear here; absence means 'no reports yet, assume healthy'."
+            "description": "PV-level health records keyed by PV name. Only PVs that have failed at least once since service start appear here \u2014 PVs with no failures (or only successes) are intentionally not persisted to keep the store bounded by 'PVs needing attention' rather than 'PVs ever caput'd'. Absence therefore means 'no failures observed, assume healthy'."
           }
         },
         "type": "object",
