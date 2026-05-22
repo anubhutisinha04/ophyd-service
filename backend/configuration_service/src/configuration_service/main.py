@@ -55,6 +55,8 @@ from .models import (
     PathResolveRequest,
     PathResolveResponse,
     PathResolveResultItem,
+    PVHealthRecord,
+    PVHealthReport,
 )
 from .path_resolver import Outcome, resolve as resolve_path
 from .direct_control_client import (
@@ -68,6 +70,7 @@ from .config import Settings
 from .device_registry_store import DeviceRegistryStore
 from .standalone_pv_store import StandalonePVStore
 from .lock_manager import DeviceLockManager
+from .pv_health_manager import PVHealthManager
 
 # Configure structured logging
 structlog.configure(
@@ -231,6 +234,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     # Container for device lock manager (in-memory, ephemeral)
     lock_manager_container: Dict[str, DeviceLockManager] = {}
 
+    # Container for the PV health manager (in-memory, ephemeral).
+    # Receives caput outcome reports from direct-control and exposes the
+    # state on /api/v1/pvs/{pv_name}/health + the device-status response.
+    pv_health_container: Dict[str, PVHealthManager] = {}
+
     # Container for the optional direct-control client used by the path
     # resolver's live-enrichment fallback. None if CONFIG_DIRECT_CONTROL_URL
     # isn't set — needs_enrichment outcomes then remain unenriched.
@@ -308,6 +316,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         lock_manager_container["manager"] = DeviceLockManager()
         logger.info("device_lock_manager_initialized")
 
+        # Initialize PV health manager (in-memory, ephemeral).
+        pv_health_container["manager"] = PVHealthManager()
+        logger.info("pv_health_manager_initialized")
+
         # Initialize direct-control client for resolver enrichment fallback.
         # Opt-in: requires CONFIG_DIRECT_CONTROL_URL to be set.
         if settings.direct_control_url:
@@ -339,6 +351,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         registry_store_container.clear()
         standalone_pv_container.clear()
         lock_manager_container.clear()
+        pv_health_container.clear()
         direct_control_container.clear()
         enrichment_cache_container.clear()
 
@@ -438,6 +451,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return lock_manager_container["manager"]
 
     LockManagerDep = Annotated[DeviceLockManager, Depends(get_lock_manager)]
+
+    # PV health manager dependency
+    def get_pv_health_manager() -> PVHealthManager:
+        """Get the PV health manager for dependency injection."""
+        if "manager" not in pv_health_container:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="PV health manager not initialized",
+            )
+        return pv_health_container["manager"]
+
+    PVHealthDep = Annotated[PVHealthManager, Depends(get_pv_health_manager)]
 
     # ===== Health Endpoints =====
 
@@ -854,11 +879,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         device_name: str,
         state: StateDep,
         lock_manager: LockManagerDep,
+        pv_health: PVHealthDep,
     ) -> DeviceStatusResponse:
         """
-        Combined availability check: lock state + enabled/disabled.
+        Combined availability check: lock state + enabled/disabled + PV health.
 
         A device is available only when it is both enabled and unlocked.
+        ``pv_health`` is a dict keyed by PV name; only PVs with reported
+        caput outcomes appear, so an empty dict means "no failures
+        observed yet for any of this device's PVs".
         """
         device = state.registry.get_device(device_name)
         if device is None:
@@ -877,6 +906,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         lock_state = lock_manager.get_device_lock(device_name)
         locked = lock_state is not None
 
+        # Roll up health for this device's PVs. ``device.pvs`` maps
+        # component-name → PV-name; we want the PV-name values.
+        device_pv_names = list(device.pvs.values())
+        pv_health_rollup = await pv_health.get_health_many(device_pv_names)
+
         return DeviceStatusResponse(
             device_name=device_name,
             available=enabled and not locked,
@@ -885,7 +919,114 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             locked_by_plan=lock_state.locked_by_plan if lock_state else None,
             locked_by_item=lock_state.locked_by_item if lock_state else None,
             locked_at=lock_state.locked_at.isoformat() if lock_state else None,
+            pv_health=pv_health_rollup,
         )
+
+    # ===== PV Health Endpoints =====
+    #
+    # These are the receiving side of direct-control's caput-outcome
+    # reports. The /failure and /success endpoints are intended to be
+    # called by direct-control fire-and-forget; the /health GET is for
+    # ad-hoc operator lookups (the device-status endpoint above provides
+    # the device-rollup view the frontend periodic table needs).
+
+    def _ensure_pv_registered(state: ConfigurationState, pv_name: str) -> None:
+        """Reject health reports / lookups for PVs not in the registry.
+
+        Without this gate, any caller could POST to /failure with arbitrary
+        strings and grow PVHealthManager's records dict unbounded with
+        garbage entries. Direct-control already validates pv_name against
+        the registry before caputting (RegistryClient → /api/v1/pvs/lookup),
+        so this matches the existing trust model: only registered PVs
+        flow through the caput→report pipeline.
+        """
+        if state.registry.get_pv(pv_name) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"PV not registered: {pv_name}",
+            )
+
+    @app.post(
+        "/api/v1/pvs/{pv_name:path}/failure",
+        response_model=PVHealthRecord,
+        summary="Report Failed Caput",
+        description=(
+            "Direct-control calls this after a caput fails (EPICS timeout, "
+            "put-rejection, IOC unreachable, etc.). Increments the PV's "
+            "consecutive-failure counter and updates last_failure_at. The "
+            "``message`` body field carries the diagnostic the operator UI "
+            "shows next to the unhealthy PV. Returns 404 if ``pv_name`` is "
+            "not registered."
+        ),
+        tags=["PV Health"],
+    )
+    async def report_pv_failure(
+        pv_name: str,
+        report: PVHealthReport,
+        state: StateDep,
+        pv_health: PVHealthDep,
+    ) -> PVHealthRecord:
+        _ensure_pv_registered(state, pv_name)
+        return await pv_health.record_failure(pv_name, report.message)
+
+    @app.post(
+        "/api/v1/pvs/{pv_name:path}/success",
+        response_model=PVHealthRecord,
+        summary="Report Successful Caput",
+        description=(
+            "Direct-control calls this after a caput succeeds. If a record "
+            "exists for the PV (i.e. it had previously failed), resets the "
+            "consecutive-failure counter to zero and flips the state back "
+            "to ``healthy`` — a recent success is stronger evidence than "
+            "older failures. For PVs that have never failed since service "
+            "start, the response carries a synthetic healthy record but "
+            "no record is persisted (keeps the health store bounded by the "
+            "PVs that have actually failed, not every PV ever caput'd). "
+            "Returns 404 if ``pv_name`` is not registered."
+        ),
+        tags=["PV Health"],
+    )
+    async def report_pv_success(
+        pv_name: str,
+        report: PVHealthReport,
+        state: StateDep,
+        pv_health: PVHealthDep,
+    ) -> PVHealthRecord:
+        # ``report.message`` is allowed but ignored for success reports —
+        # the schema is symmetric with /failure so direct-control can
+        # POST the same request shape to either endpoint.
+        _ensure_pv_registered(state, pv_name)
+        return await pv_health.record_success(pv_name)
+
+    @app.get(
+        "/api/v1/pvs/{pv_name:path}/health",
+        response_model=PVHealthRecord,
+        summary="Get PV Health",
+        description=(
+            "Returns the current health record for ``pv_name``. 404 if no "
+            "failures have been recorded for this PV (i.e. either it has "
+            "only succeeded since service start, or never been written to "
+            "at all). Successes on never-failed PVs are intentionally not "
+            "persisted, so a 404 here does not mean 'never touched' — "
+            "frontends should treat it as 'no failures observed, assume "
+            "healthy'."
+        ),
+        tags=["PV Health"],
+    )
+    async def get_pv_health(
+        pv_name: str,
+        pv_health: PVHealthDep,
+    ) -> PVHealthRecord:
+        record = await pv_health.get_health(pv_name)
+        if record is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"No health record for PV '{pv_name}'. No failures "
+                    f"recorded; treat as healthy."
+                ),
+            )
+        return record
 
     # ===== Device Enable/Disable Endpoints =====
     # These must be defined before the {device_name} wildcard routes.

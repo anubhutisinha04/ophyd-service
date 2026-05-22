@@ -575,7 +575,7 @@
           "Device Locking"
         ],
         "summary": "Get Device Availability",
-        "description": "Combined availability check: lock state + enabled/disabled.\n\nA device is available only when it is both enabled and unlocked.",
+        "description": "Combined availability check: lock state + enabled/disabled + PV health.\n\nA device is available only when it is both enabled and unlocked.\n``pv_health`` is a dict keyed by PV name; only PVs with reported\ncaput outcomes appear, so an empty dict means \"no failures\nobserved yet for any of this device's PVs\".",
         "operationId": "get_device_status_api_v1_devices__device_name__status_get",
         "parameters": [
           {
@@ -595,6 +595,155 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeviceStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/{pv_name}/failure": {
+      "post": {
+        "tags": [
+          "PV Health"
+        ],
+        "summary": "Report Failed Caput",
+        "description": "Direct-control calls this after a caput fails (EPICS timeout, put-rejection, IOC unreachable, etc.). Increments the PV's consecutive-failure counter and updates last_failure_at. The ``message`` body field carries the diagnostic the operator UI shows next to the unhealthy PV. Returns 404 if ``pv_name`` is not registered.",
+        "operationId": "report_pv_failure_api_v1_pvs__pv_name__failure_post",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pv Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PVHealthReport"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PVHealthRecord"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/{pv_name}/success": {
+      "post": {
+        "tags": [
+          "PV Health"
+        ],
+        "summary": "Report Successful Caput",
+        "description": "Direct-control calls this after a caput succeeds. If a record exists for the PV (i.e. it had previously failed), resets the consecutive-failure counter to zero and flips the state back to ``healthy`` \u2014 a recent success is stronger evidence than older failures. For PVs that have never failed since service start, the response carries a synthetic healthy record but no record is persisted (keeps the health store bounded by the PVs that have actually failed, not every PV ever caput'd). Returns 404 if ``pv_name`` is not registered.",
+        "operationId": "report_pv_success_api_v1_pvs__pv_name__success_post",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pv Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PVHealthReport"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PVHealthRecord"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pvs/{pv_name}/health": {
+      "get": {
+        "tags": [
+          "PV Health"
+        ],
+        "summary": "Get PV Health",
+        "description": "Returns the current health record for ``pv_name``. 404 if no failures have been recorded for this PV (i.e. either it has only succeeded since service start, or never been written to at all). Successes on never-failed PVs are intentionally not persisted, so a 404 here does not mean 'never touched' \u2014 frontends should treat it as 'no failures observed, assume healthy'.",
+        "operationId": "get_pv_health_api_v1_pvs__pv_name__health_get",
+        "parameters": [
+          {
+            "name": "pv_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Pv Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PVHealthRecord"
                 }
               }
             }
@@ -2746,6 +2895,14 @@
             ],
             "title": "Locked At",
             "description": "ISO timestamp of lock acquisition"
+          },
+          "pv_health": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PVHealthRecord"
+            },
+            "type": "object",
+            "title": "Pv Health",
+            "description": "PV-level health records keyed by PV name. Only PVs that have failed at least once since service start appear here \u2014 PVs with no failures (or only successes) are intentionally not persisted to keep the store bounded by 'PVs needing attention' rather than 'PVs ever caput'd'. Absence therefore means 'no failures observed, assume healthy'."
           }
         },
         "type": "object",
@@ -2756,7 +2913,7 @@
           "lock_status"
         ],
         "title": "DeviceStatusResponse",
-        "description": "Combined device availability check (lock + enabled state)."
+        "description": "Combined device availability check (lock + enabled state + PV health)."
       },
       "DeviceUnlockRequest": {
         "properties": {
@@ -2946,6 +3103,96 @@
         ],
         "title": "PVAccessMode",
         "description": "Access mode for standalone PVs."
+      },
+      "PVHealthRecord": {
+        "properties": {
+          "pv_name": {
+            "type": "string",
+            "title": "Pv Name"
+          },
+          "consecutive_failures": {
+            "type": "integer",
+            "title": "Consecutive Failures",
+            "default": 0
+          },
+          "last_failure_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Failure At"
+          },
+          "last_failure_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Failure Message"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "state": {
+            "$ref": "#/components/schemas/PVHealthState",
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pv_name",
+          "state"
+        ],
+        "title": "PVHealthRecord",
+        "description": "Per-PV health record, returned by the health endpoints + embedded\nin the device-status response.\n\n``state`` is a computed_field derived from ``consecutive_failures``;\ncallers should never construct a record with an inconsistent state."
+      },
+      "PVHealthReport": {
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message",
+            "description": "Diagnostic message for failure reports (EPICS error, timeout reason, etc.)."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PVHealthReport",
+        "description": "Request body for the failure/success report endpoints from direct-control.\n\nOnly failure reports carry a message; success reports are zero-content\nbeyond the URL path identifying the PV."
+      },
+      "PVHealthState": {
+        "type": "string",
+        "enum": [
+          "healthy",
+          "degraded",
+          "unresponsive"
+        ],
+        "title": "PVHealthState",
+        "description": "Per-PV health state derived from recent caput outcomes.\n\nDirect-control reports each caput's outcome (success or failure) back\nto configuration_service. The state is computed from the consecutive-\nfailure counter so a single successful caput always resets to healthy.\n\nFrontends should color-code by state and surface ``unresponsive`` PVs\nprominently \u2014 they typically mean the IOC is down or a PV has been\ndeleted from it."
       },
       "PVMetadata": {
         "properties": {
