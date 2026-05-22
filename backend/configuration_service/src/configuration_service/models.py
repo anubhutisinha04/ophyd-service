@@ -4,9 +4,10 @@ Domain models for Configuration Service (SVC-004).
 These models represent the core entities for the device/PV registry.
 """
 
+from datetime import datetime
 from typing import Dict, List, Literal, Optional, Any
 from enum import Enum
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 # Re-exported so the path-resolver response model has a single source of
 # truth for outcome values. Lazy to avoid pulling path_resolver's optional
@@ -756,7 +757,7 @@ class DeviceForceUnlockRequest(BaseModel):
 
 
 class DeviceStatusResponse(BaseModel):
-    """Combined device availability check (lock + enabled state)."""
+    """Combined device availability check (lock + enabled state + PV health)."""
 
     device_name: str = Field(description="Device name")
     available: bool = Field(description="True only when enabled AND unlocked")
@@ -767,6 +768,14 @@ class DeviceStatusResponse(BaseModel):
         default=None, description="Queue item ID holding the lock"
     )
     locked_at: Optional[str] = Field(default=None, description="ISO timestamp of lock acquisition")
+    pv_health: Dict[str, "PVHealthRecord"] = Field(
+        default_factory=dict,
+        description=(
+            "PV-level health records keyed by PV name. Only PVs with at "
+            "least one reported caput outcome appear here; absence means "
+            "'no reports yet, assume healthy'."
+        ),
+    )
 
 
 class PVStatusResponse(BaseModel):
@@ -790,6 +799,73 @@ class PVStatusResponse(BaseModel):
         default=None, description="Queue item ID holding the lock"
     )
     locked_at: Optional[str] = Field(default=None, description="ISO timestamp of lock acquisition")
+
+
+# ===== PV Health Tracking =====
+
+
+class PVHealthState(str, Enum):
+    """Per-PV health state derived from recent caput outcomes.
+
+    Direct-control reports each caput's outcome (success or failure) back
+    to configuration_service. The state is computed from the consecutive-
+    failure counter so a single successful caput always resets to healthy.
+
+    Frontends should color-code by state and surface ``unresponsive`` PVs
+    prominently — they typically mean the IOC is down or a PV has been
+    deleted from it.
+    """
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNRESPONSIVE = "unresponsive"
+
+
+# Threshold flipping degraded → unresponsive. Kept as a module-level
+# constant for now; can be moved to Settings if a deployment argues for
+# tuning it per-beamline.
+PV_HEALTH_UNRESPONSIVE_THRESHOLD = 3
+
+
+class PVHealthRecord(BaseModel):
+    """Per-PV health record, returned by the health endpoints + embedded
+    in the device-status response.
+
+    ``state`` is a computed_field derived from ``consecutive_failures``;
+    callers should never construct a record with an inconsistent state.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pv_name: str
+    consecutive_failures: int = 0
+    last_failure_at: Optional[datetime] = None
+    last_failure_message: Optional[str] = None
+    last_success_at: Optional[datetime] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def state(self) -> PVHealthState:
+        if self.consecutive_failures == 0:
+            return PVHealthState.HEALTHY
+        if self.consecutive_failures < PV_HEALTH_UNRESPONSIVE_THRESHOLD:
+            return PVHealthState.DEGRADED
+        return PVHealthState.UNRESPONSIVE
+
+
+class PVHealthReport(BaseModel):
+    """Request body for the failure/success report endpoints from direct-control.
+
+    Only failure reports carry a message; success reports are zero-content
+    beyond the URL path identifying the PV.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: Optional[str] = Field(
+        None,
+        description="Diagnostic message for failure reports (EPICS error, timeout reason, etc.).",
+    )
 
 
 class NestedDeviceComponent(BaseModel):
