@@ -881,22 +881,23 @@ class PVHealthClearResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    cleared: int = Field(..., description="Number of records removed.")
+    cleared: int = Field(
+        ..., ge=0, description="Number of records removed (never negative)."
+    )
 
 
 class PVHealthStats(BaseModel):
     """At-a-glance count of PV-health records grouped by state.
 
     Every ``PVHealthState`` value is present as a key in ``by_state``
-    (zero if no records match), so frontends can render the four-state
-    tally without checking for missing keys.
+    (zero if no records match), so frontends can render the three-state
+    tally without checking for missing keys. ``tracked_pvs`` is a
+    ``computed_field`` derived from ``by_state``, so the two can never
+    drift out of sync.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    tracked_pvs: int = Field(
-        ..., description="Total number of PVs with at least one health record."
-    )
     by_state: Dict[str, int] = Field(
         ...,
         description=(
@@ -904,6 +905,12 @@ class PVHealthStats(BaseModel):
             "``healthy / degraded / unresponsive``."
         ),
     )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def tracked_pvs(self) -> int:
+        """Total number of PVs with at least one health record."""
+        return sum(self.by_state.values())
 
 
 class NestedDeviceComponent(BaseModel):

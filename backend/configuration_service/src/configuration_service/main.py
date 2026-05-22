@@ -1082,11 +1082,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     async def get_pv_health_stats(
         pv_health: PVHealthDep,
     ) -> PVHealthStats:
-        by_state = await pv_health.stats()
-        return PVHealthStats(
-            tracked_pvs=sum(by_state.values()),
-            by_state=by_state,
-        )
+        # ``tracked_pvs`` is a computed_field on the model — Pydantic
+        # derives it from ``by_state`` so the two can never drift.
+        return PVHealthStats(by_state=await pv_health.stats())
 
     # ===== Device Enable/Disable Endpoints =====
     # These must be defined before the {device_name} wildcard routes.

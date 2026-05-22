@@ -348,11 +348,16 @@ def test_pv_health_stats_empty(client):
 
 
 def test_pv_health_stats_counts_by_state(client):
-    """Stats include all three states and the total matches the sum."""
+    """Stats include all three states and the total matches the sum.
+
+    Uses ``PV_HEALTH_UNRESPONSIVE_THRESHOLD`` rather than hardcoding 3
+    so a future tuning of the threshold doesn't silently shift this
+    test into verifying ``degraded`` instead of ``unresponsive``.
+    """
     # One degraded (1 failure).
     client.post("/api/v1/pvs/BL01:SAMPLE:X.RBV/failure", json={})
-    # One unresponsive (3 failures).
-    for _ in range(3):
+    # One unresponsive (threshold-many consecutive failures).
+    for _ in range(PV_HEALTH_UNRESPONSIVE_THRESHOLD):
         client.post("/api/v1/pvs/BL01:SAMPLE:X/failure", json={})
     # One previously-failed but now recovered (state=healthy).
     client.post("/api/v1/pvs/BL01:DET1:CNT/failure", json={})
@@ -366,6 +371,16 @@ def test_pv_health_stats_counts_by_state(client):
         "degraded": 1,
         "unresponsive": 1,
     }
+
+
+def test_delete_pv_health_unregistered_pv_returns_cleared_zero(client):
+    """Unlike POST /failure and POST /success, the DELETE endpoint does
+    NOT gate on registry membership — it's idempotent for any string.
+    Confirms unregistered PVs return 200 with cleared=0 (not 404), so
+    operator UIs don't have to check existence first."""
+    r = client.delete("/api/v1/pvs/IOC:not_registered/health")
+    assert r.status_code == 200
+    assert r.json() == {"cleared": 0}
 
 
 def test_device_status_pv_health_after_failure_then_recovery(client):

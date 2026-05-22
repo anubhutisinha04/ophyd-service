@@ -3193,8 +3193,9 @@
         "properties": {
           "cleared": {
             "type": "integer",
+            "minimum": 0.0,
             "title": "Cleared",
-            "description": "Number of records removed."
+            "description": "Number of records removed (never negative)."
           }
         },
         "additionalProperties": false,
@@ -3297,11 +3298,6 @@
       },
       "PVHealthStats": {
         "properties": {
-          "tracked_pvs": {
-            "type": "integer",
-            "title": "Tracked Pvs",
-            "description": "Total number of PVs with at least one health record."
-          },
           "by_state": {
             "additionalProperties": {
               "type": "integer"
@@ -3309,16 +3305,22 @@
             "type": "object",
             "title": "By State",
             "description": "Count of records grouped by state: ``healthy / degraded / unresponsive``."
+          },
+          "tracked_pvs": {
+            "type": "integer",
+            "title": "Tracked Pvs",
+            "description": "Total number of PVs with at least one health record.",
+            "readOnly": true
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "tracked_pvs",
-          "by_state"
+          "by_state",
+          "tracked_pvs"
         ],
         "title": "PVHealthStats",
-        "description": "At-a-glance count of PV-health records grouped by state.\n\nEvery ``PVHealthState`` value is present as a key in ``by_state``\n(zero if no records match), so frontends can render the four-state\ntally without checking for missing keys."
+        "description": "At-a-glance count of PV-health records grouped by state.\n\nEvery ``PVHealthState`` value is present as a key in ``by_state``\n(zero if no records match), so frontends can render the three-state\ntally without checking for missing keys. ``tracked_pvs`` is a\n``computed_field`` derived from ``by_state``, so the two can never\ndrift out of sync."
       },
       "PVMetadata": {
         "properties": {

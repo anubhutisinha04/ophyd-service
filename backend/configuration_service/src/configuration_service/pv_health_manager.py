@@ -29,7 +29,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from .models import PVHealthRecord
+from .models import PVHealthRecord, PVHealthState
 
 logger = logging.getLogger(__name__)
 
@@ -153,9 +153,6 @@ class PVHealthManager:
         is present in the result (zero if no records match), so
         downstream UIs don't have to special-case missing keys.
         """
-        # Import the enum lazily so this module stays cheap to import.
-        from .models import PVHealthState
-
         async with self._lock:
             counts: Dict[str, int] = {s.value: 0 for s in PVHealthState}
             for record in self._records.values():
