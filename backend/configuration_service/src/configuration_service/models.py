@@ -622,7 +622,28 @@ class StandalonePV(BaseModel):
 class StandalonePVCreateRequest(BaseModel):
     """Request model for registering a standalone PV."""
 
-    pv_name: str = Field(description="EPICS PV name")
+    # min_length=1 keeps an empty pv_name out of the registry. An empty key
+    # is unremovable via DELETE /api/v1/pvs/standalone/{pv_name:path} since
+    # an empty path segment doesn't match the route — once it's in the
+    # SQLite store the only way to clear it is to recreate the container.
+    #
+    # pattern=^[\x21-\x7e]+$ requires printable ASCII only — no whitespace,
+    # no ASCII controls (NUL/BEL/ESC), no high-bit Unicode (ZWSP, NBSP,
+    # BOM). All three classes hit the same unrecoverable-registry-entry
+    # failure mode through different input shapes:
+    #   - whitespace / newline: URL-encodes inconsistently
+    #   - NUL: silently terminates C strings in downstream consumers
+    #     (CA name comparisons, epicsString*), making "foo\x00bar" present
+    #     as "foo" in some layers and as the full string in others
+    #   - zero-width Unicode (U+200B, U+FEFF, etc.): visually identical to
+    #     a different name, so the typed delete-by-name doesn't match
+    # NSLS-II PV names like "XF:23ID2-OP{Mono}Enrgy-SP" are entirely within
+    # printable ASCII; the constraint matches real EPICS CA naming.
+    pv_name: str = Field(
+        min_length=1,
+        pattern=r"^[\x21-\x7e]+$",
+        description="EPICS PV name (non-empty, printable ASCII, no whitespace)",
+    )
     description: Optional[str] = Field(default=None, description="Human-readable description")
     protocol: PVProtocol = Field(default=PVProtocol.CA, description="EPICS protocol")
     access_mode: PVAccessMode = Field(default=PVAccessMode.READ_ONLY, description="Access mode")
