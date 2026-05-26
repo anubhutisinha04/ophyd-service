@@ -78,6 +78,11 @@ class ScalerIOC(PVGroup):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._count_task: asyncio.Task | None = None
+        # Sentinel: set by _run_count's finally before its CNT=0
+        # auto-clear write so the recursive putter invocation knows the
+        # task is already exiting and skips trying to cancel itself.
+        # Avoids the self-cancel-from-own-finally fragility.
+        self._auto_clearing = False
 
     @CNT.putter
     async def _on_cnt_write(self, _instance, value):
@@ -88,12 +93,20 @@ class ScalerIOC(PVGroup):
                 self._count_task.cancel()
                 try:
                     await self._count_task
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
                     pass
+                except Exception:
+                    # Surface any real exception that escaped the prior
+                    # task's done-callback — losing it silently would
+                    # hide bugs in _run_count under spam-CNT-1 patterns.
+                    log.exception("prior scaler count task raised on cancel-await")
             self._count_task = asyncio.create_task(self._run_count())
             self._count_task.add_done_callback(self._on_count_done)
         else:
-            # CNT=0 aborts; current S{N} and T values are retained.
+            # CNT=0. Distinguish external abort (cancel the task) from
+            # the task's own finally auto-clearing (no-op — already exiting).
+            if self._auto_clearing:
+                return
             if self._count_task and not self._count_task.done():
                 self._count_task.cancel()
 
@@ -105,18 +118,19 @@ class ScalerIOC(PVGroup):
             log.error("scaler count task crashed: %s", exc, exc_info=exc)
 
     async def _run_count(self):
-        tp = float(self.TP.value)
-        if tp <= 0:
-            raise ValueError(f"TP must be > 0; got {tp}")
-        # Zero the channels and elapsed time.
-        await self.T.write(0.0)
-        await self.S1.write(0)
-        await self.S2.write(0)
-        await self.S3.write(0)
-        await self.S4.write(0)
         chan_pvs = (self.S1, self.S2, self.S3, self.S4)
-        elapsed = 0.0
         try:
+            # Validation + zero-writes inside the try so a failure here
+            # still triggers the finally's CNT auto-clear. Otherwise
+            # CNT would stay at 1 forever and the IOC would silently
+            # look "busy" with no signal that the count never started.
+            tp = float(self.TP.value)
+            if tp <= 0:
+                raise ValueError(f"TP must be > 0; got {tp}")
+            await self.T.write(0.0)
+            for pv in chan_pvs:
+                await pv.write(0)
+            elapsed = 0.0
             while elapsed < tp:
                 # Sleep first, then update — keeps the asyncio cancellation
                 # point at the start of each iteration.
@@ -131,12 +145,18 @@ class ScalerIOC(PVGroup):
             for pv, rate in zip(chan_pvs, _CHANNEL_RATES):
                 await pv.write(int(rate * tp))
         finally:
-            # Auto-clear CNT regardless of how we exited (normal completion
-            # OR external CNT=0 abort that cancelled this task).
+            # Auto-clear CNT regardless of how we exited. The sentinel
+            # prevents the recursive CNT=0 putter call from trying to
+            # cancel us (we're already in our own finally). Note: this
+            # WILL momentarily fire a 1→0→1 monitor sequence if cancel
+            # races a new CNT=1 — acceptable for the smoke test.
+            self._auto_clearing = True
             try:
                 await self.CNT.write(0)
             except Exception:
                 log.exception("scaler CNT auto-clear failed")
+            finally:
+                self._auto_clearing = False
 
 
 def main():
