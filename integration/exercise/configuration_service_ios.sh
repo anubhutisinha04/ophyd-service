@@ -139,12 +139,28 @@ if [ "$all_ok" != "true" ]; then
     note "resolve response: $(cat /tmp/exer_body)"
     fail "one or more addresses failed to resolve"
 fi
-pass "all 8 addresses resolved"
+# `all` over zero rows is true — verify the server actually returned 8 rows
+# so a dropped/missing entry can't slip past as "all ok" of nothing.
+EXPECTED_RESOLVED=8
+actual_resolved=$(jq -r '.resolved | length' < /tmp/exer_body)
+if [ "$actual_resolved" != "$EXPECTED_RESOLVED" ]; then
+    note "resolve response: $(cat /tmp/exer_body)"
+    fail "resolve returned $actual_resolved rows, expected $EXPECTED_RESOLVED"
+fi
+pass "all $EXPECTED_RESOLVED addresses resolved"
 
 resolve_body=$(cat /tmp/exer_body)
+# pv_for fails hard if the address didn't match a row or the pv_name is null.
+# Returning "" or the literal "null" silently would propagate downstream into
+# register_pv / check_pv and bury the cause far from the typo.
 pv_for() {
-    printf '%s' "$resolve_body" \
-        | jq -r --arg a "$1" '.resolved[]|select(.address==$a)|.pv_name'
+    local out
+    out=$(printf '%s' "$resolve_body" \
+        | jq -r --arg a "$1" '.resolved[]|select(.address==$a)|.pv_name')
+    if [ -z "$out" ] || [ "$out" = "null" ]; then
+        fail "pv_for: '$1' did not resolve to a non-null PV name"
+    fi
+    printf '%s' "$out"
 }
 
 PV_ENRGY_SP=$(pv_for "pgm.energy.setpoint")

@@ -622,7 +622,11 @@ class StandalonePV(BaseModel):
 class StandalonePVCreateRequest(BaseModel):
     """Request model for registering a standalone PV."""
 
-    pv_name: str = Field(description="EPICS PV name")
+    # min_length=1 keeps an empty pv_name out of the registry. An empty key
+    # is unremovable via DELETE /api/v1/pvs/standalone/{pv_name:path} since
+    # an empty path segment doesn't match the route — once it's in the
+    # SQLite store the only way to clear it is to recreate the container.
+    pv_name: str = Field(min_length=1, description="EPICS PV name")
     description: Optional[str] = Field(default=None, description="Human-readable description")
     protocol: PVProtocol = Field(default=PVProtocol.CA, description="EPICS protocol")
     access_mode: PVAccessMode = Field(default=PVAccessMode.READ_ONLY, description="Access mode")

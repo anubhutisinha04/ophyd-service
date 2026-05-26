@@ -311,6 +311,16 @@ class TestCreateStandalonePVEndpoint:
         response = client.post("/api/v1/pvs", json=payload)
         assert response.status_code == 201
 
+    def test_create_pv_empty_name_rejected(self, client):
+        """Empty pv_name is rejected at the request schema (422), not silently
+        accepted into the registry. An empty key would be unremovable since
+        DELETE /api/v1/pvs/standalone/{pv_name:path} doesn't match an empty
+        path segment."""
+        response = client.post("/api/v1/pvs", json={"pv_name": ""})
+        assert response.status_code == 422
+        detail = response.json()
+        assert any("pv_name" in str(e).lower() for e in detail.get("detail", []))
+
 
 class TestUpdateStandalonePVEndpoint:
     """Test PUT /api/v1/pvs/standalone/{pv_name}."""
