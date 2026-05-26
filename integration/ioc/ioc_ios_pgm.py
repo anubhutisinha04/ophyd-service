@@ -7,20 +7,33 @@ IOS profile collection.
 
 Dynamics:
     * ``Enrgy-I`` slews toward ``Enrgy-SP`` at a fixed slew rate (eV/s).
-    * Writing ``Cmd:Stop-Cmd`` freezes ``Enrgy-I`` and pins ``Enrgy-SP`` to it.
+    * Writing ``Cmd:Stop-Cmd`` (slow-move stop only) freezes ``Enrgy-I`` and
+      pins ``Enrgy-SP`` to it. No-op during a fly scan — fly aborts go through
+      ``Cmd:Stop-Cmd.PROC`` (per the IOS ophyd shim, where ``PGMEnergy.stop_signal``
+      and ``MonoFly.fly_stop`` are independent signals).
     * Writing ``Cmd:FlyStart-Cmd.PROC`` sweeps ``Enrgy-I`` from ``Enrgy:Start-SP``
-      to ``Enrgy:Stop-SP`` at ``Enrgy:FlyVelo-SP`` eV/s.
+      to ``Enrgy:Stop-SP`` at ``Enrgy:FlyVelo-SP`` eV/s. Inputs are validated
+      before the scan starts; invalid inputs (re-entrant, velo<=0, range outside
+      Enrgy-SP's ctrl_limits) raise from the putter so the caput fails visibly.
     * ``Sts:Move-Sts`` / ``Sts:Scan-Sts`` reflect motion state.
+
+Momentary-action PVs (``Cmd:Stop-Cmd``, ``Cmd:Stop-Cmd.PROC``,
+``Cmd:FlyStart-Cmd.PROC``) self-clear to 0 after acting so monitor clients
+gating on 0→1 edges see every trigger.
 
 Motor sub-axes (``-Ax:MirP/MirX/GrtP/GrtX}Mtr``) are deferred — the periodic-
 table preset doesn't caput them.
 """
 
 import asyncio
+import logging
 import math
 
 from caproto import ChannelType
 from caproto.server import PVGroup, ioc_arg_parser, pvproperty, run
+
+
+log = logging.getLogger(__name__)
 
 
 # Slow-move slew rate (eV/s). Fast enough for tests to complete in seconds,
@@ -87,49 +100,123 @@ class PGMIOC(PVGroup):
 
     @Enrgy_SP.startup
     async def _slew_loop(self, _instance, async_lib):
-        """Background slew loop nudging Enrgy-I toward Enrgy-SP."""
+        """Background slew loop nudging Enrgy-I toward Enrgy-SP.
+
+        Each iteration is wrapped so a transient write failure can't kill the
+        background task — slewing would silently freeze otherwise.
+        """
         while True:
-            await async_lib.library.sleep(TICK_S)
-            if self._fly_task is not None and not self._fly_task.done():
-                continue
-            sp = self.Enrgy_SP.value
-            i = self.Enrgy_I.value
-            delta = sp - i
-            if abs(delta) <= SETTLE_TOL_EV:
-                if self.Move_Sts.value != "Done":
-                    await self.Move_Sts.write("Done")
-                continue
-            step = math.copysign(min(abs(delta), SLEW_EV_PER_S * TICK_S), delta)
-            await self.Enrgy_I.write(i + step)
-            if self.Move_Sts.value != "Moving":
-                await self.Move_Sts.write("Moving")
+            try:
+                await async_lib.library.sleep(TICK_S)
+                if self._fly_task is not None and not self._fly_task.done():
+                    continue
+                sp = self.Enrgy_SP.value
+                i = self.Enrgy_I.value
+                delta = sp - i
+                if abs(delta) <= SETTLE_TOL_EV:
+                    if self.Move_Sts.value != "Done":
+                        await self.Move_Sts.write("Done")
+                    continue
+                step = math.copysign(min(abs(delta), SLEW_EV_PER_S * TICK_S), delta)
+                await self.Enrgy_I.write(i + step)
+                if self.Move_Sts.value != "Moving":
+                    await self.Move_Sts.write("Moving")
+            except Exception:
+                log.exception("slew loop iteration failed; continuing")
 
     @Stop_Cmd.putter
     async def _on_stop_cmd(self, _instance, value):
-        if value:
-            await self.Enrgy_SP.write(self.Enrgy_I.value)
-            if self._fly_task and not self._fly_task.done():
-                self._stop_requested = True
-
-    @FlyStart.putter
-    async def _on_fly_start(self, _instance, value):
+        """Slow-move stop only. No-op during a fly scan."""
         if not value:
             return
         if self._fly_task and not self._fly_task.done():
+            # Fly aborts are Cmd:Stop-Cmd.PROC; slow-move stop must not
+            # affect a concurrent fly (ophyd shim treats the two signals
+            # as independent).
+            self._schedule_self_clear(self.Stop_Cmd)
             return
-        self._stop_requested = False
-        self._fly_task = asyncio.create_task(self._run_fly())
+        await self.Enrgy_SP.write(self.Enrgy_I.value)
+        self._schedule_self_clear(self.Stop_Cmd)
+
+    @FlyStart.putter
+    async def _on_fly_start(self, _instance, value):
+        """Validate inputs up front and raise on invalid/re-entrant.
+
+        Pre-validation moves errors to the caput response (visible to the
+        caller) instead of crashing the background task or silently no-opping.
+        """
+        if not value:
+            return
+        try:
+            if self._fly_task and not self._fly_task.done():
+                raise ValueError("fly scan already running")
+            velo = abs(self.FlyVelo.value)
+            if velo <= 0:
+                raise ValueError(
+                    f"Enrgy:FlyVelo-SP must be > 0; got {self.FlyVelo.value}"
+                )
+            lo = self.Enrgy_SP.lower_ctrl_limit
+            hi = self.Enrgy_SP.upper_ctrl_limit
+            for label, val in (
+                ("Enrgy:Start-SP", self.Start_SP.value),
+                ("Enrgy:Stop-SP", self.Stop_SP.value),
+            ):
+                if val < lo or val > hi:
+                    raise ValueError(
+                        f"{label}={val} outside Enrgy-SP ctrl_limits [{lo}, {hi}]"
+                    )
+            self._stop_requested = False
+            self._fly_task = asyncio.create_task(self._run_fly())
+            self._fly_task.add_done_callback(self._on_fly_done)
+        finally:
+            self._schedule_self_clear(self.FlyStart)
 
     @FlyStopProc.putter
     async def _on_fly_stop(self, _instance, value):
-        if value:
-            self._stop_requested = True
+        if not value:
+            return
+        self._stop_requested = True
+        self._schedule_self_clear(self.FlyStopProc)
+
+    def _schedule_self_clear(self, pv) -> None:
+        """Schedule a fire-and-forget reset of a momentary-action PV to 0.
+
+        Must be scheduled (not awaited inline) so the outer caproto write
+        first stores the client-written value, letting DBE_VALUE monitors
+        observe the 0→1 edge. The async task then writes 0 a tick later,
+        giving the 1→0 edge so the next trigger again produces 0→1.
+        """
+        task = asyncio.create_task(self._self_clear_after(pv))
+        task.add_done_callback(self._on_self_clear_done)
+
+    async def _self_clear_after(self, pv) -> None:
+        # Brief delay so the caproto write that triggered this putter has
+        # finished storing/publishing the client-written value (typically 1).
+        await asyncio.sleep(0.05)
+        await pv.write(0)
+
+    def _on_self_clear_done(self, task: "asyncio.Task") -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.error("self-clear task failed: %s", exc, exc_info=exc)
+
+    def _on_fly_done(self, task: "asyncio.Task") -> None:
+        """Surface fly-task exceptions instead of letting asyncio swallow them."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.error("fly task crashed: %s", exc, exc_info=exc)
 
     async def _run_fly(self):
         start = self.Start_SP.value
         stop = self.Stop_SP.value
         velo = abs(self.FlyVelo.value)
+        # Defensive guard against direct callers; the putter pre-validates.
         if velo <= 0:
+            log.error("_run_fly entered with velo=%r; aborting", self.FlyVelo.value)
             return
         direction = 1.0 if stop >= start else -1.0
         await self.Enrgy_I.write(start)
@@ -146,10 +233,19 @@ class PGMIOC(PVGroup):
                 await self.Enrgy_I.write(current + step)
                 await asyncio.sleep(TICK_S)
         finally:
-            await self.Scan_Sts.write("Idle")
-            # Pin SP so the slow-move loop doesn't pull us back to the pre-fly setpoint.
-            await self.Enrgy_SP.write(self.Enrgy_I.value)
-            await self.Move_Sts.write("Done")
+            # Best-effort writes: one failure must not skip the others, so
+            # Move-Sts can't get stuck at "Moving" because the SP-pin raised.
+            for pv, val in (
+                (self.Scan_Sts, "Idle"),
+                # Pin SP so the slow-move loop doesn't pull us back to the
+                # pre-fly setpoint.
+                (self.Enrgy_SP, self.Enrgy_I.value),
+                (self.Move_Sts, "Done"),
+            ):
+                try:
+                    await pv.write(val)
+                except Exception:
+                    log.exception("fly finally: write to %s failed", pv.name)
             self._stop_requested = False
 
 
