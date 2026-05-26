@@ -199,6 +199,7 @@ body='{"addresses":[
   "sclr.count",
   "sclr.time",
   "sclr.channels.chan1",
+  "sclr_time",
   "m1b1_setpoint"
 ]}'
 # m1b1.fbl.* paths intentionally omitted: the resolver doesn't honor
@@ -216,7 +217,7 @@ fi
 # `all` over zero rows is true — verify the server actually returned the
 # expected row count so a dropped/missing entry can't slip past as
 # "all ok" of nothing.
-EXPECTED_RESOLVED=28
+EXPECTED_RESOLVED=29
 actual_resolved=$(jq -r '.resolved | length' < /tmp/exer_body)
 if [ "$actual_resolved" != "$EXPECTED_RESOLVED" ]; then
     note "resolve response: $(cat /tmp/exer_body)"
@@ -281,6 +282,7 @@ PV_VORTEX_R2_SUM=$(pv_for "vortex.mca.rois.roi2.count")
 PV_SCLR_CNT=$(pv_for "sclr.count")
 PV_SCLR_T=$(pv_for "sclr.time")
 PV_SCLR_S1=$(pv_for "sclr.channels.chan1")
+PV_SCLR_TP=$(pv_for "sclr_time")
 
 # Phase 3: Feedback. m1b1_setpoint resolves via the top-level happi entry.
 # Sts:FB-Sel and PID.CVAL are hardcoded — the resolver doesn't honor
@@ -356,6 +358,7 @@ register_pv "$PV_VORTEX_R2_SUM" read-only
 
 # Phase 3: Scaler — CNT/TP writable, T + channels RO.
 register_pv "$PV_SCLR_CNT" read-write
+register_pv "$PV_SCLR_TP"  read-write
 register_pv "$PV_SCLR_T"   read-only
 register_pv "$PV_SCLR_S1"  read-only
 
@@ -526,30 +529,44 @@ sleep 0.3
 # Read R2 sum — should be > 0 because the simulated peak at channel 300 is
 # within the ROI bounds [250, 350]. Don't assert an exact value (Poisson
 # variance), just verify the integration produced a non-trivial result.
+# Numeric regex tolerates either int or float JSON output.
 status=$(req GET "${DIRECT_URL}/api/v1/pv/$(encode "$PV_VORTEX_R2_SUM")/value")
 expect_status 200 "$status" "GET vortex R2 sum"
 got=$(jq -r '.value' < /tmp/exer_body)
-if ! [[ "$got" =~ ^[0-9]+$ ]] || [ "$got" -lt 100 ]; then
-    fail "vortex.mca.rois.roi2.count = '${got}', expected integer ≥ 100 (peak in [250,350] should integrate to thousands of counts)"
+if ! [[ "$got" =~ ^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]]; then
+    fail "vortex.mca.rois.roi2.count = '${got}' is not numeric"
 fi
-pass "vortex.mca.rois.roi2.count = ${got} (peak integrated)"
+if awk -v g="$got" 'BEGIN{exit !(g >= 100)}'; then
+    pass "vortex.mca.rois.roi2.count = ${got} (peak integrated, ≥ 100)"
+else
+    fail "vortex.mca.rois.roi2.count = ${got}, expected ≥ 100 (peak in [250,350] should integrate to thousands of counts)"
+fi
 
 # ─── Phase 3: Scaler preset-time count ───────────────────────────────────
 step "Phase 3: Scaler preset-time count"
 
-# Trigger CNT=1; the IOC counts for TP seconds (default 1.0s) then
-# auto-clears CNT. The default TP is fine for the smoke test; verifying
-# TP-override would require an additional resolved/registered PV.
-status=$(req POST "${DIRECT_URL}/api/v1/pv/set/batch" \
-    "{\"caputs\":[{\"pv_name\":\"${PV_SCLR_CNT}\",\"value\":1}]}")
-expect_status 200 "$status" "POST scaler CNT=1"
-pass "scaler trigger sent (will count for ~1.0s then auto-clear CNT)"
+# Override TP to the test fixture value, then trigger CNT=1. The IOC
+# counts for TP seconds, then auto-clears CNT.
+status=$(req POST "${DIRECT_URL}/api/v1/pv/set/batch" "$(cat <<EOF
+{"caputs":[
+  {"pv_name":"${PV_SCLR_TP}",  "value":${PHASE3_TP}},
+  {"pv_name":"${PV_SCLR_CNT}", "value":1}
+]}
+EOF
+)")
+expect_status 200 "$status" "POST scaler TP+CNT"
+ok=$(jq -r '.ok' < /tmp/exer_body)
+applied=$(jq -r '.applied' < /tmp/exer_body)
+if [ "$ok" != "true" ] || [ "$applied" != "2" ]; then
+    note "batch response: $(cat /tmp/exer_body)"
+    fail "scaler TP+CNT batch ok=${ok} applied=${applied} (expected 2/2)"
+fi
+pass "scaler trigger sent (TP=${PHASE3_TP}s, will count then auto-clear)"
 
-# Wait for the count to finish. TP defaults to 1.0s; the scaler clears
-# CNT after that. Add 0.5s margin.
-sleep 1.5
+# Wait for the count to finish. Add 0.5s margin over TP.
+sleep $(awk "BEGIN{print ${PHASE3_TP} + 0.5}")
 
-# Verify CNT auto-cleared back to 0.
+# Verify CNT auto-cleared back to 0. CNT is integer-typed, exact compare.
 status=$(req GET "${DIRECT_URL}/api/v1/pv/$(encode "$PV_SCLR_CNT")/value")
 expect_status 200 "$status" "GET scaler CNT"
 got=$(jq -r '.value' < /tmp/exer_body)
@@ -558,15 +575,26 @@ if [ "$got" != "0" ]; then
 fi
 pass "scaler CNT auto-cleared to 0"
 
-# Verify channel 1 (clock) accumulated counts. Rate is 1e7 cts/s × 1.0s
-# elapsed = 1e7. Allow generous tolerance for tick-quantization (TICK_S=0.05).
+# Verify T elapsed approximately TP. T is float (precision=4), use awk.
+check_pv "$PV_SCLR_T" "$PHASE3_TP" "scaler .T (elapsed)" 0.1
+
+# Verify channel 1 (clock) accumulated counts. Rate is 1e7 cts/s × TP.
+# S1 is now float (DOUBLE) to avoid int32 overflow at long TPs; accept
+# floats via awk numeric compare. Expected ≈ 1e7 × 0.5 = 5e6.
 status=$(req GET "${DIRECT_URL}/api/v1/pv/$(encode "$PV_SCLR_S1")/value")
 expect_status 200 "$status" "GET scaler S1 (clock)"
 got=$(jq -r '.value' < /tmp/exer_body)
-if ! [[ "$got" =~ ^[0-9]+$ ]] || [ "$got" -lt 1000000 ]; then
-    fail "scaler S1 = '${got}', expected integer ≥ 1e6 (clock channel after ~1s)"
+expected_s1=$(awk "BEGIN{print 1.0e7 * ${PHASE3_TP}}")
+if ! [[ "$got" =~ ^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]]; then
+    fail "scaler S1 = '${got}' is not numeric"
 fi
-pass "scaler S1 (clock) = ${got} (≥ 1e6)"
+# Loose tolerance — tick quantization at TICK_S=0.05 can drift by ±5%.
+if awk -v g="$got" -v e="$expected_s1" \
+   'BEGIN{r=g/e; exit !((r>=0.9)&&(r<=1.1))}'; then
+    pass "scaler S1 (clock) = ${got} (≈ ${expected_s1}, ±10%)"
+else
+    fail "scaler S1 = ${got}, expected ≈ ${expected_s1} (±10%)"
+fi
 
 # ─── Phase 3: Feedback PID convergence ───────────────────────────────────
 step "Phase 3: Feedback PID convergence"
@@ -593,11 +621,19 @@ sleep 3.5
 # any small drift.
 check_pv "$PV_FB_CVAL" "$PHASE3_PID_SP" "m1b1.fbl.actual_value (PID converged)" 0.1
 
-# Disable so the loop stops touching CVAL for the next run.
-status=$(req POST "${DIRECT_URL}/api/v1/pv/set/batch" \
-    "{\"caputs\":[{\"pv_name\":\"${PV_FB_ENABLE}\",\"value\":\"Off\"}]}")
-expect_status 200 "$status" "POST feedback disable"
-pass "feedback disabled (cleanup)"
+# Reset SP to 0 BEFORE disabling so a re-run against the same pod
+# starts with CVAL≈SP=5 vs new-SP=5, error≠0, and the convergence test
+# actually exercises the P-loop math. Without this reset the re-run
+# would trivially pass even if P_GAIN regressed to 0.
+status=$(req POST "${DIRECT_URL}/api/v1/pv/set/batch" "$(cat <<EOF
+{"caputs":[
+  {"pv_name":"${PV_FB_SP}",     "value":0.0},
+  {"pv_name":"${PV_FB_ENABLE}", "value":"Off"}
+]}
+EOF
+)")
+expect_status 200 "$status" "POST feedback reset SP + disable"
+pass "feedback reset (SP=0, disabled — next run sees error=5)"
 
 # ─── Done ────────────────────────────────────────────────────────────────
 printf "\n${GREEN}${BOLD}configuration_service_ios: ALL CHECKS PASSED${RESET}\n"

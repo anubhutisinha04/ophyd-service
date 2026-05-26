@@ -52,7 +52,11 @@ class ScalerIOC(PVGroup):
     # caproto stores integers for our purposes. Real scaler uses bo/bi
     # records; the IOS exerciser writes 1/0 and reads the value back.
     CNT = pvproperty(value=0, name=".CNT")
-    CONT = pvproperty(value=0, name=".CONT")  # 0 = One-shot, 1 = AutoCount
+    # NOTE: .CONT (continuous-vs-one-shot) intentionally NOT served —
+    # the IOC implements one-shot only. Declaring it would silently
+    # accept caput .CONT=1 while doing nothing (a 'I'm fine' silent
+    # failure). Per no-silent-fallbacks: any client that needs auto-
+    # count sees a clean 'no such PV' instead of a phantom success.
     TP = pvproperty(value=1.0, name=".TP", precision=4, units="s")
     T = pvproperty(
         value=0.0, name=".T", read_only=True, precision=4, units="s"
@@ -66,10 +70,13 @@ class ScalerIOC(PVGroup):
     )
 
     # ─── Channel counts (S1-S4) and names (NM1-NM4) ──────────────────────
-    S1 = pvproperty(value=0, name=".S1", read_only=True)
-    S2 = pvproperty(value=0, name=".S2", read_only=True)
-    S3 = pvproperty(value=0, name=".S3", read_only=True)
-    S4 = pvproperty(value=0, name=".S4", read_only=True)
+    # S1..S4 are float (caproto DOUBLE) — int32 (LONG) would overflow at
+    # CLOCK_FREQ_HZ × TP > 2^31, i.e. TP > 215 s on the clock channel.
+    # DOUBLE handles up to ~2^53 cleanly which covers any realistic TP.
+    S1 = pvproperty(value=0.0, name=".S1", read_only=True, precision=1)
+    S2 = pvproperty(value=0.0, name=".S2", read_only=True, precision=1)
+    S3 = pvproperty(value=0.0, name=".S3", read_only=True, precision=1)
+    S4 = pvproperty(value=0.0, name=".S4", read_only=True, precision=1)
     NM1 = pvproperty(value="clock", name=".NM1", report_as_string=True, max_length=40)
     NM2 = pvproperty(value="I0", name=".NM2", report_as_string=True, max_length=40)
     NM3 = pvproperty(value="PD", name=".NM3", report_as_string=True, max_length=40)
@@ -139,11 +146,11 @@ class ScalerIOC(PVGroup):
                 elapsed += tick
                 await self.T.write(elapsed)
                 for pv, rate in zip(chan_pvs, _CHANNEL_RATES):
-                    await pv.write(int(rate * elapsed))
+                    await pv.write(float(rate * elapsed))
             # Final exact-value pin in case rounding drifted.
             await self.T.write(tp)
             for pv, rate in zip(chan_pvs, _CHANNEL_RATES):
-                await pv.write(int(rate * tp))
+                await pv.write(float(rate * tp))
         finally:
             # Auto-clear CNT regardless of how we exited. The sentinel
             # prevents the recursive CNT=0 putter call from trying to

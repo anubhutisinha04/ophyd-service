@@ -56,6 +56,22 @@ class FeedbackIOC(PVGroup):
     )
     Val_Sbl_SP = pvproperty(value=0.01, name="Val:Sbl-SP", precision=4)
 
+    # ─── Contract PVs (declared but not actively used by the loop) ───────
+    # ios_devs.FeedbackLoop declares these as required Components; ophyd's
+    # FeedbackLoop.__init__ wait_for_connection() on them would time out
+    # if the IOC doesn't serve them. They're inert here — the loop uses
+    # constants for high/low limits and a fixed TICK_S — but their CA
+    # presence keeps the ophyd-side device-class walk happy when the
+    # resolver bug for `add_prefix=""` Components is fixed and direct-
+    # control starts walking m1b1.fbl.* live.
+    PID_DRVH = pvproperty(value=1.0e9, name="PID.DRVH", precision=4)
+    PID_DRVL = pvproperty(value=-1.0e9, name="PID.DRVL", precision=4)
+    PID_DT = pvproperty(
+        value=TICK_S, name="PID.DT", read_only=True, precision=4, units="s"
+    )
+    PID_MDT = pvproperty(value=TICK_S, name="PID.MDT", precision=4, units="s")
+    PID_SCAN = pvproperty(value=0, name="PID.SCAN")
+
     @Sts_FB_Sel.startup
     async def _loop(self, _instance, async_lib):
         """Background loop — runs forever; only acts when FB-Sel == 'On'.

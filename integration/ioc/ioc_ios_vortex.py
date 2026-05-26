@@ -21,7 +21,6 @@ Ni_L exerciser flow needs.
 Phase 3 of the IOS use case (dynamic IOCs).
 """
 
-import asyncio
 import logging
 from typing import List
 
@@ -68,13 +67,28 @@ def _make_roi_pvs() -> List[tuple]:
         # (n+1)*256-1, giving 8 contiguous octants by default.
         lo_default = n * (N_CHANNELS // N_ROIS)
         hi_default = (n + 1) * (N_CHANNELS // N_ROIS) - 1
+        # lower_ctrl_limit/upper_ctrl_limit make caproto reject out-of-
+        # range writes at the CA protocol layer (rather than silently
+        # clamping inside the IOC). Per the project's no-silent-fallbacks
+        # rule: an operator who typos R{N}LO=-100 gets a clean CA error
+        # instead of silently getting a sum over [0..HI].
         out.append((
             f"R{n}_lo",
-            pvproperty(value=lo_default, name=f"mca1.R{n}LO"),
+            pvproperty(
+                value=lo_default,
+                name=f"mca1.R{n}LO",
+                lower_ctrl_limit=0,
+                upper_ctrl_limit=N_CHANNELS - 1,
+            ),
         ))
         out.append((
             f"R{n}_hi",
-            pvproperty(value=hi_default, name=f"mca1.R{n}HI"),
+            pvproperty(
+                value=hi_default,
+                name=f"mca1.R{n}HI",
+                lower_ctrl_limit=0,
+                upper_ctrl_limit=N_CHANNELS - 1,
+            ),
         ))
         out.append((
             f"R{n}_sum",
@@ -155,12 +169,29 @@ class VortexIOC(PVGroup):
         await self.ERTM.write(float(prtm))
 
     async def _refresh_roi(self, n: int):
+        """Refresh ROI sum from the IOC's current stored bounds + spectrum.
+
+        Used by the PRTM putter and startup hook. Bound putters use
+        ``_refresh_roi_explicit`` so they can pass the new bound value
+        directly without racing caproto's value-store.
+        """
         lo_pv = getattr(self, f"R{n}_lo")
         hi_pv = getattr(self, f"R{n}_hi")
+        await self._refresh_roi_explicit(n, int(lo_pv.value), int(hi_pv.value))
+
+    async def _refresh_roi_explicit(self, n: int, lo: int, hi: int):
+        """Compute ROI sum from explicit lo/hi (avoids the bound putter
+        having to read-after-store the new value from caproto)."""
         sum_pv = getattr(self, f"R{n}_sum")
-        lo = max(0, min(int(lo_pv.value), N_CHANNELS - 1))
-        hi = max(0, min(int(hi_pv.value), N_CHANNELS - 1))
+        # ctrl_limits at the PV level reject out-of-range writes, so by
+        # the time we get here lo/hi are in [0, N_CHANNELS-1]. Inverted
+        # bounds (HI < LO) are transient during ROI reconfiguration —
+        # swap silently for the sum, but log so the operator can see it.
         if hi < lo:
+            log.warning(
+                "ROI R%d has HI<LO (%d<%d); swapping for sum (transient?)",
+                n, hi, lo,
+            )
             lo, hi = hi, lo
         roi_sum = int(self._spectrum_np[lo : hi + 1].sum())
         await sum_pv.write(roi_sum)
@@ -170,37 +201,30 @@ class VortexIOC(PVGroup):
             await self._refresh_roi(n)
 
 
-# Build dynamic ROI-bound putters that recompute the corresponding sum.
-# We can't decorate inside the class body for dynamically-created
-# pvproperties, so register the putters via the pvspec API after class
-# creation. caproto allows .putter() to be invoked as a callable on the
-# pvproperty descriptor.
-def _make_roi_bound_putter(n: int):
-    async def _putter(group: VortexIOC, _instance, value):
-        # The putter's `value` is what's about to be stored. caproto writes
-        # it after this returns, so we need to compute the sum from the
-        # pending bounds (one of which is `value`). Easiest: store the new
-        # value into the IOC's local state and recompute.
-        # We can't write the bound here (would recurse). Instead, refresh
-        # the ROI AFTER caproto stores the value, by scheduling a task.
-        asyncio.create_task(_refresh_after_store(group, n))
+# Build dynamic ROI-bound putters that inline-await the sum refresh using
+# the new `value` arg directly — no fire-and-forget create_task (which had
+# a task-discard / GC race) and no 10ms sleep heuristic (which raced
+# caproto's value-store on a loaded loop). The putter passes the new bound
+# value explicitly to `_refresh_roi_explicit`.
+def _make_lo_putter(n: int):
+    async def _putter(group: "VortexIOC", _instance, value):
+        hi_pv = getattr(group, f"R{n}_hi")
+        await group._refresh_roi_explicit(n, int(value), int(hi_pv.value))
     return _putter
 
 
-async def _refresh_after_store(group: VortexIOC, n: int):
-    # Brief delay so caproto's outer write has stored the new bound value.
-    await asyncio.sleep(0.01)
-    try:
-        await group._refresh_roi(n)
-    except Exception:
-        log.exception("ROI refresh failed for R%d", n)
+def _make_hi_putter(n: int):
+    async def _putter(group: "VortexIOC", _instance, value):
+        lo_pv = getattr(group, f"R{n}_lo")
+        await group._refresh_roi_explicit(n, int(lo_pv.value), int(value))
+    return _putter
 
 
 for _n in range(N_ROIS):
     _lo_attr = f"R{_n}_lo"
     _hi_attr = f"R{_n}_hi"
-    getattr(VortexIOC, _lo_attr).putter(_make_roi_bound_putter(_n))
-    getattr(VortexIOC, _hi_attr).putter(_make_roi_bound_putter(_n))
+    getattr(VortexIOC, _lo_attr).putter(_make_lo_putter(_n))
+    getattr(VortexIOC, _hi_attr).putter(_make_hi_putter(_n))
 del _n, _lo_attr, _hi_attr
 
 
