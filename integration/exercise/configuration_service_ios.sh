@@ -2,14 +2,16 @@
 #
 # IOS demo end-to-end exerciser.
 #
-# Walks the full periodic-table flow against the ios pod:
+# Walks the full periodic-table flow against the ios pod (Phases 1 + 2):
 #   1. Verify config-service has the IOS happi DB loaded (pgm registered).
-#   2. Resolve every PGM address (setpoint, readback, fly trigger, status,
-#      fly scan params) via /api/v1/devices/resolve — no hardcoded prefixes.
+#   2. Resolve every PGM + CurrAmp + EPU1 address via /api/v1/devices/resolve.
 #   3. Register the resolved PVs as standalone (workaround for the happi
 #      loader gap, see tech-debt ledger). Cleanup deletes them on exit.
-#   4. Apply Ni_L preset values via POST /api/v1/pv/set/batch on direct-control.
-#   5. Verify readback on the simulated ios_pgm IOC.
+#   4. Apply Ni_L preset values via POST /api/v1/pv/set/batch on direct-control:
+#        - PGM scan params (Phase 1, slew dynamics)
+#        - CurrAmp gain/decade (Phase 2, echo)
+#        - EPU1 table / offset / deadband (Phase 2, echo)
+#   5. Verify readback against ios_pgm + ios_curramp + ios_epu IOCs.
 #   6. Trigger a fly scan and verify Sts:Scan-Sts cycles.
 #
 # Pairs with integration/pods/ios/docker-compose.yaml. Ni_L values come from
@@ -26,10 +28,20 @@ set -euo pipefail
 DIRECT_URL="${DIRECT_URL:-http://localhost:8003}"
 CONFIG_URL="${CONFIG_URL:-http://localhost:8004}"
 
-# Ni_L preset (must match edge_map.json Ni_L entry).
+# Ni_L preset values (PGM scan params come from edge_map.json Ni_L entry;
+# detector+EPU values are representative — det_settings.xlsx isn't loaded).
 NI_L_START=845
 NI_L_STOP=885
 NI_L_VELOCITY=0.2
+NI_L_EPU_TABLE=4
+NI_L_EPU_OFFSET=100.0
+NI_L_EPU_DEADBAND=12
+NI_L_SAMPLE_GAIN="1"
+NI_L_SAMPLE_DECADE="1 nA/V"
+NI_L_AUMESH_GAIN="1"
+NI_L_AUMESH_DECADE="100 pA/V"
+NI_L_PD_GAIN="1"
+NI_L_PD_DECADE="1 nA/V"
 
 # URL-encode (jq's @uri handles :, {, } correctly for path segments).
 encode() { printf '%s' "$1" | jq -sRr @uri; }
@@ -94,6 +106,24 @@ check_pv() {
     fi
 }
 
+# check_str_pv PV WANT LABEL
+# Like check_pv but for enum/string PVs (e.g. CurrAmp gain/decade). Accepts
+# either the string form or the numeric enum index — direct-control's value
+# endpoint reports the integer index for ENUM PVs by default, so the want
+# value may need to be the index rather than the string.
+check_str_pv() {
+    local pv=$1 want=$2 label=$3
+    local status got
+    status=$(req GET "${DIRECT_URL}/api/v1/pv/$(encode "$pv")/value")
+    expect_status 200 "$status" "GET ${label}"
+    got=$(jq -r '.value' < /tmp/exer_body)
+    if [ "$got" = "$want" ]; then
+        pass "${label} = ${got}"
+    else
+        fail "${label} = ${got}, expected ${want}"
+    fi
+}
+
 printf "${BOLD}configuration_service_ios exerciser${RESET}  direct=${DIRECT_URL} config=${CONFIG_URL}\n"
 
 # ─── Health ──────────────────────────────────────────────────────────────
@@ -115,11 +145,13 @@ expect_status 200 "$status" "device pgm registered"
 device_class=$(jq -r '.ophyd_class // .device_class // "?"' < /tmp/exer_body)
 pass "pgm registered  class=${device_class}"
 
-# ─── Resolve every PGM address via config-service ────────────────────────
-# All eight PVs are declared as Components on ios_devs.PGM, so they all
-# resolve through the same endpoint. No hardcoded prefix — a future
-# prefix change in happi_db.json would automatically flow through.
-step "Resolve all PGM addresses"
+# ─── Resolve every PGM + CurrAmp + EPU address via config-service ────────
+# PGM addresses are dotted paths on ios_devs.PGM. CurrAmp + EPU
+# (epu1table, epu1offset) are top-level happi entries (EpicsSignal at the
+# specified prefix). epu1.flt.output_deadband is a sub-component path.
+# No hardcoded prefixes anywhere — a happi_db.json prefix change flows
+# through automatically.
+step "Resolve all PGM + CurrAmp + EPU addresses"
 
 body='{"addresses":[
   "pgm.energy.setpoint",
@@ -129,7 +161,16 @@ body='{"addresses":[
   "pgm.fly.velocity",
   "pgm.fly.fly_start",
   "pgm.fly.scan_status",
-  "pgm.move_status"
+  "pgm.move_status",
+  "sample_sclr_gain",
+  "sample_sclr_decade",
+  "aumesh_sclr_gain",
+  "aumesh_sclr_decade",
+  "pd_sclr_gain",
+  "pd_sclr_decade",
+  "epu1table",
+  "epu1offset",
+  "epu1.flt.output_deadband"
 ]}'
 status=$(req POST "${CONFIG_URL}/api/v1/devices/resolve" "$body")
 expect_status 200 "$status" "POST /api/v1/devices/resolve"
@@ -139,9 +180,10 @@ if [ "$all_ok" != "true" ]; then
     note "resolve response: $(cat /tmp/exer_body)"
     fail "one or more addresses failed to resolve"
 fi
-# `all` over zero rows is true — verify the server actually returned 8 rows
-# so a dropped/missing entry can't slip past as "all ok" of nothing.
-EXPECTED_RESOLVED=8
+# `all` over zero rows is true — verify the server actually returned the
+# expected row count so a dropped/missing entry can't slip past as
+# "all ok" of nothing.
+EXPECTED_RESOLVED=17
 actual_resolved=$(jq -r '.resolved | length' < /tmp/exer_body)
 if [ "$actual_resolved" != "$EXPECTED_RESOLVED" ]; then
     note "resolve response: $(cat /tmp/exer_body)"
@@ -178,14 +220,36 @@ PV_FLY_START=$(pv_for "pgm.fly.fly_start")
 PV_SCAN_STS=$(pv_for "pgm.fly.scan_status")
 PV_MOVE_STS=$(pv_for "pgm.move_status")
 
-pass "Enrgy-SP   = ${PV_ENRGY_SP}"
-pass "Enrgy-I    = ${PV_ENRGY_I}"
-pass "Start-SP   = ${PV_START_SP}"
-pass "Stop-SP    = ${PV_STOP_SP}"
-pass "FlyVelo-SP = ${PV_FLY_VELO}"
-pass "FlyStart   = ${PV_FLY_START}"
-pass "Scan-Sts   = ${PV_SCAN_STS}"
-pass "Move-Sts   = ${PV_MOVE_STS}"
+# CurrAmp (top-level EpicsSignals — resolver returns the prefix directly)
+PV_SAMPLE_GAIN=$(pv_for "sample_sclr_gain")
+PV_SAMPLE_DECADE=$(pv_for "sample_sclr_decade")
+PV_AUMESH_GAIN=$(pv_for "aumesh_sclr_gain")
+PV_AUMESH_DECADE=$(pv_for "aumesh_sclr_decade")
+PV_PD_GAIN=$(pv_for "pd_sclr_gain")
+PV_PD_DECADE=$(pv_for "pd_sclr_decade")
+
+# EPU1
+PV_EPU_TABLE=$(pv_for "epu1table")
+PV_EPU_OFFSET=$(pv_for "epu1offset")
+PV_EPU_DEADBAND=$(pv_for "epu1.flt.output_deadband")
+
+pass "Enrgy-SP        = ${PV_ENRGY_SP}"
+pass "Enrgy-I         = ${PV_ENRGY_I}"
+pass "Start-SP        = ${PV_START_SP}"
+pass "Stop-SP         = ${PV_STOP_SP}"
+pass "FlyVelo-SP      = ${PV_FLY_VELO}"
+pass "FlyStart        = ${PV_FLY_START}"
+pass "Scan-Sts        = ${PV_SCAN_STS}"
+pass "Move-Sts        = ${PV_MOVE_STS}"
+pass "sample_gain     = ${PV_SAMPLE_GAIN}"
+pass "sample_decade   = ${PV_SAMPLE_DECADE}"
+pass "aumesh_gain     = ${PV_AUMESH_GAIN}"
+pass "aumesh_decade   = ${PV_AUMESH_DECADE}"
+pass "pd_gain         = ${PV_PD_GAIN}"
+pass "pd_decade       = ${PV_PD_DECADE}"
+pass "epu1_table      = ${PV_EPU_TABLE}"
+pass "epu1_offset     = ${PV_EPU_OFFSET}"
+pass "epu1_deadband   = ${PV_EPU_DEADBAND}"
 
 # ─── Register resolved PVs (workaround for loader gap) ───────────────────
 # Happi loader indexes only top-level device prefixes, not sub-PVs derived
@@ -195,6 +259,7 @@ pass "Move-Sts   = ${PV_MOVE_STS}"
 # Tracked as tech-debt: real fix is loader.py or resolver auto-registration.
 step "Register resolved PVs (workaround for loader gap)"
 
+# PGM (Phase 1)
 register_pv "$PV_ENRGY_SP"  read-write
 register_pv "$PV_START_SP"  read-write
 register_pv "$PV_STOP_SP"   read-write
@@ -206,6 +271,19 @@ register_pv "$PV_FLY_START" read-write
 register_pv "$PV_ENRGY_I"   read-only
 register_pv "$PV_SCAN_STS"  read-only
 register_pv "$PV_MOVE_STS"  read-only
+
+# CurrAmp (Phase 2 — all writable)
+register_pv "$PV_SAMPLE_GAIN"   read-write
+register_pv "$PV_SAMPLE_DECADE" read-write
+register_pv "$PV_AUMESH_GAIN"   read-write
+register_pv "$PV_AUMESH_DECADE" read-write
+register_pv "$PV_PD_GAIN"       read-write
+register_pv "$PV_PD_DECADE"     read-write
+
+# EPU1 (Phase 2 — all writable)
+register_pv "$PV_EPU_TABLE"     read-write
+register_pv "$PV_EPU_OFFSET"    read-write
+register_pv "$PV_EPU_DEADBAND"  read-write
 
 # ─── Apply Ni_L preset via batch caput ───────────────────────────────────
 step "Apply Ni_L preset (batch caput)"
@@ -241,6 +319,56 @@ check_pv "$PV_START_SP" "$NI_L_START"    "Enrgy:Start-SP"
 check_pv "$PV_STOP_SP"  "$NI_L_STOP"     "Enrgy:Stop-SP"
 check_pv "$PV_FLY_VELO" "$NI_L_VELOCITY" "Enrgy:FlyVelo-SP"
 check_pv "$PV_ENRGY_I"  "$NI_L_START"    "Enrgy-I (post-slew)"
+
+# ─── Apply Ni_L CurrAmp + EPU preset (batch caput) ───────────────────────
+step "Apply Ni_L CurrAmp + EPU preset (batch caput)"
+
+body=$(cat <<EOF
+{"caputs":[
+  {"pv_name":"${PV_SAMPLE_GAIN}",  "value":"${NI_L_SAMPLE_GAIN}"},
+  {"pv_name":"${PV_SAMPLE_DECADE}","value":"${NI_L_SAMPLE_DECADE}"},
+  {"pv_name":"${PV_AUMESH_GAIN}",  "value":"${NI_L_AUMESH_GAIN}"},
+  {"pv_name":"${PV_AUMESH_DECADE}","value":"${NI_L_AUMESH_DECADE}"},
+  {"pv_name":"${PV_PD_GAIN}",      "value":"${NI_L_PD_GAIN}"},
+  {"pv_name":"${PV_PD_DECADE}",    "value":"${NI_L_PD_DECADE}"},
+  {"pv_name":"${PV_EPU_TABLE}",    "value":${NI_L_EPU_TABLE}},
+  {"pv_name":"${PV_EPU_OFFSET}",   "value":${NI_L_EPU_OFFSET}},
+  {"pv_name":"${PV_EPU_DEADBAND}", "value":${NI_L_EPU_DEADBAND}}
+]}
+EOF
+)
+status=$(req POST "${DIRECT_URL}/api/v1/pv/set/batch" "$body")
+expect_status 200 "$status" "POST /api/v1/pv/set/batch (CurrAmp+EPU)"
+
+ok=$(jq -r '.ok' < /tmp/exer_body)
+applied=$(jq -r '.applied' < /tmp/exer_body)
+if [ "$ok" != "true" ] || [ "$applied" != "9" ]; then
+    note "batch response: $(cat /tmp/exer_body)"
+    fail "CurrAmp+EPU batch caput ok=${ok} applied=${applied} (expected ok=true applied=9)"
+fi
+pass "CurrAmp+EPU batch caput applied=${applied}/9"
+
+# Echo-only IOCs — no slew; brief sleep for CA propagation.
+sleep 0.3
+
+# ─── Readback verification (CurrAmp + EPU) ───────────────────────────────
+step "Readback verification (CurrAmp + EPU)"
+
+# CurrAmp gain/decade are ENUMs. caproto reports the enum index for ENUM
+# PVs over CA by default, so the value endpoint returns the integer index
+# (e.g. "1" → index 0 in GAIN_VALS, "1 nA/V" → index 3 in GAIN_DECADES).
+# Resolve the expected index from the IOC's enum table.
+check_str_pv "$PV_SAMPLE_GAIN"   "0" "sample_sclr_gain (idx for '1')"
+check_str_pv "$PV_SAMPLE_DECADE" "3" "sample_sclr_decade (idx for '1 nA/V')"
+check_str_pv "$PV_AUMESH_GAIN"   "0" "aumesh_sclr_gain (idx for '1')"
+check_str_pv "$PV_AUMESH_DECADE" "2" "aumesh_sclr_decade (idx for '100 pA/V')"
+check_str_pv "$PV_PD_GAIN"       "0" "pd_sclr_gain (idx for '1')"
+check_str_pv "$PV_PD_DECADE"     "3" "pd_sclr_decade (idx for '1 nA/V')"
+
+# EPU PVs are plain numeric — check_pv with tight tolerance.
+check_pv "$PV_EPU_TABLE"    "$NI_L_EPU_TABLE"    "epu1table"
+check_pv "$PV_EPU_OFFSET"   "$NI_L_EPU_OFFSET"   "epu1offset"
+check_pv "$PV_EPU_DEADBAND" "$NI_L_EPU_DEADBAND" "epu1.flt.output_deadband"
 
 # ─── Move-Sts cleared ────────────────────────────────────────────────────
 step "Move status"

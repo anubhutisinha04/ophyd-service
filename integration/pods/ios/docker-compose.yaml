@@ -1,18 +1,21 @@
 # IOS demo integration pod for ophyd-service.
 #
-# Phase 1 of the IOS use case: simulated PGM monochromator IOC behind the
-# config-service + direct-control stack, with the IOS site happi DB loaded.
-# Lets the periodic-table flow exercise a real round-trip:
+# Phases 1 + 2 of the IOS use case: simulated PGM monochromator + current-amp
+# + EPU IOCs behind the config-service + direct-control stack, with the IOS
+# site happi DB loaded. Lets the periodic-table flow exercise a real
+# round-trip:
 #   frontend (or exercise script) → POST /api/v1/pv/set/batch on direct-control
-#   → caput to XF:23ID2-OP{Mono}* → simulated readback dynamics.
+#   → caput to XF:23ID2-OP{Mono}* / XF:23ID2-ES{CurrAmp:N}* / XF:23ID-ID{EPU:N}*
+#   → simulated readback (PGM has slew dynamics, CurrAmp/EPU are echo-only)
 #
 # Services:
-#   ios_pgm                — caproto PGM IOC (XF:23ID2-OP{Mono prefix)
+#   ios_pgm                — caproto PGM IOC (XF:23ID2-OP{Mono prefix), Phase 1
+#   ios_curramp            — three SR570 current amps (XF:23ID2-ES{CurrAmp:1/2/3}), Phase 2
+#   ios_epu                — EPU1 + EPU2 echo (XF:23ID-ID{EPU:1/2}), Phase 2
 #   configuration_service  — registry, loaded from integration/happi/sites/ios/happi_db.json
 #   direct_control_service — WS/REST PV commanding
 #
-# Later phases will add ios_curramp, ios_epu, ios_vortex, ios_scaler,
-# ios_feedback as sibling services here.
+# Later phases will add ios_vortex, ios_scaler, ios_feedback as sibling services.
 #
 # Relative paths assume this file lives at integration/pods/ios/, so
 # `../..` reaches integration/ and `../../..` reaches the ophyd-service root.
@@ -32,6 +35,24 @@ services:
     command: ["python", "/app/ioc_ios_pgm.py", "--list-pvs", "--interfaces", "0.0.0.0"]
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f ioc_ios_pgm > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  ios_curramp:
+    <<: *ioc-base
+    command: ["python", "/app/ioc_ios_curramp.py", "--list-pvs", "--interfaces", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f ioc_ios_curramp > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  ios_epu:
+    <<: *ioc-base
+    command: ["python", "/app/ioc_ios_epu.py", "--list-pvs", "--interfaces", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f ioc_ios_epu > /dev/null"]
       interval: 5s
       timeout: 2s
       retries: 10
@@ -63,8 +84,10 @@ services:
       DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
       # No EE service in the pod; coordination check would 502 every call.
       DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
-      # pyepics: point CA search at the IOS IOC services only.
-      EPICS_CA_ADDR_LIST: "ios_pgm"
+      # pyepics: point CA search at every IOC service in the pod. AUTO_ADDR_LIST
+      # off means no broadcast — explicit list keeps search packets on the
+      # compose network.
+      EPICS_CA_ADDR_LIST: "ios_pgm ios_curramp ios_epu"
       EPICS_CA_AUTO_ADDR_LIST: "NO"
     ports:
       - "8003:8003"
@@ -72,4 +95,8 @@ services:
       configuration_service:
         condition: service_healthy
       ios_pgm:
+        condition: service_healthy
+      ios_curramp:
+        condition: service_healthy
+      ios_epu:
         condition: service_healthy
