@@ -9,6 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends procps \
 RUN pip install --no-cache-dir caproto numpy
 
 RUN useradd -m -u 1000 ioc && chown -R ioc:ioc /app
+
+# Custom site IOC scripts (ioc_ios_pgm, etc.). Built-in caproto.ioc_examples.*
+# modules don't need anything copied — they ship inside the caproto package.
+COPY --chown=ioc:ioc *.py /app/
+
 USER ioc
 
 # Channel Access: 5064/tcp (virtual circuits), 5064/udp (beacons + search replies), 5065/udp (repeater beacons).
