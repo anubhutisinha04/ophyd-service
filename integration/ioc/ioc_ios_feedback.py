@@ -58,34 +58,49 @@ class FeedbackIOC(PVGroup):
 
     @Sts_FB_Sel.startup
     async def _loop(self, _instance, async_lib):
-        """Background loop — runs forever; only acts when FB-Sel == 'On'."""
+        """Background loop — runs forever; only acts when FB-Sel == 'On'.
+
+        Sleep sits OUTSIDE the try so loop-closed / cancelled errors at
+        shutdown propagate and let the task exit cleanly (avoids the
+        busy-log torrent that would otherwise happen on docker compose
+        down). The try wraps only the writes — attribute lookups,
+        arithmetic, and branch decisions are intentionally NOT swallowed
+        so refactor bugs (AttributeError, TypeError) crash loud rather
+        than spinning in silent log spam at TICK_S frequency. Mirrors the
+        pattern in ios_pgm._slew_loop.
+        """
         while True:
+            await async_lib.library.sleep(TICK_S)
+            if self.Sts_FB_Sel.value != "On":
+                continue
+            sp = float(self.PID_SP.value)
+            cval = float(self.PID_CVAL.value)
+            deadband = float(self.Val_Sbl_SP.value)
+            error = sp - cval
+            settled = abs(error) <= deadband
+            if settled and cval == sp:
+                # Nothing to write; SP already exactly hit.
+                continue
             try:
-                await async_lib.library.sleep(TICK_S)
-                if self.Sts_FB_Sel.value != "On":
-                    continue
-                sp = float(self.PID_SP.value)
-                cval = float(self.PID_CVAL.value)
-                deadband = float(self.Val_Sbl_SP.value)
-                error = sp - cval
-                if abs(error) <= deadband:
-                    # Settled — pin CVAL at SP exactly so readers see a
-                    # stable value rather than the last sub-deadband drift.
-                    if cval != sp:
-                        await self.PID_CVAL.write(sp)
-                        await self.PID_OVAL.write(sp)
-                        await self.PID_Err.write(0.0)
-                    continue
-                new_cval = cval + P_GAIN * error
-                await self.PID_CVAL.write(new_cval)
-                await self.PID_OVAL.write(new_cval)
-                await self.PID_Err.write(sp - new_cval)
-                # VAL mirrors SP (requested target) per the ophyd shim's
-                # `requested_value = Cpt(EpicsSignalRO, "PID.VAL")` naming.
-                if float(self.PID_VAL.value) != sp:
-                    await self.PID_VAL.write(sp)
+                if settled:
+                    # Settled but cval != sp by sub-deadband: pin to SP
+                    # exactly so readers see a stable value rather than
+                    # the last sub-deadband drift.
+                    await self.PID_CVAL.write(sp)
+                    await self.PID_OVAL.write(sp)
+                    await self.PID_Err.write(0.0)
+                else:
+                    new_cval = cval + P_GAIN * error
+                    await self.PID_CVAL.write(new_cval)
+                    await self.PID_OVAL.write(new_cval)
+                    await self.PID_Err.write(sp - new_cval)
+                    # VAL mirrors SP (requested target) per the ophyd
+                    # shim's `requested_value = Cpt(EpicsSignalRO,
+                    # "PID.VAL")` naming.
+                    if float(self.PID_VAL.value) != sp:
+                        await self.PID_VAL.write(sp)
             except Exception:
-                log.exception("feedback loop iteration failed; continuing")
+                log.exception("feedback loop write failed; continuing")
 
 
 def main():
