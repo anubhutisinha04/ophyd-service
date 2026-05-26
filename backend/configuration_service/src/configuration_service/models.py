@@ -626,7 +626,18 @@ class StandalonePVCreateRequest(BaseModel):
     # is unremovable via DELETE /api/v1/pvs/standalone/{pv_name:path} since
     # an empty path segment doesn't match the route — once it's in the
     # SQLite store the only way to clear it is to recreate the container.
-    pv_name: str = Field(min_length=1, description="EPICS PV name")
+    #
+    # pattern=^\S+$ additionally rejects whitespace-only names (" ", "\t",
+    # "\n") and names with embedded whitespace ("foo bar", "foo\nbar"). EPICS
+    # PV names never contain whitespace, and whitespace-containing names
+    # reach the same unrecoverable failure mode through a different input
+    # shape (URL-encoded space round-trips inconsistently; embedded newlines
+    # break monitor packets).
+    pv_name: str = Field(
+        min_length=1,
+        pattern=r"^\S+$",
+        description="EPICS PV name (non-empty, no whitespace)",
+    )
     description: Optional[str] = Field(default=None, description="Human-readable description")
     protocol: PVProtocol = Field(default=PVProtocol.CA, description="EPICS protocol")
     access_mode: PVAccessMode = Field(default=PVAccessMode.READ_ONLY, description="Access mode")

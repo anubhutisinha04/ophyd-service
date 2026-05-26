@@ -150,15 +150,21 @@ fi
 pass "all $EXPECTED_RESOLVED addresses resolved"
 
 resolve_body=$(cat /tmp/exer_body)
-# pv_for fails hard if the address didn't match a row or the pv_name is null.
-# Returning "" or the literal "null" silently would propagate downstream into
-# register_pv / check_pv and bury the cause far from the typo.
+# pv_for fails hard if the address didn't match a row, the pv_name is null,
+# OR jq emitted multiple rows. The multi-row case would otherwise produce a
+# newline-joined string that flows into register_pv — backend's min_length=1
+# accepts non-empty values, so a newline-containing pv_name would slip into
+# the registry as an unaddressable entry (same failure shape as the empty-
+# string hole the pattern check on the backend closes).
 pv_for() {
     local out
     out=$(printf '%s' "$resolve_body" \
         | jq -r --arg a "$1" '.resolved[]|select(.address==$a)|.pv_name')
     if [ -z "$out" ] || [ "$out" = "null" ]; then
-        fail "pv_for: '$1' did not resolve to a non-null PV name"
+        fail "pv_for: '$1' did not resolve (no row matched or pv_name is null)"
+    fi
+    if [[ "$out" == *$'\n'* ]]; then
+        fail "pv_for: '$1' resolved to multiple rows: $(printf '%s' "$out" | tr '\n' '|')"
     fi
     printf '%s' "$out"
 }

@@ -321,6 +321,32 @@ class TestCreateStandalonePVEndpoint:
         detail = response.json()
         assert any("pv_name" in str(e).lower() for e in detail.get("detail", []))
 
+    @pytest.mark.parametrize(
+        "bad_pv_name",
+        [
+            " ",          # single space (1 char — passes min_length but no PV)
+            "\t",         # tab
+            "   ",        # multi-space
+            "foo bar",    # embedded space
+            "foo\tbar",   # embedded tab
+            "foo\nbar",   # embedded newline (real risk from exerciser pv_for if jq emits multiple rows)
+        ],
+    )
+    def test_create_pv_whitespace_name_rejected(self, client, bad_pv_name):
+        """Whitespace-only or whitespace-containing pv_names are rejected.
+
+        EPICS PV names never contain whitespace, and whitespace-containing
+        names reach the same unrecoverable registry-entry failure mode as
+        empty names through a different input shape (URL-encoded space
+        round-trips inconsistently; embedded newlines break monitor packets).
+        """
+        response = client.post("/api/v1/pvs", json={"pv_name": bad_pv_name})
+        assert response.status_code == 422, (
+            f"expected 422 for pv_name={bad_pv_name!r}, got {response.status_code}"
+        )
+        detail = response.json()
+        assert any("pv_name" in str(e).lower() for e in detail.get("detail", []))
+
 
 class TestUpdateStandalonePVEndpoint:
     """Test PUT /api/v1/pvs/standalone/{pv_name}."""
