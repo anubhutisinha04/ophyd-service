@@ -70,7 +70,7 @@ def _infer_device_label(
     class_name: str, labels: Optional[List[str]] = None, functional_group: Optional[str] = None
 ) -> DeviceLabel:
     """Infer DeviceLabel from class name, labels, and/or functional group."""
-    # Check labels first (most reliable for BITS/KREIOS)
+    # Check labels first (most reliable for BITS-style entries)
     if labels:
         labels_lower = [l.lower() for l in labels]
         if "motors" in labels_lower or "positioners" in labels_lower:
@@ -176,6 +176,145 @@ def _derive_pvs_from_args(
     return pvs
 
 
+def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
+    """Import a compound ophyd Device class and enumerate every leaf-signal PV.
+
+    Returns a dict keyed by dotted attribute path (e.g. ``"energy.setpoint"``,
+    ``"fly.start_sig"``) mapping to the absolute PV name. Returns ``{}``
+    when the class can't be walked statically:
+
+      - ``device_class_path`` has no module prefix (can't import)
+      - the class isn't a classic-ophyd ``Device`` subclass
+      - the class has no Components
+
+    Module import failures (PYTHONPATH gap, broken transitive dep) log
+    a WARNING and return ``{}`` — the entry falls back to a prefix-only
+    registry entry, preserving the pre-walker behavior so a
+    misconfigured deployment doesn't refuse to start. Operators see the
+    warning during load and can fix the import path or accept the
+    fallback indexing.
+
+    Walk-time exceptions DO propagate (broken custom Device subclass,
+    cyclic Component graph, malformed component_names, etc.) so a real
+    class-side bug lands in the partial-load failures list and
+    ``_raise_if_partial_load`` can refuse to seed silently-bad data.
+
+    Components are skipped (no PV emitted) when their PV can't be derived
+    statically:
+
+      - FmtCpts whose suffix contains a real ``{...}`` placeholder
+      - Cpts whose ``suffix`` is None
+      - Any Component where ``"suffix" not in cpt.add_prefix`` — the
+        suffix is absolute and prepending parent prefix would fabricate
+        a wrong PV. FmtCpt defaults to ``add_prefix=()``, so a static
+        FmtCpt suffix is treated as absolute and indexed as-is.
+
+    The walk runs at registry-load time. It pays one class import per
+    compound entry (cached by ``importlib`` after the first import), which
+    is acceptable for the hundreds-of-entries scale a typical happi DB hits.
+    """
+    if "." not in device_class_path:
+        return {}
+
+    # Lazy imports keep loader.py free of an ophyd dependency unless the
+    # registry actually contains a compound device that triggers this path.
+    import importlib
+
+    try:
+        from ophyd import (
+            Component,
+            Device,
+            DynamicDeviceComponent,
+            FormattedComponent,
+        )
+        from .path_resolver import _has_format_placeholder
+    except ImportError as e:
+        # ophyd is a hard dependency; if it fails to import here the
+        # service is fundamentally broken — log loud and let the entry
+        # fall back to prefix-only so the partial-load guard can see it.
+        logger.warning(
+            f"ophyd unavailable; class walk for {device_class_path!r} "
+            f"skipped: {e}"
+        )
+        return {}
+
+    module_name, class_name = device_class_path.rsplit(".", 1)
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as e:
+        # Import failure logs a warning and falls back to prefix-only
+        # indexing for this entry. A site-deployment misconfigured
+        # PYTHONPATH shouldn't block the whole registry from coming up,
+        # but the warning makes the silent-degrade case visible to
+        # operators. Walk-time exceptions (after a successful import)
+        # still propagate — see the docstring.
+        logger.warning(
+            f"Could not import {module_name!r} for class walk of "
+            f"{class_name!r}: {type(e).__name__}: {e}. "
+            f"Compound device will fall back to prefix-only indexing."
+        )
+        return {}
+    cls = getattr(module, class_name, None)
+    if cls is None or not (isinstance(cls, type) and issubclass(cls, Device)):
+        return {}
+
+    def _is_subdevice(cpt_cls) -> bool:
+        return isinstance(cpt_cls, type) and issubclass(cpt_cls, Device)
+
+    def _absolute_pv(cpt, parent_full_prefix: str) -> Optional[str]:
+        """Mirror ophyd's ``maybe_add_prefix`` for the ``suffix`` attribute.
+
+        Returns the absolute CA PV name for this Component, or None when
+        we can't resolve statically (no suffix, FmtCpt placeholder, etc.).
+        """
+        suffix = cpt.suffix
+        if suffix is None:
+            return None
+        if isinstance(cpt, FormattedComponent):
+            if _has_format_placeholder(suffix):
+                # Needs a live parent instance to interpolate.
+                return None
+            suffix = suffix.format()
+        # ophyd Component.add_prefix lists the kwargs that get parent
+        # prefix prepended. Default for both Cpt and FmtCpt is
+        # ('suffix', 'write_pv'). Operators opt sub-components out of
+        # prefix prepending by passing add_prefix=() (common for
+        # cross-IOC references where the suffix is an absolute PV).
+        add_prefix = getattr(cpt, "add_prefix", ("suffix", "write_pv"))
+        if "suffix" in add_prefix:
+            return parent_full_prefix + suffix
+        return suffix
+
+    pvs: Dict[str, str] = {}
+
+    def walk(cur_cls, path_parts: List[str], current_prefix: str) -> None:
+        for attr_name in getattr(cur_cls, "component_names", ()):
+            cpt = getattr(cur_cls, attr_name, None)
+            if cpt is None:
+                continue
+            new_path = path_parts + [attr_name]
+
+            if isinstance(cpt, DynamicDeviceComponent):
+                # DDC contributes no suffix; descend into the dynamically
+                # -built sub-class carrying the current prefix forward.
+                walk(cpt.cls, new_path, current_prefix)
+                continue
+            if not isinstance(cpt, Component):
+                continue
+
+            full_pv = _absolute_pv(cpt, current_prefix)
+            if full_pv is None:
+                continue
+
+            if _is_subdevice(cpt.cls):
+                walk(cpt.cls, new_path, full_pv)
+            else:
+                pvs[".".join(new_path)] = full_pv
+
+    walk(cls, [], prefix)
+    return pvs
+
+
 # ── HappiProfileLoader ──────────────────────────────────────────────────
 
 
@@ -253,7 +392,31 @@ class HappiProfileLoader:
 
         pvs = _derive_pvs_from_args(class_name, args, kwargs)
 
-        # Fallback: KREIOS-style happi entries have `prefix` but no args.
+        # Compound-device case: the pattern match returned only the
+        # device prefix (or nothing). Try to walk the class for leaf-
+        # signal sub-PVs so they're indexed in the registry at load
+        # time, instead of falling back to a runtime registration
+        # workaround. The walk uses args[0] as the prefix when
+        # available; if args is empty (happi format that stores the
+        # prefix in the `prefix` field) we fall back to entry['prefix'].
+        # Import / walk failures propagate to the per-entry handler in
+        # load_registry.
+        walk_prefix: Optional[str] = None
+        if args and isinstance(args[0], str):
+            walk_prefix = str(args[0])
+        elif prefix:
+            walk_prefix = prefix
+        if walk_prefix and (not pvs or set(pvs.keys()) == {"prefix"}):
+            walked = _walk_class_for_pvs(device_class_path, walk_prefix)
+            if walked:
+                # Replace prefix-only with the full sub-PV inventory.
+                # The bare prefix isn't a real CA PV, so keeping it
+                # alongside the sub-PVs would be noise.
+                pvs = walked
+
+        # Fallback: entry has `prefix` set but the walker either wasn't
+        # applicable (no walkable class) or returned nothing usable.
+        # Index the bare prefix so the device at least has SOME PV entry.
         if prefix and not pvs:
             pvs["prefix"] = prefix
 
@@ -396,7 +559,7 @@ class BitsProfileLoader:
         # Derive class name from module path + creator
         # e.g., "ophyd.sim" -> creator "det" -> class is looked up by creator name
         # e.g., "ophyd.EpicsMotor" -> module IS the class
-        # e.g., "devices.kreios_devices.KreiosDetector" -> last part is class
+        # e.g., "mybl.devices.MyDetector" -> last part is class
         parts = module_path.rsplit(".", 1)
         if len(parts) == 2 and parts[-1][0].isupper():
             # Module path ends with a class name (e.g., "ophyd.EpicsMotor")

@@ -52,9 +52,15 @@ services:
       # Default db_path is /var/lib/bluesky, not writable by the non-root
       # container user. /tmp always is.
       CONFIG_DB_PATH: "/tmp/config_service.db"
+      # The happi DB references compound device classes (localdevs.Det,
+      # .Spot). Loader walks them at registry-load time to index sub-PVs;
+      # without this PYTHONPATH the walker logs a warning and falls back
+      # to prefix-only indexing.
+      PYTHONPATH: "/localdevs"
     volumes:
       - ./shared-schema:/app/openapi
       - ./integration/happi:/profile:ro
+      - ./integration/localdevs:/localdevs:ro
     ports:
       - "8004:8004"
 

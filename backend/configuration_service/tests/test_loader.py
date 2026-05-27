@@ -11,6 +11,7 @@ from configuration_service.loader import (
     _MAX_FAILURES_IN_RAISE,
     BitsProfileLoader,
     HappiProfileLoader,
+    _walk_class_for_pvs,
 )
 
 
@@ -312,3 +313,281 @@ class TestPartialLoadMessageCap:
         with pytest.raises(RuntimeError) as excinfo:
             loader.load_registry()
         assert "...and " not in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Fixture device classes for the class-walker tests below.
+#
+# They must live at module scope so `_walk_class_for_pvs` can
+# `importlib.import_module(__name__)` and `getattr` them by name. Defining
+# them inside a test function would put them under a local namespace the
+# walker can't reach.
+# ---------------------------------------------------------------------------
+
+from ophyd import (  # noqa: E402  (module-level only to keep fixtures importable)
+    Component as Cpt,
+    Device,
+    DynamicDeviceComponent as DDC,
+    EpicsSignal,
+    EpicsSignalRO,
+    FormattedComponent as FmtCpt,
+)
+
+
+class _EnergyAxis(Device):
+    setpoint = Cpt(EpicsSignal, "Enrgy-SP")
+    readback = Cpt(EpicsSignalRO, "Enrgy-I")
+
+
+class _FlyBlock(Device):
+    start_sig = Cpt(EpicsSignal, "Fly:Start-SP")
+    velocity = Cpt(EpicsSignal, "Fly:Velo-SP")
+
+
+class _Mono(Device):
+    """Compound device: nested sub-devices + a leaf at the top level."""
+
+    energy = Cpt(_EnergyAxis, "")
+    fly = Cpt(_FlyBlock, "")
+    move_cmd = Cpt(EpicsSignal, "Cmd:Move-SP")
+
+
+class _WithFmtCpt(Device):
+    """Mixes a placeholder FmtCpt (must be skipped) with a normal Cpt."""
+
+    enable = Cpt(EpicsSignal, "Enable-Sel")
+    stop_sig = FmtCpt(EpicsSignal, "{self.parent.prefix}}}STOP")
+
+
+class _WithStaticFmtCpt(Device):
+    """FmtCpt defaults to add_prefix=(), so its suffix is treated as absolute."""
+
+    static = FmtCpt(EpicsSignal, "Static-PV")
+
+
+class _WithAbsolutePrefixCpt(Device):
+    """Plain Cpt with explicit add_prefix=() — suffix is absolute, parent prefix not prepended."""
+
+    relative = Cpt(EpicsSignal, "Rel-PV")
+    absolute = Cpt(EpicsSignal, "SR:Beam:Current", add_prefix=())
+
+
+class _DDCParent(Device):
+    """DynamicDeviceComponent: its children should appear in the output."""
+
+    rois = DDC(
+        {
+            "roi1": (EpicsSignal, "ROI1:Count", {}),
+            "roi2": (EpicsSignal, "ROI2:Count", {}),
+        }
+    )
+
+
+class _BareDevice(Device):
+    """Device subclass with no components — walker should return empty."""
+
+    pass
+
+
+class _NotADevice:
+    """Plain class — walker must reject it without crashing."""
+
+    pass
+
+
+class TestWalkClassForPVs:
+    """`_walk_class_for_pvs` enumerates every leaf-signal PV under a Device."""
+
+    def test_compound_device_returns_dotted_leaf_paths(self):
+        pvs = _walk_class_for_pvs(f"{__name__}._Mono", "XF:23ID2-OP{Mono}")
+        assert pvs == {
+            "energy.setpoint": "XF:23ID2-OP{Mono}Enrgy-SP",
+            "energy.readback": "XF:23ID2-OP{Mono}Enrgy-I",
+            "fly.start_sig": "XF:23ID2-OP{Mono}Fly:Start-SP",
+            "fly.velocity": "XF:23ID2-OP{Mono}Fly:Velo-SP",
+            "move_cmd": "XF:23ID2-OP{Mono}Cmd:Move-SP",
+        }
+
+    def test_fmtcpt_with_placeholder_is_skipped(self):
+        # The {self.parent.prefix} placeholder can't be resolved without a
+        # live instance — same constraint as path_resolver._walk_class. The
+        # plain Cpt next to it must still appear.
+        pvs = _walk_class_for_pvs(f"{__name__}._WithFmtCpt", "TST:")
+        assert pvs == {"enable": "TST:Enable-Sel"}
+
+    def test_fmtcpt_without_placeholder_uses_default_add_prefix(self):
+        # FmtCpt inherits Component's default add_prefix=('suffix',
+        # 'write_pv'), so static FmtCpt suffixes still get prefix
+        # prepended just like a plain Cpt. (Operators wanting an
+        # absolute FmtCpt set add_prefix=() explicitly — covered by
+        # test_cpt_with_empty_add_prefix_indexed_as_absolute.)
+        pvs = _walk_class_for_pvs(f"{__name__}._WithStaticFmtCpt", "TST:")
+        assert pvs == {"static": "TST:Static-PV"}
+
+    def test_cpt_with_empty_add_prefix_indexed_as_absolute(self):
+        # An explicit add_prefix=() on a plain Cpt means the suffix is
+        # an absolute PV (common pattern for cross-IOC references).
+        # The other Component in the same class uses default add_prefix
+        # and must still get the parent prefix prepended.
+        pvs = _walk_class_for_pvs(
+            f"{__name__}._WithAbsolutePrefixCpt", "XF:23ID2-OP{Mono}"
+        )
+        assert pvs == {
+            "relative": "XF:23ID2-OP{Mono}Rel-PV",
+            "absolute": "SR:Beam:Current",
+        }
+
+    def test_ddc_children_are_walked(self):
+        pvs = _walk_class_for_pvs(f"{__name__}._DDCParent", "DET:")
+        assert pvs == {
+            "rois.roi1": "DET:ROI1:Count",
+            "rois.roi2": "DET:ROI2:Count",
+        }
+
+    def test_bare_device_returns_empty(self):
+        assert _walk_class_for_pvs(f"{__name__}._BareDevice", "TST:") == {}
+
+    def test_non_device_class_returns_empty(self):
+        assert _walk_class_for_pvs(f"{__name__}._NotADevice", "TST:") == {}
+
+    def test_missing_module_logs_warning_and_returns_empty(self, caplog):
+        # An unimportable device_class means the happi DB references a
+        # class that doesn't exist in this deployment. The walker logs
+        # a warning (so the silent-degrade is visible) and returns {}
+        # so the caller falls back to prefix-only indexing — a
+        # misconfigured PYTHONPATH shouldn't block the whole registry
+        # from coming up.
+        with caplog.at_level("WARNING"):
+            result = _walk_class_for_pvs(
+                "nonexistent_module_xyz.WhateverClass", "TST:"
+            )
+        assert result == {}
+        assert any(
+            "nonexistent_module_xyz" in r.message
+            and "prefix-only" in r.message
+            for r in caplog.records
+        )
+
+    def test_missing_class_in_real_module_returns_empty(self):
+        # The module imports fine — class lookup returning None is a
+        # different shape (e.g. someone passed a non-Device class name
+        # the pattern matcher should have handled). Silent return so
+        # the caller falls through to prefix-only.
+        assert _walk_class_for_pvs(f"{__name__}.NoSuchClass", "TST:") == {}
+
+    def test_bare_class_name_no_module_returns_empty(self):
+        # No dot → can't split into module + class.
+        assert _walk_class_for_pvs("JustAName", "TST:") == {}
+
+
+class TestLoaderWalksCompoundDevices:
+    """End-to-end: a happi entry pointing at a compound class registers all sub-PVs."""
+
+    def test_compound_device_entry_seeds_sub_pvs_into_registry(self, tmp_path):
+        profile = tmp_path / "profile"
+        entry = {
+            "_id": "mono",
+            "active": True,
+            "args": ["{{prefix}}"],
+            "kwargs": {"name": "{{name}}"},
+            "type": "OphydItem",
+            "device_class": f"{__name__}._Mono",
+            "name": "mono",
+            "prefix": "XF:23ID2-OP{Mono}",
+        }
+        _write_happi_profile(profile, {"mono": entry})
+
+        registry = HappiProfileLoader(profile).load_registry()
+
+        # The mono device is registered, AND every leaf PV under it is
+        # indexed by PV name (so direct-control's per-PV validate call
+        # finds them without a runtime standalone-PV registration).
+        assert "mono" in registry.devices
+        expected_pvs = {
+            "XF:23ID2-OP{Mono}Enrgy-SP",
+            "XF:23ID2-OP{Mono}Enrgy-I",
+            "XF:23ID2-OP{Mono}Fly:Start-SP",
+            "XF:23ID2-OP{Mono}Fly:Velo-SP",
+            "XF:23ID2-OP{Mono}Cmd:Move-SP",
+        }
+        assert expected_pvs.issubset(set(registry.pvs))
+        # And the bare prefix is NOT in the registry — it isn't a real CA
+        # PV, so leaving it in would be noise that masks real misses.
+        assert "XF:23ID2-OP{Mono}" not in registry.pvs
+
+    def test_unimportable_compound_class_falls_back_to_prefix(
+        self, tmp_path, caplog
+    ):
+        # If the device class can't be imported (PYTHONPATH gap, missing
+        # site module), the walker logs a warning and returns {}. The
+        # loader then keeps the prefix-only entry — the registry loads
+        # with degraded indexing for this device. Operators see the
+        # warning during load. Walk-time exceptions (after a successful
+        # import) still propagate to _raise_if_partial_load — that case
+        # is exercised by test_missing_module_logs_warning_and_returns_empty
+        # at the unit-test level.
+        profile = tmp_path / "profile"
+        entry = {
+            "_id": "ghost",
+            "active": True,
+            "args": ["XF:99ID-OP{Ghost}"],
+            "kwargs": {"name": "{{name}}"},
+            "type": "OphydItem",
+            "device_class": "nonexistent_pkg_xyz.Ghost",
+            "name": "ghost",
+            "prefix": "XF:99ID-OP{Ghost}",
+        }
+        _write_happi_profile(profile, {"ghost": entry})
+
+        with caplog.at_level("WARNING"):
+            registry = HappiProfileLoader(profile).load_registry()
+        assert "ghost" in registry.devices
+        assert "XF:99ID-OP{Ghost}" in registry.pvs
+        assert any(
+            "nonexistent_pkg_xyz" in r.message
+            for r in caplog.records
+        )
+
+    def test_entry_with_empty_args_walks_using_prefix_field(self, tmp_path):
+        # Some happi formats store the prefix in entry['prefix'] with
+        # args=[] (no positional ctor args). The walker must still run,
+        # using entry['prefix'] as the walk root, so compound devices
+        # in this format get their sub-PVs indexed too.
+        profile = tmp_path / "profile"
+        entry = {
+            "_id": "mono_alt",
+            "active": True,
+            "args": [],
+            "kwargs": {"name": "{{name}}"},
+            "type": "OphydItem",
+            "device_class": f"{__name__}._Mono",
+            "name": "mono_alt",
+            "prefix": "XF:23ID2-OP{Mono}",
+        }
+        _write_happi_profile(profile, {"mono_alt": entry})
+
+        registry = HappiProfileLoader(profile).load_registry()
+        assert "mono_alt" in registry.devices
+        assert "XF:23ID2-OP{Mono}Enrgy-SP" in registry.pvs
+        assert "XF:23ID2-OP{Mono}Cmd:Move-SP" in registry.pvs
+        # Bare prefix not retained when the walk produced real PVs.
+        assert "XF:23ID2-OP{Mono}" not in registry.pvs
+
+    def test_epics_signal_still_uses_pattern_match_not_walk(self, tmp_path):
+        # Walker shouldn't run for shapes the pattern matcher already
+        # handles — EpicsSignal subclass yields no Components, so a walk
+        # would return {} and clobber the pattern-derived "readback" PV.
+        profile = tmp_path / "profile"
+        entry = {
+            "_id": "scalar",
+            "active": True,
+            "args": ["TST:Single-SP"],
+            "kwargs": {},
+            "type": "OphydItem",
+            "device_class": "ophyd.EpicsSignal",
+            "name": "scalar",
+        }
+        _write_happi_profile(profile, {"scalar": entry})
+
+        registry = HappiProfileLoader(profile).load_registry()
+        assert "TST:Single-SP" in registry.pvs
