@@ -187,14 +187,17 @@ def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
       - the class isn't a classic-ophyd ``Device`` subclass
       - the class has no Components
 
-    Other failure modes propagate to the caller (``_process_entry``) so the
-    happi entry lands in the partial-load failures list and ``
-    _raise_if_partial_load`` can refuse to seed the registry rather than
-    accepting a silent partial walk:
+    Module import failures (PYTHONPATH gap, broken transitive dep) log
+    a WARNING and return ``{}`` — the entry falls back to a prefix-only
+    registry entry, preserving the pre-walker behavior so a
+    misconfigured deployment doesn't refuse to start. Operators see the
+    warning during load and can fix the import path or accept the
+    fallback indexing.
 
-      - module import raises (PYTHONPATH gap, broken transitive dep, etc.)
-      - any exception inside the walk (broken custom Device subclass,
-        cyclic Component graph hitting recursion limit, etc.)
+    Walk-time exceptions DO propagate (broken custom Device subclass,
+    cyclic Component graph, malformed component_names, etc.) so a real
+    class-side bug lands in the partial-load failures list and
+    ``_raise_if_partial_load`` can refuse to seed silently-bad data.
 
     Components are skipped (no PV emitted) when their PV can't be derived
     statically:
@@ -236,12 +239,21 @@ def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
         return {}
 
     module_name, class_name = device_class_path.rsplit(".", 1)
-    # Import failures and walk-time exceptions intentionally propagate.
-    # _process_entry's per-entry try/except routes them into the partial
-    # -load failures list, and _raise_if_partial_load decides whether to
-    # abort. Silently returning {} here would mask both a misconfigured
-    # PYTHONPATH and a buggy custom Device class.
-    module = importlib.import_module(module_name)
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as e:
+        # Import failure logs a warning and falls back to prefix-only
+        # indexing for this entry. A site-deployment misconfigured
+        # PYTHONPATH shouldn't block the whole registry from coming up,
+        # but the warning makes the silent-degrade case visible to
+        # operators. Walk-time exceptions (after a successful import)
+        # still propagate — see the docstring.
+        logger.warning(
+            f"Could not import {module_name!r} for class walk of "
+            f"{class_name!r}: {type(e).__name__}: {e}. "
+            f"Compound device will fall back to prefix-only indexing."
+        )
+        return {}
     cls = getattr(module, class_name, None)
     if cls is None or not (isinstance(cls, type) and issubclass(cls, Device)):
         return {}

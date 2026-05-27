@@ -6,9 +6,12 @@ dependency on the `nslsii` package). Kept minimal — only classes any pod's
 happi_db.json references. Add more when new IOCs join the pod.
 
 Used by:
-- configuration_service: inert — HappiProfileLoader does pure JSON parsing,
-  never imports this file. But it's worth shipping here so other in-pod
-  consumers can reach it.
+- configuration_service: HappiProfileLoader imports compound device classes
+  named in the happi DB so its `_walk_class_for_pvs` helper can index each
+  leaf-signal PV at registry-load time. Mount this directory into the
+  configuration_service container and add it to PYTHONPATH so the walker
+  can reach these classes. If the import fails, the loader logs a warning
+  and falls back to prefix-only indexing for that entry.
 - bluesky RunEngine / queueserver (future): imports and instantiates these
   classes from the happi database. Mount this directory into whichever
   container needs to construct the devices.
