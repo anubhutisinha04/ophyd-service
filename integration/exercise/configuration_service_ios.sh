@@ -159,12 +159,10 @@ body='{"addresses":[
   "sclr.time",
   "sclr.channels.chan1",
   "sclr_time",
-  "m1b1_setpoint"
+  "m1b1_setpoint",
+  "m1b1.fbl.enable",
+  "m1b1.fbl.actual_value"
 ]}'
-# m1b1.fbl.* paths intentionally omitted: the resolver doesn't honor
-# `add_prefix=""` on Components (FeedbackLoop's literal prefix gets
-# concatenated onto M1bMirror's). Hardcoded below as a workaround;
-# tracked as resolver tech debt.
 status=$(req POST "${CONFIG_URL}/api/v1/devices/resolve" "$body")
 expect_status 200 "$status" "POST /api/v1/devices/resolve"
 
@@ -176,7 +174,7 @@ fi
 # `all` over zero rows is true — verify the server actually returned the
 # expected row count so a dropped/missing entry can't slip past as
 # "all ok" of nothing.
-EXPECTED_RESOLVED=29
+EXPECTED_RESOLVED=31
 actual_resolved=$(jq -r '.resolved | length' < /tmp/exer_body)
 if [ "$actual_resolved" != "$EXPECTED_RESOLVED" ]; then
     note "resolve response: $(cat /tmp/exer_body)"
@@ -242,14 +240,13 @@ PV_SCLR_T=$(pv_for "sclr.time")
 PV_SCLR_S1=$(pv_for "sclr.channels.chan1")
 PV_SCLR_TP=$(pv_for "sclr_time")
 
-# Phase 3: Feedback. m1b1_setpoint resolves via the top-level happi entry.
-# Sts:FB-Sel and PID.CVAL are hardcoded — the resolver doesn't honor
-# `add_prefix=""` on the FeedbackLoop Component, so walking m1b1.fbl.*
-# produces garbage prefixes. Resolver fix tracked separately; hardcoding
-# matches the literal FBck prefix that the IOC actually serves.
+# Phase 3: Feedback. m1b1_setpoint is a top-level happi entry; the two
+# m1b1.fbl.* paths walk M1bMirror → FeedbackLoop. The FeedbackLoop Cpt
+# is declared with add_prefix=() so its literal XF:23ID2-OP{FBck} prefix
+# wins over M1bMirror's prefix.
 PV_FB_SP=$(pv_for "m1b1_setpoint")
-PV_FB_ENABLE='XF:23ID2-OP{FBck}Sts:FB-Sel'
-PV_FB_CVAL='XF:23ID2-OP{FBck}PID.CVAL'
+PV_FB_ENABLE=$(pv_for "m1b1.fbl.enable")
+PV_FB_CVAL=$(pv_for "m1b1.fbl.actual_value")
 
 pass "Enrgy-SP        = ${PV_ENRGY_SP}"
 pass "Enrgy-I         = ${PV_ENRGY_I}"

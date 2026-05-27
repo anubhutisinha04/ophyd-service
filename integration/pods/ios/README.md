@@ -149,15 +149,7 @@ These are real bugs in the surrounding services that the exerciser
 works around. They're tracked in the workspace's `project_technical_debt`
 memo with concrete fix recipes.
 
-1. **path_resolver doesn't honor `add_prefix=""`.** Walking
-   `m1b1.fbl.enable` should return `XF:23ID2-OP{FBck}Sts:FB-Sel`
-   (the FeedbackLoop Cpt uses `add_prefix=""` on the M1bMirror).
-   Instead the resolver concatenates: `XF:23IDA-OP:2{Mir:1A
-   XF:23ID2-OP{FBck}Sts:FB-Sel` — garbage. The exerciser hardcodes
-   the two FBck PVs (Sts:FB-Sel + PID.CVAL); `m1b1_setpoint` (top-
-   level happi entry, no walking) is unaffected.
-
-2. **direct-control fire-and-forget masks IOC putter rejections.**
+1. **direct-control fire-and-forget masks IOC putter rejections.**
    The default `POST /api/v1/pv/set/batch` mode is fire-and-forget;
    direct-control returns `success=true` even when caproto rejects
    the CA write (e.g., when an IOC putter raises ValueError or
