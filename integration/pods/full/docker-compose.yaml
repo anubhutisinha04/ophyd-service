@@ -92,8 +92,14 @@ services:
       CONFIG_LOAD_STRATEGY: "happi"
       CONFIG_PROFILE_PATH: "/profile"
       CONFIG_DB_PATH: "/tmp/config_service.db"
+      # The happi DB references compound device classes (localdevs.Det,
+      # localdevs.Spot). Loader walks those classes to index sub-PVs at
+      # registry-load time, so the module must be importable. Falls back
+      # to prefix-only indexing with a warning if the import fails.
+      PYTHONPATH: "/localdevs"
     volumes:
       - ../../happi:/profile:ro
+      - ../../localdevs:/localdevs:ro
     ports:
       - "8004:8004"
 

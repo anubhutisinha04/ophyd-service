@@ -450,14 +450,23 @@ class TestWalkClassForPVs:
     def test_non_device_class_returns_empty(self):
         assert _walk_class_for_pvs(f"{__name__}._NotADevice", "TST:") == {}
 
-    def test_missing_module_propagates_import_error(self):
+    def test_missing_module_logs_warning_and_returns_empty(self, caplog):
         # An unimportable device_class means the happi DB references a
-        # class that doesn't exist in this deployment. Per the no-silent
-        # -fallbacks rule, the error must propagate so the caller
-        # (_process_entry) can mark the entry as failed and let
-        # _raise_if_partial_load decide whether to abort the load.
-        with pytest.raises(ModuleNotFoundError):
-            _walk_class_for_pvs("nonexistent_module_xyz.WhateverClass", "TST:")
+        # class that doesn't exist in this deployment. The walker logs
+        # a warning (so the silent-degrade is visible) and returns {}
+        # so the caller falls back to prefix-only indexing — a
+        # misconfigured PYTHONPATH shouldn't block the whole registry
+        # from coming up.
+        with caplog.at_level("WARNING"):
+            result = _walk_class_for_pvs(
+                "nonexistent_module_xyz.WhateverClass", "TST:"
+            )
+        assert result == {}
+        assert any(
+            "nonexistent_module_xyz" in r.message
+            and "prefix-only" in r.message
+            for r in caplog.records
+        )
 
     def test_missing_class_in_real_module_returns_empty(self):
         # The module imports fine — class lookup returning None is a
@@ -506,13 +515,17 @@ class TestLoaderWalksCompoundDevices:
         # PV, so leaving it in would be noise that masks real misses.
         assert "XF:23ID2-OP{Mono}" not in registry.pvs
 
-    def test_unimportable_compound_class_fails_load_loudly(self, tmp_path):
+    def test_unimportable_compound_class_falls_back_to_prefix(
+        self, tmp_path, caplog
+    ):
         # If the device class can't be imported (PYTHONPATH gap, missing
-        # site module), the walker propagates the ImportError. The
-        # loader's per-entry handler logs it into the failures list, and
-        # _raise_if_partial_load refuses to seed a partial registry.
-        # No silent fallback to prefix-only — operators must fix the
-        # happi DB or the PYTHONPATH.
+        # site module), the walker logs a warning and returns {}. The
+        # loader then keeps the prefix-only entry — the registry loads
+        # with degraded indexing for this device. Operators see the
+        # warning during load. Walk-time exceptions (after a successful
+        # import) still propagate to _raise_if_partial_load — that case
+        # is exercised by test_missing_module_logs_warning_and_returns_empty
+        # at the unit-test level.
         profile = tmp_path / "profile"
         entry = {
             "_id": "ghost",
@@ -526,11 +539,14 @@ class TestLoaderWalksCompoundDevices:
         }
         _write_happi_profile(profile, {"ghost": entry})
 
-        with pytest.raises(RuntimeError) as excinfo:
-            HappiProfileLoader(profile).load_registry()
-        msg = str(excinfo.value)
-        assert "ghost:" in msg
-        assert "nonexistent_pkg_xyz" in msg
+        with caplog.at_level("WARNING"):
+            registry = HappiProfileLoader(profile).load_registry()
+        assert "ghost" in registry.devices
+        assert "XF:99ID-OP{Ghost}" in registry.pvs
+        assert any(
+            "nonexistent_pkg_xyz" in r.message
+            for r in caplog.records
+        )
 
     def test_entry_with_empty_args_walks_using_prefix_field(self, tmp_path):
         # Some happi formats store the prefix in entry['prefix'] with
