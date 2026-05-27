@@ -3788,8 +3788,10 @@
         "properties": {
           "pv_name": {
             "type": "string",
+            "minLength": 1,
+            "pattern": "^[\\x21-\\x7e]+$",
             "title": "Pv Name",
-            "description": "EPICS PV name"
+            "description": "EPICS PV name (non-empty, printable ASCII, no whitespace)"
           },
           "description": {
             "anyOf": [
