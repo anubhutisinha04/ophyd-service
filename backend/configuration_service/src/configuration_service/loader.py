@@ -176,6 +176,106 @@ def _derive_pvs_from_args(
     return pvs
 
 
+def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
+    """Import a compound ophyd Device class and enumerate every leaf-signal PV.
+
+    Returns a dict keyed by dotted attribute path (e.g. ``"energy.setpoint"``,
+    ``"fly.start_sig"``) mapping to the full PV name (``prefix`` concatenated
+    with the chained Component suffixes). Returns ``{}`` when:
+
+      - ``device_class_path`` has no module prefix (can't import)
+      - the import fails (module not on PYTHONPATH, ImportError, etc.)
+      - the class isn't a ``classic-ophyd Device`` subclass
+      - the class has no Components
+
+    FmtCpts with real ``{...}`` format placeholders (e.g.
+    ``"{self.parent.prefix}}}MOVE_CMD"``) are skipped — same constraint as
+    ``path_resolver._walk_class``. ``add_prefix=()`` / ``add_prefix=""`` is
+    NOT yet honored (sub-component prefix is always concatenated with the
+    parent's); tracked separately as a resolver-side gap that affects this
+    walker too.
+
+    The walk runs at registry-load time. It pays one class import per
+    compound entry (cached by ``importlib`` after the first import), which
+    is acceptable for the hundreds-of-entries scale a typical happi DB hits.
+    """
+    if "." not in device_class_path:
+        return {}
+
+    # Lazy imports keep loader.py free of an ophyd dependency unless the
+    # registry actually contains a compound device that triggers this path.
+    import importlib
+
+    try:
+        from ophyd import (
+            Component,
+            Device,
+            DynamicDeviceComponent,
+            FormattedComponent,
+        )
+        from .path_resolver import _has_format_placeholder
+    except ImportError as e:
+        logger.debug(f"ophyd unavailable; skipping class walk: {e}")
+        return {}
+
+    module_name, class_name = device_class_path.rsplit(".", 1)
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as e:
+        logger.debug(
+            f"Could not import {module_name!r} to walk {class_name}: {e}"
+        )
+        return {}
+    cls = getattr(module, class_name, None)
+    if cls is None or not (isinstance(cls, type) and issubclass(cls, Device)):
+        return {}
+
+    pvs: Dict[str, str] = {}
+
+    def _is_subdevice(cpt_cls) -> bool:
+        return isinstance(cpt_cls, type) and issubclass(cpt_cls, Device)
+
+    def walk(cur_cls, path_parts: List[str], suffix_so_far: str) -> None:
+        for attr_name in getattr(cur_cls, "component_names", ()):
+            cpt = getattr(cur_cls, attr_name, None)
+            if cpt is None:
+                continue
+            new_path = path_parts + [attr_name]
+
+            if isinstance(cpt, FormattedComponent):
+                if _has_format_placeholder(cpt.suffix):
+                    # Can't resolve placeholder without a live parent
+                    # instance — same call as path_resolver._walk_class.
+                    continue
+                new_suffix = suffix_so_far + cpt.suffix.format()
+            elif isinstance(cpt, DynamicDeviceComponent):
+                # DDC contributes no suffix of its own; descend into the
+                # dynamically-built sub-class so its children get walked.
+                walk(cpt.cls, new_path, suffix_so_far)
+                continue
+            elif isinstance(cpt, Component):
+                new_suffix = suffix_so_far + cpt.suffix
+            else:
+                continue
+
+            if _is_subdevice(cpt.cls):
+                walk(cpt.cls, new_path, new_suffix)
+            else:
+                pvs[".".join(new_path)] = prefix + new_suffix
+
+    try:
+        walk(cls, [], "")
+    except Exception as e:
+        # Defensive: a buggy custom Device subclass shouldn't break the
+        # whole load. Log + return whatever we collected before the error.
+        logger.warning(
+            f"Class walk for {device_class_path} raised {type(e).__name__}: {e} "
+            f"(returning {len(pvs)} PVs collected so far)"
+        )
+
+    return pvs
+
+
 # ── HappiProfileLoader ──────────────────────────────────────────────────
 
 
@@ -252,6 +352,25 @@ class HappiProfileLoader:
         kwargs = _resolve_happi_templates(entry.get("kwargs", {}), prefix, name)
 
         pvs = _derive_pvs_from_args(class_name, args, kwargs)
+
+        # Compound-device case: the pattern match returned only the
+        # device prefix (or nothing). Try to walk the class for leaf-
+        # signal sub-PVs so they're indexed in the registry at load
+        # time, instead of falling back to a runtime registration
+        # workaround. The walk is best-effort — if the class can't be
+        # imported (PYTHONPATH gap, ImportError) or yields nothing, we
+        # fall through to the prefix-only entry below.
+        if (
+            (not pvs or set(pvs.keys()) == {"prefix"})
+            and args
+            and isinstance(args[0], str)
+        ):
+            walked = _walk_class_for_pvs(device_class_path, str(args[0]))
+            if walked:
+                # Replace prefix-only with the full sub-PV inventory.
+                # The bare prefix isn't a real CA PV, so keeping it
+                # alongside the sub-PVs would be noise.
+                pvs = walked
 
         # Fallback: KREIOS-style happi entries have `prefix` but no args.
         if prefix and not pvs:
