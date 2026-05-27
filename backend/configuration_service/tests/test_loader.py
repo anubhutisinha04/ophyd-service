@@ -360,9 +360,16 @@ class _WithFmtCpt(Device):
 
 
 class _WithStaticFmtCpt(Device):
-    """FmtCpt whose suffix has no placeholders is treated like a normal Cpt."""
+    """FmtCpt defaults to add_prefix=(), so its suffix is treated as absolute."""
 
     static = FmtCpt(EpicsSignal, "Static-PV")
+
+
+class _WithAbsolutePrefixCpt(Device):
+    """Plain Cpt with explicit add_prefix=() — suffix is absolute, parent prefix not prepended."""
+
+    relative = Cpt(EpicsSignal, "Rel-PV")
+    absolute = Cpt(EpicsSignal, "SR:Beam:Current", add_prefix=())
 
 
 class _DDCParent(Device):
@@ -408,9 +415,27 @@ class TestWalkClassForPVs:
         pvs = _walk_class_for_pvs(f"{__name__}._WithFmtCpt", "TST:")
         assert pvs == {"enable": "TST:Enable-Sel"}
 
-    def test_fmtcpt_without_placeholder_is_included(self):
+    def test_fmtcpt_without_placeholder_uses_default_add_prefix(self):
+        # FmtCpt inherits Component's default add_prefix=('suffix',
+        # 'write_pv'), so static FmtCpt suffixes still get prefix
+        # prepended just like a plain Cpt. (Operators wanting an
+        # absolute FmtCpt set add_prefix=() explicitly — covered by
+        # test_cpt_with_empty_add_prefix_indexed_as_absolute.)
         pvs = _walk_class_for_pvs(f"{__name__}._WithStaticFmtCpt", "TST:")
         assert pvs == {"static": "TST:Static-PV"}
+
+    def test_cpt_with_empty_add_prefix_indexed_as_absolute(self):
+        # An explicit add_prefix=() on a plain Cpt means the suffix is
+        # an absolute PV (common pattern for cross-IOC references).
+        # The other Component in the same class uses default add_prefix
+        # and must still get the parent prefix prepended.
+        pvs = _walk_class_for_pvs(
+            f"{__name__}._WithAbsolutePrefixCpt", "XF:23ID2-OP{Mono}"
+        )
+        assert pvs == {
+            "relative": "XF:23ID2-OP{Mono}Rel-PV",
+            "absolute": "SR:Beam:Current",
+        }
 
     def test_ddc_children_are_walked(self):
         pvs = _walk_class_for_pvs(f"{__name__}._DDCParent", "DET:")
@@ -425,14 +450,20 @@ class TestWalkClassForPVs:
     def test_non_device_class_returns_empty(self):
         assert _walk_class_for_pvs(f"{__name__}._NotADevice", "TST:") == {}
 
-    def test_missing_module_returns_empty(self):
-        # ImportError must be caught — bad happi entry shouldn't blow up
-        # registry load; the caller falls back to prefix-only indexing.
-        assert _walk_class_for_pvs(
-            "nonexistent_module_xyz.WhateverClass", "TST:"
-        ) == {}
+    def test_missing_module_propagates_import_error(self):
+        # An unimportable device_class means the happi DB references a
+        # class that doesn't exist in this deployment. Per the no-silent
+        # -fallbacks rule, the error must propagate so the caller
+        # (_process_entry) can mark the entry as failed and let
+        # _raise_if_partial_load decide whether to abort the load.
+        with pytest.raises(ModuleNotFoundError):
+            _walk_class_for_pvs("nonexistent_module_xyz.WhateverClass", "TST:")
 
     def test_missing_class_in_real_module_returns_empty(self):
+        # The module imports fine — class lookup returning None is a
+        # different shape (e.g. someone passed a non-Device class name
+        # the pattern matcher should have handled). Silent return so
+        # the caller falls through to prefix-only.
         assert _walk_class_for_pvs(f"{__name__}.NoSuchClass", "TST:") == {}
 
     def test_bare_class_name_no_module_returns_empty(self):
@@ -475,11 +506,13 @@ class TestLoaderWalksCompoundDevices:
         # PV, so leaving it in would be noise that masks real misses.
         assert "XF:23ID2-OP{Mono}" not in registry.pvs
 
-    def test_unimportable_compound_class_falls_back_to_prefix(self, tmp_path):
+    def test_unimportable_compound_class_fails_load_loudly(self, tmp_path):
         # If the device class can't be imported (PYTHONPATH gap, missing
-        # site module), the walker returns {} and the loader keeps the
-        # prefix-only entry it would have used pre-fix. No crash, no
-        # silent drop of the entry.
+        # site module), the walker propagates the ImportError. The
+        # loader's per-entry handler logs it into the failures list, and
+        # _raise_if_partial_load refuses to seed a partial registry.
+        # No silent fallback to prefix-only — operators must fix the
+        # happi DB or the PYTHONPATH.
         profile = tmp_path / "profile"
         entry = {
             "_id": "ghost",
@@ -493,9 +526,36 @@ class TestLoaderWalksCompoundDevices:
         }
         _write_happi_profile(profile, {"ghost": entry})
 
+        with pytest.raises(RuntimeError) as excinfo:
+            HappiProfileLoader(profile).load_registry()
+        msg = str(excinfo.value)
+        assert "ghost:" in msg
+        assert "nonexistent_pkg_xyz" in msg
+
+    def test_entry_with_empty_args_walks_using_prefix_field(self, tmp_path):
+        # Some happi formats store the prefix in entry['prefix'] with
+        # args=[] (no positional ctor args). The walker must still run,
+        # using entry['prefix'] as the walk root, so compound devices
+        # in this format get their sub-PVs indexed too.
+        profile = tmp_path / "profile"
+        entry = {
+            "_id": "mono_alt",
+            "active": True,
+            "args": [],
+            "kwargs": {"name": "{{name}}"},
+            "type": "OphydItem",
+            "device_class": f"{__name__}._Mono",
+            "name": "mono_alt",
+            "prefix": "XF:23ID2-OP{Mono}",
+        }
+        _write_happi_profile(profile, {"mono_alt": entry})
+
         registry = HappiProfileLoader(profile).load_registry()
-        assert "ghost" in registry.devices
-        assert "XF:99ID-OP{Ghost}" in registry.pvs
+        assert "mono_alt" in registry.devices
+        assert "XF:23ID2-OP{Mono}Enrgy-SP" in registry.pvs
+        assert "XF:23ID2-OP{Mono}Cmd:Move-SP" in registry.pvs
+        # Bare prefix not retained when the walk produced real PVs.
+        assert "XF:23ID2-OP{Mono}" not in registry.pvs
 
     def test_epics_signal_still_uses_pattern_match_not_walk(self, tmp_path):
         # Walker shouldn't run for shapes the pattern matcher already
