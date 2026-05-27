@@ -1,0 +1,62 @@
+{
+  "sim_detector": {
+    "_id": "sim_detector",
+    "active": true,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "tests.fixtures.role_classes._SimDetector",
+    "name": "sim_detector",
+    "prefix": "SIM:DET:01:"
+  },
+  "sim_motor": {
+    "_id": "sim_motor",
+    "active": true,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "ophyd.EpicsMotor",
+    "name": "sim_motor",
+    "prefix": "SIM:MTR:01:"
+  },
+  "dual_axis_stage": {
+    "_id": "dual_axis_stage",
+    "active": true,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "tests.fixtures.role_classes._DualAxisStage",
+    "name": "dual_axis_stage",
+    "prefix": "SIM:STAGE:01-"
+  },
+  "quad_em": {
+    "_id": "quad_em",
+    "active": true,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "tests.fixtures.role_classes._QuadEM",
+    "name": "quad_em",
+    "prefix": "SIM:EM:01:"
+  },
+  "temp_controller": {
+    "_id": "temp_controller",
+    "active": true,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "tests.fixtures.role_classes._TempController",
+    "name": "temp_controller",
+    "prefix": "SIM:TEMP:01:"
+  },
+  "soft_ioc_base": {
+    "_id": "soft_ioc_base",
+    "active": true,
+    "args": ["{{prefix}}"],
+    "kwargs": {"name": "{{name}}"},
+    "type": "OphydItem",
+    "device_class": "tests.fixtures.role_classes._SoftIOCBase",
+    "name": "soft_ioc_base",
+    "prefix": "SIM:IOC:01:"
+  }
+}

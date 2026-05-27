@@ -395,6 +395,34 @@ class _NotADevice:
     pass
 
 
+class _SubBlock(Device):
+    val = Cpt(EpicsSignal, "Val")
+
+
+class _TwoSiblingsSameType(Device):
+    """Two sub-devices of the same class — recursion-guard must not
+    false-positive on sibling subtrees that both visit the same class."""
+
+    a = Cpt(_SubBlock, "A:")
+    b = Cpt(_SubBlock, "B:")
+
+
+class _CyclicSelfRef(Device):
+    """Self-cycle test. Cycle injected post-class-creation because legal
+    Python can't express direct self-reference at class-definition time.
+
+    `_walk_class_for_pvs` only reads `component_names` and `getattr(cls,
+    name)`, so the minimal patch below is enough for the walker code
+    path even though it bypasses ophyd's `_sig_attrs` bookkeeping.
+    """
+
+    leaf = Cpt(EpicsSignal, "Leaf-PV")
+
+
+_CyclicSelfRef.self_loop = Cpt(_CyclicSelfRef, "Loop:")
+_CyclicSelfRef.component_names = _CyclicSelfRef.component_names + ("self_loop",)
+
+
 class TestWalkClassForPVs:
     """`_walk_class_for_pvs` enumerates every leaf-signal PV under a Device."""
 
@@ -478,6 +506,23 @@ class TestWalkClassForPVs:
     def test_bare_class_name_no_module_returns_empty(self):
         # No dot → can't split into module + class.
         assert _walk_class_for_pvs("JustAName", "TST:") == {}
+
+    def test_sibling_sub_devices_of_same_class_both_walked(self):
+        # Two siblings of type _SubBlock — recursion guard uses
+        # copy-on-descent so neither sibling subtree poisons the other.
+        pvs = _walk_class_for_pvs(f"{__name__}._TwoSiblingsSameType", "TST:")
+        assert pvs == {"a.val": "TST:A:Val", "b.val": "TST:B:Val"}
+
+    def test_self_cycle_raises_descriptive_value_error(self):
+        # Pre-fix this hit Python's 1000-frame recursion limit. Post-fix
+        # it raises a ValueError that names the offending class + path so
+        # operators can locate the broken Device definition.
+        with pytest.raises(ValueError) as excinfo:
+            _walk_class_for_pvs(f"{__name__}._CyclicSelfRef", "TST:")
+        msg = str(excinfo.value)
+        assert "Cycle detected" in msg
+        assert "_CyclicSelfRef" in msg
+        assert "self_loop" in msg
 
 
 class TestLoaderWalksCompoundDevices:

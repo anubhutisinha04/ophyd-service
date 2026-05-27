@@ -199,6 +199,12 @@ def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
     class-side bug lands in the partial-load failures list and
     ``_raise_if_partial_load`` can refuse to seed silently-bad data.
 
+    Cyclic graphs (a Component whose ``.cls`` resolves to an ancestor
+    of the current class on the recursion path) raise ``ValueError``
+    with the cycle path, instead of recursing until Python's default
+    1000-frame limit raises ``RecursionError``. Same fail-loud
+    behavior, better diagnostic.
+
     Components are skipped (no PV emitted) when their PV can't be derived
     statically:
 
@@ -287,7 +293,29 @@ def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
 
     pvs: Dict[str, str] = {}
 
-    def walk(cur_cls, path_parts: List[str], current_prefix: str) -> None:
+    def walk(
+        cur_cls,
+        path_parts: List[str],
+        current_prefix: str,
+        visited: frozenset,
+    ) -> None:
+        if id(cur_cls) in visited:
+            # `visited` carries the ancestor classes on the recursion
+            # path from the root walk. A revisit means a Component's
+            # `.cls` resolves back to one of our ancestors → infinite
+            # descent. Copy-on-descent semantics (visited | {...}) keep
+            # sibling subtrees independent: two siblings both of type
+            # SomeDevice are fine; only re-entry along the same path
+            # triggers this.
+            here = ".".join(path_parts) if path_parts else "<root>"
+            raise ValueError(
+                f"Cycle detected walking {cls.__module__}.{cls.__name__}: "
+                f"class {cur_cls.__module__}.{cur_cls.__name__} revisited "
+                f"at attribute path {here!r}. A Component's `.cls` "
+                f"transitively references an ancestor class on the walk path."
+            )
+        visited = visited | {id(cur_cls)}
+
         for attr_name in getattr(cur_cls, "component_names", ()):
             cpt = getattr(cur_cls, attr_name, None)
             if cpt is None:
@@ -297,7 +325,7 @@ def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
             if isinstance(cpt, DynamicDeviceComponent):
                 # DDC contributes no suffix; descend into the dynamically
                 # -built sub-class carrying the current prefix forward.
-                walk(cpt.cls, new_path, current_prefix)
+                walk(cpt.cls, new_path, current_prefix, visited)
                 continue
             if not isinstance(cpt, Component):
                 continue
@@ -307,11 +335,11 @@ def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
                 continue
 
             if _is_subdevice(cpt.cls):
-                walk(cpt.cls, new_path, full_pv)
+                walk(cpt.cls, new_path, full_pv, visited)
             else:
                 pvs[".".join(new_path)] = full_pv
 
-    walk(cls, [], prefix)
+    walk(cls, [], prefix, frozenset())
     return pvs
 
 
