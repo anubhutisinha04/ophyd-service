@@ -6,15 +6,13 @@
 #   1. Verify config-service has the IOS happi DB loaded (pgm registered).
 #   2. Resolve every PGM + CurrAmp + EPU + Vortex + Scaler + Feedback
 #      address via /api/v1/devices/resolve.
-#   3. Register the resolved PVs as standalone (workaround for the happi
-#      loader gap, see tech-debt ledger). Cleanup deletes them on exit.
-#   4. Apply Ni_L preset values via POST /api/v1/pv/set/batch on direct-control:
+#   3. Apply Ni_L preset values via POST /api/v1/pv/set/batch on direct-control:
 #        - PGM scan params (Phase 1, slew dynamics)
 #        - CurrAmp gain/decade (Phase 2, echo)
 #        - EPU1 table / offset / deadband (Phase 2, echo)
-#   5. Verify readback against ios_pgm + ios_curramp + ios_epu IOCs.
-#   6. Trigger a fly scan and verify Sts:Scan-Sts cycles.
-#   7. Phase 3 dynamics:
+#   4. Verify readback against ios_pgm + ios_curramp + ios_epu IOCs.
+#   5. Trigger a fly scan and verify Sts:Scan-Sts cycles.
+#   6. Phase 3 dynamics:
 #        - EPU FLT calc: write input + offset, verify output = sum
 #        - Vortex MCA: write ROI bounds + PRTM, verify ROI sum > 0
 #        - Scaler: write TP, trigger CNT, verify auto-clear + channel counts
@@ -63,45 +61,6 @@ PHASE3_PID_SP=5.0
 
 # URL-encode (jq's @uri handles :, {, } correctly for path segments).
 encode() { printf '%s' "$1" | jq -sRr @uri; }
-
-# Cleanup: DELETE every standalone PV we successfully registered, so the
-# registry stays clean across runs and a failed run doesn't leak entries
-# into /api/v1/registry/export. Runs on EXIT (success or failure path).
-REGISTERED_PVS=()
-
-cleanup() {
-    if [ ${#REGISTERED_PVS[@]} -eq 0 ]; then
-        return
-    fi
-    printf "  (cleanup) deleting %d registered standalone PVs\n" \
-        "${#REGISTERED_PVS[@]}"
-    for pv in "${REGISTERED_PVS[@]}"; do
-        curl -s -o /dev/null -X DELETE \
-            "${CONFIG_URL}/api/v1/pvs/standalone/$(encode "$pv")" || true
-    done
-}
-CLEANUP_FN=cleanup
-trap cleanup EXIT
-
-# register_pv PV ACCESS_MODE
-# POST a standalone PV with the given access mode. Tracks successful
-# registrations in REGISTERED_PVS so cleanup can DELETE them.
-register_pv() {
-    local pv=$1 access_mode=$2
-    local body status
-    body=$(jq -n --arg pv "$pv" --arg am "$access_mode" '{
-        pv_name: $pv,
-        access_mode: $am,
-        description: "PGM sub-PV registered by IOS exerciser"
-    }')
-    status=$(req POST "${CONFIG_URL}/api/v1/pvs" "$body")
-    case "$status" in
-        201) REGISTERED_PVS+=("$pv")
-             pass "registered ${pv} (${access_mode})" ;;
-        409) note "already registered ${pv} (not tracked for cleanup — likely residue from prior run; restart pod to clear)" ;;
-        *)   fail "register ${pv} returned HTTP $status; body=$(cat /tmp/exer_body)" ;;
-    esac
-}
 
 # check_pv PV WANT LABEL [TOL]
 # Read a PV and assert numeric equality within tolerance. Bails hard if the
@@ -228,10 +187,9 @@ pass "all $EXPECTED_RESOLVED addresses resolved"
 resolve_body=$(cat /tmp/exer_body)
 # pv_for fails hard if the address didn't match a row, the pv_name is null,
 # OR jq emitted multiple rows. The multi-row case would otherwise produce a
-# newline-joined string that flows into register_pv — backend's min_length=1
-# accepts non-empty values, so a newline-containing pv_name would slip into
-# the registry as an unaddressable entry (same failure shape as the empty-
-# string hole the pattern check on the backend closes).
+# newline-joined string that flows into batch caput bodies, which would
+# either be silently malformed JSON or pass an unaddressable PV name to
+# direct-control — either way the failure surfaces far from the cause.
 pv_for() {
     local out
     out=$(printf '%s' "$resolve_body" \
@@ -310,62 +268,6 @@ pass "pd_decade       = ${PV_PD_DECADE}"
 pass "epu1_table      = ${PV_EPU_TABLE}"
 pass "epu1_offset     = ${PV_EPU_OFFSET}"
 pass "epu1_deadband   = ${PV_EPU_DEADBAND}"
-
-# ─── Register resolved PVs (workaround for loader gap) ───────────────────
-# Happi loader indexes only top-level device prefixes, not sub-PVs derived
-# from Component walks; direct-control's existence gate therefore 404s
-# Enrgy-SP/etc. Register them as standalone with the access mode the IOC
-# actually serves (so the registry doesn't lie). Cleanup deletes on exit.
-# Tracked as tech-debt: real fix is loader.py or resolver auto-registration.
-step "Register resolved PVs (workaround for loader gap)"
-
-# PGM (Phase 1)
-register_pv "$PV_ENRGY_SP"  read-write
-register_pv "$PV_START_SP"  read-write
-register_pv "$PV_STOP_SP"   read-write
-register_pv "$PV_FLY_VELO"  read-write
-register_pv "$PV_FLY_START" read-write
-
-# Read-only at the IOC (declared with read_only=True). Register accordingly
-# so a future access-mode-gating wireup doesn't see a writability lie here.
-register_pv "$PV_ENRGY_I"   read-only
-register_pv "$PV_SCAN_STS"  read-only
-register_pv "$PV_MOVE_STS"  read-only
-
-# CurrAmp (Phase 2 — all writable)
-register_pv "$PV_SAMPLE_GAIN"   read-write
-register_pv "$PV_SAMPLE_DECADE" read-write
-register_pv "$PV_AUMESH_GAIN"   read-write
-register_pv "$PV_AUMESH_DECADE" read-write
-register_pv "$PV_PD_GAIN"       read-write
-register_pv "$PV_PD_DECADE"     read-write
-
-# EPU1 (Phase 2 — all writable)
-register_pv "$PV_EPU_TABLE"     read-write
-register_pv "$PV_EPU_OFFSET"    read-write
-register_pv "$PV_EPU_DEADBAND"  read-write
-
-# Phase 3: EPU FLT calc inputs are writable; Out1-I is RO.
-register_pv "$PV_EPU_FLT_INPUT"  read-write
-register_pv "$PV_EPU_FLT_OFFSET" read-write
-register_pv "$PV_EPU_FLT_OUTPUT" read-only
-
-# Phase 3: Vortex MCA — PRTM + ROI bounds writable, sum RO.
-register_pv "$PV_VORTEX_PRTM"   read-write
-register_pv "$PV_VORTEX_R2_LO"  read-write
-register_pv "$PV_VORTEX_R2_HI"  read-write
-register_pv "$PV_VORTEX_R2_SUM" read-only
-
-# Phase 3: Scaler — CNT/TP writable, T + channels RO.
-register_pv "$PV_SCLR_CNT" read-write
-register_pv "$PV_SCLR_TP"  read-write
-register_pv "$PV_SCLR_T"   read-only
-register_pv "$PV_SCLR_S1"  read-only
-
-# Phase 3: Feedback — enable/SP writable, CVAL RO.
-register_pv "$PV_FB_ENABLE" read-write
-register_pv "$PV_FB_SP"     read-write
-register_pv "$PV_FB_CVAL"   read-only
 
 # ─── Apply Ni_L preset via batch caput ───────────────────────────────────
 step "Apply Ni_L preset (batch caput)"

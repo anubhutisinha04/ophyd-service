@@ -47,7 +47,6 @@ docker compose -f integration/pods/ios/docker-compose.yaml down
                          │  service :8004   │  (sites/ios/happi_db.json)
                          └────────┬─────────┘
                                   │ /api/v1/devices/resolve
-                                  │ /api/v1/pvs (standalone CRUD)
                                   ▼
   exerciser  ──HTTP──▶  ┌──────────────────┐
   (Ni_L     ──HTTP──▶   │  direct_control_ │  pyepics CA caput/caget
@@ -91,8 +90,7 @@ ported from `ios-profile-collection`).
 | Block | Verifies |
 |---|---|
 | Health + registry sanity | both backends up; `pgm` device registered from happi DB |
-| Resolve all 28 addresses | config-service walks ios_devs.PGM/CurrAmp/EPU/Vortex/Scaler classes and returns the right PV names |
-| Register resolved PVs | workaround for the loader-gap (see Caveats); standalone-PV CRUD POST so direct-control's existence-gate doesn't 404 |
+| Resolve all 29 addresses | config-service walks ios_devs.PGM/CurrAmp/EPU/Vortex/Scaler classes and returns the right PV names |
 | Apply Ni_L preset (PGM) | batch caput Start/Stop/FlyVelo + slow-move pre-position |
 | Readback (PGM) | values stored; Enrgy-I slewed to setpoint |
 | Fly scan | trigger Cmd:FlyStart-Cmd.PROC, watch Sts:Scan-Sts cycle, verify Enrgy-I reached endpoint |
@@ -102,9 +100,11 @@ ported from `ios-profile-collection`).
 | Scaler | caput TP + CNT=1, wait, verify CNT auto-cleared + S1 ≈ 1e7 × TP |
 | Feedback PID | caput SP + enable=On, wait, verify CVAL converged to SP |
 
-On success: `(cleanup) deleting N registered standalone PVs` — every
-standalone PV the script POSTed is DELETEd on exit so the registry
-stays clean across runs.
+Sub-PVs (`Enrgy-SP`, `Cmd:FlyStart-Cmd.PROC`, MCA ROI scalars, etc.)
+are indexed automatically by the loader, which walks every happi
+entry's Device class on cold start. No standalone-PV CRUD dance
+required — direct-control's existence gate sees them as soon as the
+pod is healthy.
 
 ## Quick tour (poke at it by hand)
 
@@ -124,15 +124,14 @@ curl -s -X POST http://localhost:8004/api/v1/devices/resolve \
   | jq '.resolved'
 
 # Watch the PGM IOC slew Enrgy-I toward Enrgy-SP in real time
-# (needs the PV registered first — easiest path is to run the exerciser
-# which registers them, OR POST to /api/v1/pvs as standalone)
+# (sub-PVs are auto-indexed by the loader from the happi entry's Device
+# class — no manual registration needed)
 ENC='XF%3A23ID2-OP%7BMono%7DEnrgy-I'
 while sleep 0.5; do
     curl -s "http://localhost:8003/api/v1/pv/${ENC}/value" | jq -r '.value'
 done
 
 # Watch the vortex spectrum + ROI sums after triggering acquisition
-# (requires registered PVs — use the exerciser first)
 
 # Tail the IOC logs
 docker compose -f integration/pods/ios/docker-compose.yaml logs -f ios_pgm
@@ -150,15 +149,7 @@ These are real bugs in the surrounding services that the exerciser
 works around. They're tracked in the workspace's `project_technical_debt`
 memo with concrete fix recipes.
 
-1. **Happi loader doesn't index Component sub-PVs.** The IOS happi
-   entries like `pgm` register the *device* prefix (`XF:23ID2-OP{Mono`)
-   but not the sub-PVs derived from walking the device class. So
-   direct-control's PV-existence gate returns 404 on caputs to
-   `XF:23ID2-OP{Mono}Enrgy-SP` etc. The exerciser POSTs each resolved
-   PV via `POST /api/v1/pvs` (standalone) before caput. Cleanup
-   DELETEs them on exit.
-
-2. **path_resolver doesn't honor `add_prefix=""`.** Walking
+1. **path_resolver doesn't honor `add_prefix=""`.** Walking
    `m1b1.fbl.enable` should return `XF:23ID2-OP{FBck}Sts:FB-Sel`
    (the FeedbackLoop Cpt uses `add_prefix=""` on the M1bMirror).
    Instead the resolver concatenates: `XF:23IDA-OP:2{Mir:1A
@@ -166,7 +157,7 @@ memo with concrete fix recipes.
    the two FBck PVs (Sts:FB-Sel + PID.CVAL); `m1b1_setpoint` (top-
    level happi entry, no walking) is unaffected.
 
-3. **direct-control fire-and-forget masks IOC putter rejections.**
+2. **direct-control fire-and-forget masks IOC putter rejections.**
    The default `POST /api/v1/pv/set/batch` mode is fire-and-forget;
    direct-control returns `success=true` even when caproto rejects
    the CA write (e.g., when an IOC putter raises ValueError or
@@ -184,10 +175,6 @@ memo with concrete fix recipes.
 - **Exerciser fails at "scaler S1"** with a tiny value: the count
   may not have completed within the `TP + margin` sleep. Bump
   `PHASE3_TP` in the script or extend the sleep margin.
-- **Standalone PV registrations show 409**: residue from a prior
-  partial run. `docker compose down` (removes containers + the
-  in-container SQLite DB) + `up --build` clears it. `docker compose
-  restart` keeps the container and the DB persists.
 
 ## Why this exists separately from `main`
 
