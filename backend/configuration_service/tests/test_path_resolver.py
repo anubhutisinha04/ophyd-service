@@ -146,7 +146,7 @@ def test_resolve_formatted_component_with_interpolation_returns_needs_enrichment
     cls = _make_class_with_fmt_cpt()
     from configuration_service.path_resolver import _walk_class
 
-    outcome, where, msg = _walk_class(cls, ["inner", "actuate"])
+    outcome, where, msg = _walk_class(cls, ["inner", "actuate"], "PFX:")
     assert outcome is Outcome.NEEDS_ENRICHMENT
     assert "actuate" in where
     assert "{self.parent.prefix}" in (msg or "")
@@ -154,7 +154,10 @@ def test_resolve_formatted_component_with_interpolation_returns_needs_enrichment
 
 def test_resolve_formatted_component_with_literal_suffix_resolves():
     """``FmtCpt`` whose suffix has no ``{}`` placeholder is treated like a
-    plain Component — it carries an absolute or literal suffix."""
+    plain Component — it carries an absolute or literal suffix.
+
+    With ``add_prefix=()`` the suffix IS the absolute PV; the parent
+    prefix is ignored."""
     from ophyd import Device, EpicsSignal, FormattedComponent as FmtCpt
     from configuration_service.path_resolver import _walk_class
 
@@ -163,9 +166,10 @@ def test_resolve_formatted_component_with_literal_suffix_resolves():
         # the suffix has no {}-interpolation so static resolution works.
         absolute = FmtCpt(EpicsSignal, "ABSOLUTE:PV", add_prefix=())
 
-    outcome, suffix, _ = _walk_class(_Literal, ["absolute"])
+    outcome, pv, _ = _walk_class(_Literal, ["absolute"], "PARENT:PREFIX:")
     assert outcome is Outcome.RESOLVED
-    assert suffix == "ABSOLUTE:PV"
+    # add_prefix=() ⇒ PARENT:PREFIX: is NOT prepended.
+    assert pv == "ABSOLUTE:PV"
 
 
 def test_resolve_formatted_component_with_escaped_braces_resolves_to_literal():
@@ -189,9 +193,63 @@ def test_resolve_formatted_component_with_escaped_braces_resolves_to_literal():
         # interpolate, just literal braces.
         literal_braces = FmtCpt(EpicsSignal, "DEV{{N}}PV", add_prefix=())
 
-    outcome, suffix, _ = _walk_class(_EscapedLiteral, ["literal_braces"])
+    outcome, pv, _ = _walk_class(_EscapedLiteral, ["literal_braces"], "PARENT:")
     assert outcome is Outcome.RESOLVED
-    assert suffix == "DEV{N}PV"
+    # add_prefix=() ⇒ PARENT: is NOT prepended; the literal suffix is the PV.
+    assert pv == "DEV{N}PV"
+
+
+# Module-scope so importlib can resolve them by name via device_class_path.
+# Mirrors the ios_devs.M1bMirror / FeedbackLoop pattern that exposed the
+# add_prefix=() resolver gap on the IOS demo.
+from ophyd import Component as _Cpt, Device as _Device, EpicsSignal as _EpicsSignal
+
+
+class _FeedbackLoopForTest(_Device):
+    """A sub-device declared at a literal cross-IOC prefix (no relationship
+    to the parent device's prefix). Children use the literal as their parent."""
+
+    enable = _Cpt(_EpicsSignal, "Sts:FB-Sel")
+    actual_value = _Cpt(_EpicsSignal, "PID.CVAL")
+
+
+class _M1bMirrorForTest(_Device):
+    """Declares the FeedbackLoop sub-device with ``add_prefix=()`` so the FBL's
+    literal absolute prefix wins over this Mirror's own prefix."""
+
+    fbl = _Cpt(_FeedbackLoopForTest, "XF:23ID2-OP{FBck}", add_prefix=())
+
+
+def test_resolve_classic_cpt_with_empty_add_prefix_via_public_api():
+    """End-to-end regression for the IOS-demo Known Caveat:
+    ``Cpt(Sub, "<absolute_pv>", add_prefix=())`` declares that the sub-device
+    lives at a literal PV unrelated to the parent's prefix. Pre-fix the
+    resolver concatenated parent+suffix and produced garbage like
+    ``XF:23IDA-OP:2{Mir:1AXF:23ID2-OP{FBck}Sts:FB-Sel``. The fix walks
+    absolute prefixes (mirroring loader._walk_class_for_pvs) so the
+    declared literal wins.
+
+    Module-scope classes so ``importlib`` can resolve them by name from
+    ``device_class_path``.
+    """
+    r = resolve(
+        "m1b1.fbl.enable",
+        device_class_path=f"{__name__}._M1bMirrorForTest",
+        prefix="XF:23IDA-OP:2{Mir:1A}",
+    )
+    assert r.ok, r.message
+    # The FeedbackLoop's literal prefix wins; the parent's "XF:23IDA-OP:2{Mir:1A}"
+    # is NOT prepended because the Cpt declares add_prefix=().
+    assert r.pv_name == "XF:23ID2-OP{FBck}Sts:FB-Sel"
+
+    # And the readback PV under the same absolute-prefixed sub-device:
+    r2 = resolve(
+        "m1b1.fbl.actual_value",
+        device_class_path=f"{__name__}._M1bMirrorForTest",
+        prefix="XF:23IDA-OP:2{Mir:1A}",
+    )
+    assert r2.ok, r2.message
+    assert r2.pv_name == "XF:23ID2-OP{FBck}PID.CVAL"
 
 
 # ---------------------------------------------------------------------------

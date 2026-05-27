@@ -122,55 +122,111 @@ def _has_format_placeholder(suffix: str) -> bool:
         return True
 
 
-def _walk_class(cls, parts: list[str]) -> tuple[Outcome, str, Optional[str]]:
-    """Walk a chain of attribute names on a class, collecting PV-suffix pieces.
+def _resolve_component_pv(
+    cpt, parent_full_prefix: str
+) -> tuple[Optional[str], Optional[Outcome], Optional[str]]:
+    """Resolve a single ``Component`` to its absolute CA PV name.
 
-    Returns ``(outcome, suffix_or_path_so_far, optional_message)``:
-    - ``(RESOLVED, suffix, None)`` — chain walked cleanly; concatenated suffix is returned.
+    Returns one of:
+    - ``(absolute_pv, None, None)`` — fully resolved
+    - ``(None, NEEDS_ENRICHMENT, reason)`` — FmtCpt with ``{}`` placeholder
+    - ``(None, NO_SUCH_ATTR, reason)`` — Component has no suffix
+
+    Honors ophyd's ``Component.add_prefix``: when ``"suffix"`` is in
+    ``add_prefix`` (the default for both Cpt and FmtCpt) the parent's full
+    prefix is prepended. When it's not (the common ``add_prefix=()``
+    pattern for cross-IOC literals like
+    ``Cpt(FeedbackLoop, "XF:23ID2-OP{FBck}", add_prefix=())``) the
+    Component's suffix IS the absolute PV and parent prefix is ignored.
+
+    Used by both ``loader._walk_class_for_pvs`` (registry seed) and
+    ``path_resolver._walk_class`` (request-time resolve) so the two stay
+    in lockstep — divergence between them was the IOS demo's "garbage
+    PV prefix" gap.
+    """
+    # Lazy ophyd import keeps the module light when only the data-class
+    # API surface (Outcome / Resolution) is needed.
+    from ophyd import FormattedComponent
+
+    suffix = cpt.suffix
+    if suffix is None:
+        return None, Outcome.NO_SUCH_ATTR, "Component has no suffix"
+
+    if isinstance(cpt, FormattedComponent):
+        if _has_format_placeholder(suffix):
+            return (
+                None,
+                Outcome.NEEDS_ENRICHMENT,
+                f"FmtCpt suffix has placeholders: {suffix!r}",
+            )
+        # Escaped braces resolve to literals; no placeholders to interpolate.
+        suffix = suffix.format()
+
+    add_prefix = getattr(cpt, "add_prefix", ("suffix", "write_pv"))
+    if "suffix" in add_prefix:
+        return parent_full_prefix + suffix, None, None
+    return suffix, None, None
+
+
+def _walk_class(
+    cls, parts: list[str], prefix: str
+) -> tuple[Outcome, str, Optional[str]]:
+    """Walk a chain of attribute names on a class, computing the absolute PV.
+
+    Returns ``(outcome, value_or_path, optional_message)``:
+    - ``(RESOLVED, absolute_pv, None)`` — chain walked cleanly.
     - ``(NEEDS_ENRICHMENT, path_so_far, reason)`` — hit a ``FmtCpt`` with interpolation.
     - ``(NO_SUCH_ATTR, path_so_far, bad_segment)`` — attribute missing or not a Component.
+
+    Tracks an absolute prefix (not a suffix accumulator) so an
+    ``add_prefix=()`` Component anywhere in the chain correctly resets the
+    walk's prefix to its declared literal. ``_resolve_component_pv``
+    encapsulates the per-Component prefix-or-absolute decision; this loop
+    is the chain-driver around it.
     """
     # Lazy import so configuration_service imports don't drag ophyd into the
     # graph unless someone actually calls the resolver.
-    from ophyd import Component, DynamicDeviceComponent, FormattedComponent
+    from ophyd import Component, DynamicDeviceComponent
 
-    current = cls
-    suffix_pieces: list[str] = []
+    current_cls = cls
+    current_prefix = prefix
 
     for i, attr in enumerate(parts):
         path_so_far = ".".join(parts[:i]) if i else ""
-        cpt = getattr(current, attr, None)
+        cpt = getattr(current_cls, attr, None)
 
         if cpt is None:
             return Outcome.NO_SUCH_ATTR, path_so_far, attr
 
-        # FormattedComponent with real placeholders depends on a live
-        # parent to interpolate (e.g. ``{self.parent.prefix}}}MOVE_CMD``).
-        # We refuse statically rather than emitting a wrong PV. Escaped
-        # literal braces (``{{`` / ``}}``) carry no placeholder, so we
-        # treat them as static-resolvable and unescape via ``.format()``.
-        if isinstance(cpt, FormattedComponent):
-            if _has_format_placeholder(cpt.suffix):
-                return (
-                    Outcome.NEEDS_ENRICHMENT,
-                    path_so_far + ("." if path_so_far else "") + attr,
-                    f"FmtCpt suffix has placeholders: {cpt.suffix!r}",
-                )
-            suffix_pieces.append(cpt.suffix.format())
-            current = cpt.cls
-        elif isinstance(cpt, DynamicDeviceComponent):
+        if isinstance(cpt, DynamicDeviceComponent):
             # DDC carries a dynamically-built sub-class; walk into it.
             # The DDC itself contributes no suffix — children carry their own.
-            current = cpt.cls
-        elif isinstance(cpt, Component):
-            suffix_pieces.append(cpt.suffix)
-            current = cpt.cls
-        else:
+            current_cls = cpt.cls
+            continue
+
+        if not isinstance(cpt, Component):
             # Attribute exists but isn't a Component (could be a method,
             # classvar, etc.) — treat as bad-path.
             return Outcome.NO_SUCH_ATTR, path_so_far, attr
 
-    return Outcome.RESOLVED, "".join(suffix_pieces), None
+        pv, outcome, msg = _resolve_component_pv(cpt, current_prefix)
+        if outcome is Outcome.NEEDS_ENRICHMENT:
+            attr_path = path_so_far + ("." if path_so_far else "") + attr
+            return Outcome.NEEDS_ENRICHMENT, attr_path, msg
+        if outcome is Outcome.NO_SUCH_ATTR:
+            return Outcome.NO_SUCH_ATTR, path_so_far, attr
+
+        # Invariant: outcome is None ⇒ pv is a non-None str. The assert
+        # narrows pyright since the union is shape-coupled but not
+        # typed-as-discriminated.
+        assert pv is not None
+        # Resolved — pv is the absolute PV for this Component. Either it's
+        # the leaf (next iteration ends the loop) or the next iteration
+        # descends into cpt.cls using this PV as the new parent prefix.
+        current_prefix = pv
+        current_cls = cpt.cls
+
+    return Outcome.RESOLVED, current_prefix, None
 
 
 def _is_ophyd_async_class(cls) -> bool:
@@ -309,23 +365,23 @@ def _resolve_ophyd_classic(address: str, cls, prefix: str, sub_path: str) -> Res
         return Resolution(address=address, outcome=Outcome.RESOLVED, pv_name=prefix)
 
     parts = sub_path.split(".")
-    outcome, suffix_or_path, msg = _walk_class(cls, parts)
+    outcome, value_or_path, msg = _walk_class(cls, parts, prefix)
 
     if outcome is Outcome.RESOLVED:
         return Resolution(
             address=address,
             outcome=Outcome.RESOLVED,
-            pv_name=prefix + suffix_or_path,
+            pv_name=value_or_path,
         )
     if outcome is Outcome.NEEDS_ENRICHMENT:
         return Resolution(
             address=address,
             outcome=Outcome.NEEDS_ENRICHMENT,
-            message=f"at '{suffix_or_path}': {msg}",
+            message=f"at '{value_or_path}': {msg}",
         )
     # NO_SUCH_ATTR
     bad_seg = msg
-    where = suffix_or_path
+    where = value_or_path
     detail = (
         f"no Component '{bad_seg}' on '{where}'"
         if where

@@ -225,9 +225,8 @@ def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
             Component,
             Device,
             DynamicDeviceComponent,
-            FormattedComponent,
         )
-        from .path_resolver import _has_format_placeholder
+        from .path_resolver import _resolve_component_pv
     except ImportError as e:
         # ophyd is a hard dependency; if it fails to import here the
         # service is fundamentally broken — log loud and let the entry
@@ -261,30 +260,6 @@ def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
     def _is_subdevice(cpt_cls) -> bool:
         return isinstance(cpt_cls, type) and issubclass(cpt_cls, Device)
 
-    def _absolute_pv(cpt, parent_full_prefix: str) -> Optional[str]:
-        """Mirror ophyd's ``maybe_add_prefix`` for the ``suffix`` attribute.
-
-        Returns the absolute CA PV name for this Component, or None when
-        we can't resolve statically (no suffix, FmtCpt placeholder, etc.).
-        """
-        suffix = cpt.suffix
-        if suffix is None:
-            return None
-        if isinstance(cpt, FormattedComponent):
-            if _has_format_placeholder(suffix):
-                # Needs a live parent instance to interpolate.
-                return None
-            suffix = suffix.format()
-        # ophyd Component.add_prefix lists the kwargs that get parent
-        # prefix prepended. Default for both Cpt and FmtCpt is
-        # ('suffix', 'write_pv'). Operators opt sub-components out of
-        # prefix prepending by passing add_prefix=() (common for
-        # cross-IOC references where the suffix is an absolute PV).
-        add_prefix = getattr(cpt, "add_prefix", ("suffix", "write_pv"))
-        if "suffix" in add_prefix:
-            return parent_full_prefix + suffix
-        return suffix
-
     pvs: Dict[str, str] = {}
 
     def walk(cur_cls, path_parts: List[str], current_prefix: str) -> None:
@@ -302,9 +277,15 @@ def _walk_class_for_pvs(device_class_path: str, prefix: str) -> Dict[str, str]:
             if not isinstance(cpt, Component):
                 continue
 
-            full_pv = _absolute_pv(cpt, current_prefix)
-            if full_pv is None:
+            # Shared helper (also used by path_resolver._walk_class) — keeps
+            # loader-time indexing and resolve-time walking in lockstep on
+            # add_prefix / FmtCpt semantics. Any non-None outcome means the
+            # PV can't be resolved statically; loader skips, the resolver
+            # propagates the outcome to its caller.
+            full_pv, outcome, _ = _resolve_component_pv(cpt, current_prefix)
+            if outcome is not None:
                 continue
+            assert full_pv is not None
 
             if _is_subdevice(cpt.cls):
                 walk(cpt.cls, new_path, full_pv)
