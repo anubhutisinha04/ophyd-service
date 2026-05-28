@@ -1009,10 +1009,16 @@ async def stop_device(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _config_get(client: httpx.AsyncClient, path: str, *, not_found_msg: str) -> Any:
+async def _config_get(
+    client: httpx.AsyncClient,
+    path: str,
+    *,
+    not_found_msg: str,
+    params: Any = None,
+) -> Any:
     """GET from configuration service, translating status codes to HTTPExceptions."""
     try:
-        response = await client.get(path)
+        response = await client.get(path, params=params)
     except httpx.RequestError as e:
         logger.error("config_service_fetch_error", path=path, error=str(e))
         raise HTTPException(status_code=503, detail=f"Configuration service unavailable: {e}")
@@ -1028,30 +1034,24 @@ async def _config_get(client: httpx.AsyncClient, path: str, *, not_found_msg: st
 
 @app.get("/api/v1/devices")
 async def list_devices(
+    request: Request,
     client: httpx.AsyncClient = Depends(get_config_http),
-    device_class: Optional[str] = Query(None, description="Filter by ophyd class name"),
-    readable: Optional[bool] = Query(None, description="Filter by Readable"),
-    movable: Optional[bool] = Query(None, description="Filter by Movable"),
-    flyable: Optional[bool] = Query(None, description="Filter by Flyable"),
 ):
-    """List available devices (proxied from configuration service)."""
-    devices = await _config_get(
-        client, "/api/v1/devices", not_found_msg="Devices endpoint not found"
-    )
+    """List available devices (proxied from configuration service).
 
-    if device_class:
-        devices = [
-            d
-            for d in devices
-            if d.get("ophyd_class") == device_class or d.get("class") == device_class
-        ]
-    if readable is not None:
-        devices = [d for d in devices if d.get("is_readable", True) == readable]
-    if movable is not None:
-        devices = [d for d in devices if d.get("is_movable", False) == movable]
-    if flyable is not None:
-        devices = [d for d in devices if d.get("is_flyable", False) == flyable]
-    return devices
+    Device-list filtering is owned by the configuration service. Every
+    query parameter is forwarded to it verbatim, and its response (a list
+    of device names) is returned unchanged. Supported filters are
+    documented on the configuration service's ``/api/v1/devices`` endpoint
+    (e.g. ``device_label``, ``pattern``, ``ophyd_class``, ``readable``,
+    ``movable``, ``flyable``).
+    """
+    return await _config_get(
+        client,
+        "/api/v1/devices",
+        params=request.query_params.multi_items(),
+        not_found_msg="Devices endpoint not found",
+    )
 
 
 @app.get("/api/v1/devices/{device_name}")

@@ -474,98 +474,14 @@
     "/api/v1/devices": {
       "get": {
         "summary": "List Devices",
-        "description": "List available devices (proxied from configuration service).",
+        "description": "List available devices (proxied from configuration service).\n\nDevice-list filtering is owned by the configuration service. Every\nquery parameter is forwarded to it verbatim, and its response (a list\nof device names) is returned unchanged. Supported filters are\ndocumented on the configuration service's ``/api/v1/devices`` endpoint\n(e.g. ``device_label``, ``pattern``, ``ophyd_class``, ``readable``,\n``movable``, ``flyable``).",
         "operationId": "list_devices_api_v1_devices_get",
-        "parameters": [
-          {
-            "name": "device_class",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Filter by ophyd class name",
-              "title": "Device Class"
-            },
-            "description": "Filter by ophyd class name"
-          },
-          {
-            "name": "readable",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Filter by Readable",
-              "title": "Readable"
-            },
-            "description": "Filter by Readable"
-          },
-          {
-            "name": "movable",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Filter by Movable",
-              "title": "Movable"
-            },
-            "description": "Filter by Movable"
-          },
-          {
-            "name": "flyable",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Filter by Flyable",
-              "title": "Flyable"
-            },
-            "description": "Filter by Flyable"
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
               }
             }
           }

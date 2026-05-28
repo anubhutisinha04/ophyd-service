@@ -1,8 +1,11 @@
-# Unit-test the ophyd-service backends.
+# Unit-test the ophyd-service backends + the cross-service interface suite.
 #
-# Two parallel jobs, one per backend. Each runs pytest, which respects
-# the backend's coverage gate from pyproject.toml (--cov-fail-under=60
-# for direct_control, =75 for configuration_service).
+# Three parallel jobs. The two per-backend jobs run pytest with the coverage
+# gate from pyproject.toml (--cov-fail-under=60 for direct_control, =75 for
+# configuration_service). The third job runs the cross-service interface
+# suite (integration/interface/), which installs BOTH backends into one env
+# and runs direct_control's proxy against a real configuration_service to
+# catch contract drift between them (shape, filters, error parity).
 #
 # Triggers:
 #   - every PR
@@ -84,4 +87,37 @@ jobs:
           pip install --group dev
 
       - name: Run pytest
+        run: pytest
+
+  interface-tests:
+    name: cross-service interface suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install both backends + test deps
+        # Both packages share fastapi/ophyd/httpx, so they co-install in one
+        # env. epicscorelibs is needed because importing direct_control pulls
+        # in pyepics (the proxy endpoints never open a CA connection).
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e backend/configuration_service
+          pip install -e backend/direct_control_service
+          pip install pytest pytest-asyncio epicscorelibs
+
+      - name: Run cross-service interface suite
+        working-directory: integration/interface
         run: pytest

@@ -19,11 +19,13 @@ import httpx
 
 
 def test_list_devices_nominal(install_config_http_stub, client):
-    """Proxy returns the list configuration_service sent."""
-    payload = [
-        {"name": "m1", "ophyd_class": "EpicsMotor", "is_readable": True, "is_movable": True},
-        {"name": "det1", "ophyd_class": "EpicsScaler", "is_readable": True, "is_movable": False},
-    ]
+    """Proxy returns configuration_service's device-name list unchanged.
+
+    The configuration service's ``/api/v1/devices`` returns a list of
+    device-name *strings* (not objects). This pins that contract on the
+    proxy side so the two services can't silently diverge on shape.
+    """
+    payload = ["cam1", "det1", "sample_x"]
 
     def handler(req: httpx.Request) -> httpx.Response:
         assert req.url.path == "/api/v1/devices"
@@ -34,24 +36,29 @@ def test_list_devices_nominal(install_config_http_stub, client):
     r = client.get("/api/v1/devices")
     assert r.status_code == 200
     assert r.json() == payload
+    assert all(isinstance(name, str) for name in r.json())
 
 
-def test_list_devices_filters_by_movable(install_config_http_stub, client):
-    """Query-string filters are applied client-side after the proxy fetch."""
-    payload = [
-        {"name": "m1", "ophyd_class": "EpicsMotor", "is_movable": True},
-        {"name": "det1", "ophyd_class": "EpicsScaler", "is_movable": False},
-    ]
+def test_list_devices_forwards_query_params(install_config_http_stub, client):
+    """All filter params are forwarded verbatim to the configuration service.
 
-    def handler(_req: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=payload)
+    direct_control delegates filtering to the configuration service, which
+    owns the registry. This pins that the proxy forwards the full query
+    string downstream so a filtered call can't silently drop params (as
+    ``device_label`` once did, before this endpoint was a thin forwarder).
+    """
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json=["sample_x"])
 
     install_config_http_stub(handler)
 
-    r = client.get("/api/v1/devices?movable=true")
+    r = client.get("/api/v1/devices?device_label=motor&movable=true")
     assert r.status_code == 200
-    names = [d["name"] for d in r.json()]
-    assert names == ["m1"]
+    assert seen["params"] == {"device_label": "motor", "movable": "true"}
+    assert r.json() == ["sample_x"]
 
 
 def test_list_devices_upstream_unreachable_returns_503(install_config_http_stub, client):
