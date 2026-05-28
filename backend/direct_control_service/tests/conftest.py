@@ -153,16 +153,17 @@ def app():
 
 @pytest.fixture
 async def install_config_http_stub(app):
-    """Install a ``get_config_http`` override returning a MockTransport-backed client.
+    """Stub the configuration_service HTTP client the PVHealthReporter posts to.
 
     Pass a handler ``(httpx.Request) -> httpx.Response`` and the fixture
-    returns the mock client. Async so teardown can ``await aclose()``;
-    httpx registers anyio state at construction, so GC-time close isn't
-    safe.
+    returns the mock client. The reporter is constructed in lifespan with the
+    real ``config_http`` and stored on ``app.state``; we rebind its underlying
+    client so its fire-and-forget POSTs hit the MockTransport instead.
+
+    Async so teardown can ``await aclose()``; httpx registers anyio state at
+    construction, so GC-time close isn't safe.
     """
     import httpx
-
-    from direct_control.main import get_config_http
 
     mock_client: "httpx.AsyncClient | None" = None
 
@@ -171,12 +172,6 @@ async def install_config_http_stub(app):
         mock_client = httpx.AsyncClient(
             transport=httpx.MockTransport(handler), base_url="http://stub"
         )
-        app.dependency_overrides[get_config_http] = lambda: mock_client
-        # The PVHealthReporter (added during PR C) is constructed in
-        # lifespan with the real config_http and stored on app.state.
-        # dependency_overrides only affects future Depends() calls, so
-        # we also rebind the reporter's underlying client so its
-        # fire-and-forget POSTs hit MockTransport.
         if hasattr(app.state, "pv_health_reporter"):
             app.state.pv_health_reporter._client = mock_client
         return mock_client

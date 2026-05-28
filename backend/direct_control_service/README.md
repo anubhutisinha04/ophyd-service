@@ -181,12 +181,11 @@ Binary mode (`Accept: application/octet-stream` or `?format=binary`):
 | POST | `/api/v1/device/execute` | Execute Ophyd device method |
 | POST | `/api/v1/device/{device_name}/stop` | Stop a device |
 
-### Device Metadata (proxied from configuration_service)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/devices` | List devices (with class / protocol filters) |
-| GET | `/api/v1/devices/{device_name}` | Get device metadata |
-| GET | `/api/v1/devices/{device_name}/bundle` | Hierarchical component tree |
+### Device metadata
+Device metadata (the device list, per-device records, component trees) is **not**
+served here — read it directly from `configuration_service`, the registry of
+record. direct_control consumes the registry internally (PV/device validation,
+lock state) but does not re-expose it as HTTP endpoints.
 
 ### Nested Device Access (ophyd-websocket compatible)
 | Method | Endpoint | Description |

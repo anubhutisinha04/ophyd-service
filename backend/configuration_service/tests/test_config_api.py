@@ -212,6 +212,29 @@ class TestOphydClassFilter:
         assert response.status_code == 200
         assert response.json() == []
 
+    def test_filter_by_protocol_flags(self, client):
+        """GET /api/v1/devices?{readable,movable,flyable}=... filters by protocol flag.
+
+        Mock registry: sample_x (motor, movable+readable), det1/cam1
+        (detectors, readable); none flyable.
+        """
+        # movable=true -> only the motor
+        response = client.get("/api/v1/devices?movable=true")
+        assert response.status_code == 200
+        assert response.json() == ["sample_x"]
+        # readable=true -> all three mock devices are readable
+        response = client.get("/api/v1/devices?readable=true")
+        assert response.status_code == 200
+        assert sorted(response.json()) == ["cam1", "det1", "sample_x"]
+        # flyable=true -> none in mock data
+        response = client.get("/api/v1/devices?flyable=true")
+        assert response.status_code == 200
+        assert response.json() == []
+        # combined with device_label
+        response = client.get("/api/v1/devices?device_label=detector&readable=true")
+        assert response.status_code == 200
+        assert sorted(response.json()) == ["cam1", "det1"]
+
 
 class TestDeviceClassesAndTypesEndpoints:
     """Test /devices/classes and /devices/types endpoints."""
