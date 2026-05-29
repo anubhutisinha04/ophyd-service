@@ -108,6 +108,60 @@
               "title": "Ophyd Class"
             },
             "description": "Filter by ophyd device class name"
+          },
+          {
+            "name": "readable",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by the Readable protocol flag",
+              "title": "Readable"
+            },
+            "description": "Filter by the Readable protocol flag"
+          },
+          {
+            "name": "movable",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by the Movable protocol flag",
+              "title": "Movable"
+            },
+            "description": "Filter by the Movable protocol flag"
+          },
+          {
+            "name": "flyable",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by the Flyable protocol flag",
+              "title": "Flyable"
+            },
+            "description": "Filter by the Flyable protocol flag"
           }
         ],
         "responses": {

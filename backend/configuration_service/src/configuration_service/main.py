@@ -520,6 +520,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         device_label: Optional[DeviceLabel] = Query(None, description="Filter by device type"),
         pattern: Optional[str] = Query(None, description="Glob pattern for name matching"),
         ophyd_class: Optional[str] = Query(None, description="Filter by ophyd device class name"),
+        readable: Optional[bool] = Query(None, description="Filter by the Readable protocol flag"),
+        movable: Optional[bool] = Query(None, description="Filter by the Movable protocol flag"),
+        flyable: Optional[bool] = Query(None, description="Filter by the Flyable protocol flag"),
     ) -> List[str]:
         """
         List available devices.
@@ -528,10 +531,21 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         Protocol: ProvidesDeviceRegistry.list_devices()
         """
         logger.info(
-            "list_devices", device_label=device_label, pattern=pattern, ophyd_class=ophyd_class
+            "list_devices",
+            device_label=device_label,
+            pattern=pattern,
+            ophyd_class=ophyd_class,
+            readable=readable,
+            movable=movable,
+            flyable=flyable,
         )
         return state.registry.list_devices(
-            device_label=device_label, pattern=pattern, ophyd_class=ophyd_class
+            device_label=device_label,
+            pattern=pattern,
+            ophyd_class=ophyd_class,
+            readable=readable,
+            movable=movable,
+            flyable=flyable,
         )
 
     @app.get(

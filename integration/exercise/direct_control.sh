@@ -30,21 +30,6 @@ status=$(req GET "${DIRECT_URL}/api/v1/pvs/connected")
 expect_status 200 "$status" "/api/v1/pvs/connected"
 pass "/api/v1/pvs/connected"
 
-# ─── Registry view (pass-through to configuration_service) ───────────────
-step "Registry view"
-
-status=$(req GET "${DIRECT_URL}/api/v1/devices")
-expect_status 200 "$status" "/api/v1/devices"
-pass "/api/v1/devices"
-
-status=$(req GET "${DIRECT_URL}/api/v1/devices/beam_current")
-expect_status 200 "$status" "/api/v1/devices/beam_current"
-pass "/api/v1/devices/beam_current"
-
-status=$(req GET "${DIRECT_URL}/api/v1/devices/beam_current/bundle")
-expect_status 200 "$status" "/api/v1/devices/beam_current/bundle"
-pass "/api/v1/devices/beam_current/bundle"
-
 # ─── PV reads (HTTP) ─────────────────────────────────────────────────────
 step "PV reads"
 

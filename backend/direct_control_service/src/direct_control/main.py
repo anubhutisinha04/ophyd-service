@@ -196,10 +196,6 @@ def get_pv_monitor() -> PVMonitor:
     return app.state.pv_monitor
 
 
-def get_config_http() -> httpx.AsyncClient:
-    return app.state.config_http
-
-
 def get_ws_manager():
     return app.state.ws_manager
 
@@ -1007,121 +1003,6 @@ async def stop_device(
     except Exception as e:
         logger.error("device_stop_error", device_name=device_name, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-async def _config_get(client: httpx.AsyncClient, path: str, *, not_found_msg: str) -> Any:
-    """GET from configuration service, translating status codes to HTTPExceptions."""
-    try:
-        response = await client.get(path)
-    except httpx.RequestError as e:
-        logger.error("config_service_fetch_error", path=path, error=str(e))
-        raise HTTPException(status_code=503, detail=f"Configuration service unavailable: {e}")
-    if response.status_code == 404:
-        raise HTTPException(status_code=404, detail=not_found_msg)
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail="Failed to fetch from configuration service",
-        )
-    return response.json()
-
-
-@app.get("/api/v1/devices")
-async def list_devices(
-    client: httpx.AsyncClient = Depends(get_config_http),
-    device_class: Optional[str] = Query(None, description="Filter by ophyd class name"),
-    readable: Optional[bool] = Query(None, description="Filter by Readable"),
-    movable: Optional[bool] = Query(None, description="Filter by Movable"),
-    flyable: Optional[bool] = Query(None, description="Filter by Flyable"),
-):
-    """List available devices (proxied from configuration service)."""
-    devices = await _config_get(
-        client, "/api/v1/devices", not_found_msg="Devices endpoint not found"
-    )
-
-    if device_class:
-        devices = [
-            d
-            for d in devices
-            if d.get("ophyd_class") == device_class or d.get("class") == device_class
-        ]
-    if readable is not None:
-        devices = [d for d in devices if d.get("is_readable", True) == readable]
-    if movable is not None:
-        devices = [d for d in devices if d.get("is_movable", False) == movable]
-    if flyable is not None:
-        devices = [d for d in devices if d.get("is_flyable", False) == flyable]
-    return devices
-
-
-@app.get("/api/v1/devices/{device_name}")
-async def get_device(
-    device_name: str,
-    client: httpx.AsyncClient = Depends(get_config_http),
-):
-    """Get device metadata (proxied from configuration service)."""
-    return await _config_get(
-        client,
-        f"/api/v1/devices/{device_name}",
-        not_found_msg=f"Device not found: {device_name}",
-    )
-
-
-@app.get("/api/v1/devices/{device_name}/bundle")
-async def get_device_bundle(
-    device_name: str,
-    client: httpx.AsyncClient = Depends(get_config_http),
-):
-    """Get hierarchical device component tree for building control UIs."""
-    device_data = await _config_get(
-        client,
-        f"/api/v1/devices/{device_name}",
-        not_found_msg=f"Device not found: {device_name}",
-    )
-    pvs = device_data.get("pvs", {})
-    return {
-        "name": device_name,
-        "class": device_data.get("ophyd_class", device_data.get("device_type", "unknown")),
-        "prefix": device_data.get("prefix"),
-        "is_readable": device_data.get("is_readable", True),
-        "is_movable": device_data.get("is_movable", False),
-        "components": _build_component_tree(pvs),
-        "total_signals": len(pvs),
-    }
-
-
-def _build_component_tree(pvs: Dict[str, str]) -> List[Dict[str, Any]]:
-    groups: Dict[str, List[Dict[str, Any]]] = {}
-
-    for component_path, pv_name in pvs.items():
-        parts = component_path.split(".")
-        top_level = parts[0] if parts else component_path
-        groups.setdefault(top_level, []).append(
-            {
-                "name": component_path,
-                "attr": parts[-1] if parts else component_path,
-                "pv": pv_name,
-                "type": "signal",
-                "read_only": any(
-                    ro in pv_name.upper() for ro in ["RBV", "READBACK", "STAT", "_RBK", "_MON"]
-                ),
-            }
-        )
-
-    components = []
-    for group_name, signals in groups.items():
-        if len(signals) == 1 and signals[0]["attr"] == group_name:
-            components.append(signals[0])
-        else:
-            components.append(
-                {
-                    "name": group_name,
-                    "attr": group_name,
-                    "type": "device",
-                    "components": signals,
-                }
-            )
-    return components
 
 
 @app.post("/api/v1/device/{device_path:path}", response_model=NestedDeviceResponse)

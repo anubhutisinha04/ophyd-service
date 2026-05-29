@@ -245,6 +245,9 @@ class DeviceRegistry(BaseModel):
         pattern: Optional[str] = None,
         labels: Optional[List[str]] = None,
         ophyd_class: Optional[str] = None,
+        readable: Optional[bool] = None,
+        movable: Optional[bool] = None,
+        flyable: Optional[bool] = None,
     ) -> List[str]:
         """List device names with optional filtering.
 
@@ -253,6 +256,9 @@ class DeviceRegistry(BaseModel):
             pattern: Glob pattern for name matching
             labels: Filter by labels (device must have ALL specified labels)
             ophyd_class: Filter by ophyd device class name
+            readable: Filter by the Readable protocol flag
+            movable: Filter by the Movable protocol flag
+            flyable: Filter by the Flyable protocol flag
         """
         names = list(self.devices.keys())
 
@@ -274,6 +280,15 @@ class DeviceRegistry(BaseModel):
 
         if ophyd_class:
             names = [name for name in names if self.devices[name].ophyd_class == ophyd_class]
+
+        if readable is not None:
+            names = [name for name in names if self.devices[name].is_readable == readable]
+
+        if movable is not None:
+            names = [name for name in names if self.devices[name].is_movable == movable]
+
+        if flyable is not None:
+            names = [name for name in names if self.devices[name].is_flyable == flyable]
 
         return sorted(names)
 
@@ -331,8 +346,6 @@ class DeviceRegistry(BaseModel):
         """
         if name not in self.devices:
             return False
-
-        device = self.devices[name]
 
         # Remove indexed PVs owned by this device
         pv_names_to_remove = [

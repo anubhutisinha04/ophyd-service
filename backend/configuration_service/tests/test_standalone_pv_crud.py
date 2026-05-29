@@ -8,10 +8,9 @@ through the REST API, as well as direct store persistence.
 import pytest
 from fastapi.testclient import TestClient
 
-from configuration_service.main import create_app
 from configuration_service.config import Settings
+from configuration_service.main import create_app
 from configuration_service.standalone_pv_store import StandalonePVStore
-
 
 # ===== Fixtures =====
 
@@ -321,18 +320,22 @@ class TestCreateStandalonePVEndpoint:
         detail = response.json()
         assert any("pv_name" in str(e).lower() for e in detail.get("detail", []))
 
+    # Non-ASCII / control cases use explicit `\u`/`\x` escape sequences
+    # rather than literal codepoints in the source — invisible chars (NBSP,
+    # ZWSP, ZWNJ, ZWJ, BOM, ideographic space) are easy to mangle in
+    # editors and impossible to spot in code review.
     @pytest.mark.parametrize(
         "bad_pv_name",
         [
             # ── ASCII whitespace (rejected by pattern) ─────────────────
-            " ",         # single space
-            "\t",        # tab
-            "\r",        # carriage return
-            "\n",        # newline
-            "\v",        # vertical tab
-            "\f",        # form feed
-            "   ",       # multi-space
-            "foo bar",   # embedded space
+            " ",  # single space
+            "\t",  # tab
+            "\r",  # carriage return
+            "\n",  # newline
+            "\v",  # vertical tab
+            "\f",  # form feed
+            "   ",  # multi-space
+            "foo bar",  # embedded space
             "foo\tbar",  # embedded tab
             "foo\nbar",  # embedded newline (real risk from exerciser pv_for multi-row)
             "foo\rbar",  # embedded CR
@@ -346,13 +349,13 @@ class TestCreateStandalonePVEndpoint:
             "foo\x1bbar",  # ESC
             "foo\x7fbar",  # DEL (0x7f, just past printable range)
             # ── Unicode whitespace / zero-width (rejected by pattern) ──
-            "\xa0",          # non-breaking space U+00A0
-            "foo bar",  # NBSP in the middle
-            "foo​bar",  # ZWSP (zero-width space — visually invisible)
-            "foo‌bar",  # ZWNJ
-            "foo‍bar",  # ZWJ
-            "foo﻿bar",  # BOM
-            "　",        # ideographic space
+            "\u00a0",  # NBSP alone
+            "foo\u00a0bar",  # NBSP embedded
+            "foo\u200bbar",  # ZWSP (zero-width space)
+            "foo\u200cbar",  # ZWNJ
+            "foo\u200dbar",  # ZWJ
+            "foo\ufeffbar",  # BOM
+            "\u3000",  # ideographic space
         ],
     )
     def test_create_pv_invalid_chars_rejected(self, client, bad_pv_name):

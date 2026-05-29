@@ -38,6 +38,16 @@ def test_unsupported_accept_returns_406(client):
     assert r.status_code == 406
 
 
+def test_list_connected_pvs_nominal(client):
+    """Pure getter on ``pv_monitor`` — empty list is the legitimate fresh-service shape."""
+    r = client.get("/api/v1/pvs/connected")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body, list)
+    for item in body:
+        assert isinstance(item, str)
+
+
 # ===== LockedWS size cap (pure unit, no IOC) =====
 
 
