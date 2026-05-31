@@ -447,6 +447,13 @@ class DeviceRegistryStore:
         """No-op: the engine is owned and disposed by main.py."""
 
     def ping(self) -> None:
-        """Verify the DB is queryable. Raises on failure (used by /health)."""
+        """Verify the DB is queryable. Raises on failure (used by /health).
+
+        Sets a short per-statement timeout (transaction-local, so it never leaks
+        back to the pool) so a hung or slow database surfaces as a fast /health
+        failure instead of blocking the probe — which could otherwise trip a
+        Kubernetes liveness probe and kill the pod.
+        """
         with self._engine.connect() as conn:
+            conn.execute(text("SET LOCAL statement_timeout = 2000"))
             conn.execute(text("SELECT 1")).first()

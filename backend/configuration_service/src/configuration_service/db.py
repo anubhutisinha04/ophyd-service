@@ -9,18 +9,20 @@ once at startup) and injects it into both stores.
 Schema notes:
 - Timestamps are epoch floats (``Float`` -> DOUBLE PRECISION) to preserve the
   existing wire/API shape.
-- ``device_audit_log.id`` is an IDENTITY column: a monotonic, gap-tolerant
+- ``device_audit_log.id`` is a BIGINT IDENTITY column: a monotonic, gap-tolerant
   sequence. It is the change-feed cursor that bluesky-queueserver Layer 2 polls
   via ``GET /api/v1/devices/changes?since_version=N`` — never reuse or reset it.
+  BIGINT (not INT) because it grows on every seed/CRUD/reset/lock event (lock
+  events log one row per affected device), so a 32-bit range could be exhausted.
 - ``standalone_pvs.labels`` is a JSON-encoded TEXT column (parsed in Python) to
   keep the existing wire/API shape; JSONB is a possible future tightening.
 """
 
 from sqlalchemy import (
+    BigInteger,
     Column,
     Float,
     Identity,
-    Integer,
     MetaData,
     String,
     Table,
@@ -44,7 +46,7 @@ device_registry = Table(
 device_audit_log = Table(
     "device_audit_log",
     metadata,
-    Column("id", Integer, Identity(), primary_key=True),
+    Column("id", BigInteger, Identity(), primary_key=True),
     Column("device_name", String, nullable=False),
     Column("operation", String, nullable=False),
     Column("timestamp", Float, nullable=False),
