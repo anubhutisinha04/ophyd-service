@@ -155,11 +155,17 @@ class ImageStreamManager:
                 return
             image_array_pv, setting_pvs = self._resolve_pvs(message)
 
-            # 2. Registry gate — every PV reaching EPICS must exist in the
-            # authoritative registry, same as pv-socket/device-socket. All of
-            # the array + setting PVs are required to stream, so any one
-            # failing refuses the whole connection.
-            if not await self._validate_pvs(ws, [image_array_pv, *setting_pvs.values()]):
+            # 2. Registry gate — the image ARRAY PV must exist in the
+            # authoritative registry, same gate as pv-socket/device-socket.
+            # We validate only the array PV (the client-controlled data
+            # firehose), NOT the cam1:* settings: AreaDetector devices
+            # register the image-data PV but not each scalar setting as a
+            # standalone registry PV (e.g. the seeded SimDetector has
+            # image1:ArrayData but no cam1:SizeX/ColorMode/DataType), and
+            # finch sends those settings itself. Validating them would
+            # reject legitimate cameras. The settings ride on the same
+            # validated detector prefix.
+            if not await self._validate_pvs(ws, [image_array_pv]):
                 return
 
             # 3. Connect signals (blocking CA work off-loop).
@@ -378,11 +384,12 @@ class ImageStreamManager:
     # Registry validation + PV resolution
     # ------------------------------------------------------------------ #
     async def _validate_pvs(self, ws: LockedWS, pv_names: list[str]) -> bool:
-        """Confirm every PV exists in the registry, same gate as pv-socket.
+        """Confirm the given PV(s) exist in the registry, same gate as pv-socket.
 
-        Mirrors ``WebSocketManager._validate_pvs`` but is all-or-nothing: an
-        image stream needs the array PV *and* every setting PV, so any one
-        failing refuses the whole connection. Returns True when all are valid
+        Mirrors ``WebSocketManager._validate_pvs`` but is all-or-nothing: any
+        PV failing refuses the whole connection. Callers pass the image array
+        PV (the client-controlled data source); the cam1:* settings are not
+        validated — see the caller for why. Returns True when all are valid
         (or no registry is configured). On failure emits a per-PV error
         envelope and returns False. A ``RuntimeError`` (config-service down)
         also fails closed — no streaming from an unvalidated PV.
