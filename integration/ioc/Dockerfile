@@ -8,6 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends procps \
 
 RUN pip install --no-cache-dir caproto numpy
 
+# Custom caproto IOCs that aren't in caproto.ioc_examples (e.g. the ADSim
+# camera). Services that use them override `command:` to run the script.
+COPY ioc_adsim.py /app/ioc_adsim.py
+
 RUN useradd -m -u 1000 ioc && chown -R ioc:ioc /app
 USER ioc
 

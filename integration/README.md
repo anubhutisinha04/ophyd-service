@@ -45,14 +45,26 @@ docker compose up --build
 
 ### `pods/full/`
 
-Five IOCs + the two backends. Adds `random_walk` ×3 (different prefixes) and `thermo_sim` to the mini_beamline base. Lets you exercise the registry against a more realistic device mix and run the WebSocket exerciser against a live, ticking PV.
+Seven IOCs + the two backends. Adds `random_walk` ×3 (different prefixes), `thermo_sim`, `fake_motor_record`, and `ioc_adsim` (a simulated AreaDetector) to the mini_beamline base. Lets you exercise the registry against a more realistic device mix and run the WebSocket exerciser against a live, ticking PV — including a live camera image.
 
 ```sh
 cd integration/pods/full
 docker compose up --build
 ```
 
-All five IOCs build from the same `integration/ioc/Dockerfile`; per-service `command:` overrides choose the caproto module + prefix. Health is gated on every IOC reaching `service_healthy`.
+Most IOCs build from the same `integration/ioc/Dockerfile` and pick a caproto module via per-service `command:`; `ioc_adsim` runs the custom `integration/ioc/ioc_adsim.py` (copied into the image). Health is gated on every IOC reaching `service_healthy`.
+
+**Stream the simulated camera.** `ioc_adsim` serves `13SIM1:cam1:*` + a live `13SIM1:image1:ArrayData` (a Mono/UInt8 frame with an orbiting blob, ~5 Hz) — the default PVs the direct-control `camera-socket` / `tiff-socket` fall back to. The image-array PV must be in the registry first (the sockets gate on it), so register the detector once, then connect:
+
+```sh
+# 1. register the camera device (the `cam` body from runtime_seed.json)
+curl -s -X POST http://localhost:8004/api/v1/devices \
+  -H 'content-type: application/json' \
+  -d "$(python3 -c "import json;print(json.dumps(json.load(open('../../happi/runtime_seed.json'))['compound_devices']['cam']))")"
+# 2. open the camera socket (subscribe with {} uses the 13SIM1 defaults):
+#    ws://localhost:8003/api/v1/camera-socket   — JSON {x,y} then binary JPEG frames
+#    ws://localhost:8003/api/v1/tiff-socket     — send {"prefix":"13SIM1"}
+```
 
 ### `pods/dev/`
 
@@ -132,7 +144,7 @@ The exerciser is pod-agnostic — it works against `minimal/`, `full/`, or `dev/
 
 **Phase 4 — queueserver/httpserver:** once the `merge/httpserver` branch lands, add a container built from `sligara7/bluesky-queueserver`. Mount `integration/localdevs/` into its PYTHONPATH so happi-defined compound devices instantiate.
 
-**Other gaps:** MADSIM (AreaDetector simulator) — bluesky-pods references `simcam1` but doesn't ship the IOC. Add when we have one.
+**AreaDetector simulator:** shipped as `ioc_adsim` in `pods/full` (`integration/ioc/ioc_adsim.py`) — a caproto stand-in for ADSimDetector serving `13SIM1:cam1:*` + a live `13SIM1:image1:ArrayData` for the camera-socket / tiff-socket. (A real EPICS `areaDetector` ADSimDetector IOC would be a drop-in replacement; the PV names match.)
 
 ## Why not fork bluesky-pods?
 
