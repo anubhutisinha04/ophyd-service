@@ -63,6 +63,7 @@ class SubscribeOutcome(BaseModel):
     failed_pvs: List[FailedPV] = []
 from ._envelopes import (
     LockedWS,
+    close_connections,
     fanout_error,
     heartbeat_loop,
     log_threadsafe_future_exceptions,
@@ -141,11 +142,7 @@ class DeviceWebSocketManager:
         async with self._lock:
             sockets = list(self._connections.values())
             self._connections.clear()
-        for ws in sockets:
-            try:
-                await ws.close(code=1001, reason="Service shutting down")
-            except Exception:  # noqa: BLE001
-                pass
+        await close_connections(sockets)
 
     async def _fetch_device_info(
         self, device_name: str

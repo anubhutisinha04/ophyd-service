@@ -46,7 +46,13 @@ from ophyd import EpicsSignalRO
 from PIL import Image
 
 from ..config import Settings
-from ._envelopes import LockedWS, send_error
+from ._envelopes import (
+    LockedWS,
+    close_connections,
+    send_bytes_or_size_error,
+    send_error,
+    send_payload_or_size_error,
+)
 from .image_encoders import ImageEncoder, make_encoder
 
 logger = structlog.get_logger(__name__)
@@ -257,26 +263,54 @@ class ImageStreamManager:
                 return
             if isinstance(data, dict) and "toggleLogNormalization" in data:
                 state.log_normalization = bool(data["toggleLogNormalization"])
-                await ws.send_json({"logNormalization": state.log_normalization})
+                await send_payload_or_size_error(
+                    ws,
+                    {"logNormalization": state.log_normalization},
+                    log_event="image_lognorm_ack",
+                    log_fields={"kind": self.kind},
+                    oversize_message="logNormalization ack exceeds size limit",
+                    error_envelope_fields={},
+                )
 
     async def _stream_loop(
         self, ws: LockedWS, queue: asyncio.Queue, state: _StreamState
     ) -> None:
+        log_fields = {"kind": self.kind}
         while True:
             kind, payload = await queue.get()
             if kind == _DIMS:
                 state.dimensions = payload
                 # finch reads only x/y; extra keys (colorMode/dataType) are
                 # ignored client-side but needed server-side to reshape.
-                await ws.send_json(payload)
+                # Resilient send: a slow client drops this dims message rather
+                # than tearing down the stream.
+                await send_payload_or_size_error(
+                    ws,
+                    payload,
+                    log_event="image_dims_send",
+                    log_fields=log_fields,
+                    oversize_message="dimensions payload exceeds size limit",
+                    error_envelope_fields={},
+                )
                 continue
             if state.dimensions is None:
                 continue  # frame arrived before dimensions are known; skip
             frame = await asyncio.to_thread(
                 self._render_frame, payload, state.dimensions, state.log_normalization
             )
-            if frame is not None:
-                await ws.send_bytes(frame)
+            if frame is None:
+                continue
+            # Resilient send: TimeoutError drops this one frame (the
+            # drop-oldest queue's whole point), oversize emits an error
+            # envelope — neither kills the stream.
+            await send_bytes_or_size_error(
+                ws,
+                frame,
+                log_event="image_frame_send",
+                log_fields=log_fields,
+                oversize_message="image frame exceeds size limit; frame dropped",
+                error_envelope_fields={},
+            )
 
     def _render_frame(self, raw, dimensions: dict, log_normalization: bool) -> Optional[bytes]:
         """Normalize -> reshape -> downsample -> encode. Off-loop (CPU-bound)."""
@@ -324,11 +358,7 @@ class ImageStreamManager:
         async with self._lock:
             sockets = list(self._connections.values())
             self._connections.clear()
-        for ws in sockets:
-            try:
-                await ws.close(code=1001, reason="Service shutting down")
-            except Exception:  # noqa: BLE001
-                pass
+        await close_connections(sockets)
 
     # ------------------------------------------------------------------ #
     # PV resolution

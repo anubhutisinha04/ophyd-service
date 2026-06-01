@@ -17,6 +17,7 @@ import json
 import pytest
 from PIL import Image
 
+from direct_control.monitoring._envelopes import LockedWS, send_bytes_or_size_error
 from direct_control.monitoring.image_encoders import (
     JpegEncoder,
     PngEncoder,
@@ -79,6 +80,59 @@ def test_jpeg_encoder_produces_decodable_jpeg():
     data = JpegEncoder().encode(image)
     assert data.startswith(JPEG_SOI)
     assert Image.open(io.BytesIO(data)).size == (4, 4)
+
+
+# --------------------------------------------------------------------------- #
+# Resilient frame send (a slow client / oversize frame must not kill the stream)
+# --------------------------------------------------------------------------- #
+class _FakeWS:
+    """Minimal LockedWS target capturing text/binary sends."""
+
+    def __init__(self):
+        self.texts: list[str] = []
+        self.binaries: list[bytes] = []
+
+    async def send_text(self, data: str) -> None:
+        self.texts.append(data)
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.binaries.append(data)
+
+
+async def test_send_bytes_or_size_error_oversize_emits_envelope_not_raise():
+    """An oversize frame yields a structured error envelope, never a raise
+    (which would tear down the stream)."""
+    fake = _FakeWS()
+    # Cap large enough for the (small) error envelope, small enough to reject
+    # the frame — so we exercise the oversize-frame path, not envelope rejection.
+    ws = LockedWS(fake, max_message_bytes=500)
+    await send_bytes_or_size_error(
+        ws,
+        b"x" * 10_000,
+        log_event="t",
+        log_fields={},
+        oversize_message="frame too big",
+        error_envelope_fields={},
+    )
+    assert fake.binaries == []  # oversize frame was dropped, not sent
+    assert len(fake.texts) == 1
+    env = json.loads(fake.texts[0])
+    assert env["type"] == "error" and env["error"] == "frame too big"
+
+
+async def test_send_bytes_or_size_error_sends_frame_under_cap():
+    fake = _FakeWS()
+    ws = LockedWS(fake, max_message_bytes=1000)
+    await send_bytes_or_size_error(
+        ws,
+        b"abc",
+        log_event="t",
+        log_fields={},
+        oversize_message="frame too big",
+        error_envelope_fields={},
+    )
+    assert fake.binaries == [b"abc"]
+    assert fake.texts == []
 
 
 # --------------------------------------------------------------------------- #
