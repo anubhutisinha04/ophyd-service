@@ -24,6 +24,10 @@ from direct_control.monitoring.image_encoders import (
     WebpEncoder,
     make_encoder,
 )
+from direct_control.monitoring.image_stream_manager import (
+    _build_display_image,
+    _detector_base,
+)
 
 JPEG_SOI = b"\xff\xd8\xff"  # JPEG start-of-image marker
 
@@ -80,6 +84,40 @@ def test_jpeg_encoder_produces_decodable_jpeg():
     data = JpegEncoder().encode(image)
     assert data.startswith(JPEG_SOI)
     assert Image.open(io.BytesIO(data)).size == (4, 4)
+
+
+# --------------------------------------------------------------------------- #
+# PV resolution + downsample (module-level, no IOC)
+# --------------------------------------------------------------------------- #
+def test_detector_base_handles_colon_prefixes():
+    """cam1:* inference must work for prefixes that themselves contain ':'."""
+    assert _detector_base("13SIM1:image1:ArrayData") == "13SIM1:"
+    # NSLS-II style: prefix has multiple ':' and braces.
+    assert _detector_base("XF:11IDB:ES{Cam:1}image1:ArrayData") == "XF:11IDB:ES{Cam:1}"
+    # Non-standard array PV (no image1:) falls back to the leading segment.
+    assert _detector_base("WEIRD") == "WEIRD:"
+
+
+def test_downsample_preserves_aspect_ratio():
+    """A frame exceeding the cap on one axis must keep its aspect ratio."""
+    import numpy as np
+
+    width, height = 5000, 100  # 50:1, only width exceeds the 2500 cap
+    # pyepics hands the pipeline a numpy array, so mirror that (a Python list
+    # of out-of-range ints would hit numpy 2.x's asarray dtype-overflow guard).
+    raw = np.zeros(width * height, dtype=np.uint8)
+    img = _build_display_image(
+        raw,
+        width=width,
+        height=height,
+        color_mode="Mono",
+        data_type="UInt8",
+        log_normalization=False,
+        max_dimension=2500,
+    )
+    assert max(img.size) <= 2500
+    # Aspect ratio (w/h) preserved at 50:1, not distorted to 2500x100.
+    assert abs((img.size[0] / img.size[1]) - (width / height)) < 0.5
 
 
 # --------------------------------------------------------------------------- #

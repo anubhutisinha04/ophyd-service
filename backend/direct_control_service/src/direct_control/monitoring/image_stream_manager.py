@@ -211,11 +211,12 @@ class ImageStreamManager:
         state = _StreamState(self.settings.image_log_normalization_default)
         queue: asyncio.Queue = asyncio.Queue(maxsize=self.settings.image_frame_queue_size)
 
-        def compute_dims() -> dict:
-            return _compute_dimensions(setting_signals)
-
-        # CA-thread callbacks: only schedule work onto the event loop. asyncio
-        # primitives are not threadsafe, so the actual enqueue runs on-loop.
+        # CA-thread callbacks: both only schedule an enqueue onto the event
+        # loop and do NO CA I/O themselves. The image array value rides in the
+        # callback's own `value`; a settings change just enqueues a recompute
+        # sentinel — the actual `_compute_dimensions` (which reads several PVs)
+        # runs off both the CA thread and the event loop, via to_thread in the
+        # stream loop. asyncio primitives aren't threadsafe, hence call_soon.
         def array_cb(value=None, timestamp=None, **kwargs) -> None:
             if state.closing:
                 return
@@ -224,33 +225,26 @@ class ImageStreamManager:
         def settings_cb(value=None, timestamp=None, **kwargs) -> None:
             if state.closing:
                 return
-            try:
-                dims = compute_dims()
-            except Exception as exc:  # noqa: BLE001
-                # If teardown began while we were reading the signals, the
-                # failure is an expected disconnect race, not a real fault.
-                if state.closing:
-                    return
-                logger.warning("image_dims_compute_failed", kind=self.kind, error=str(exc))
-                return
-            loop.call_soon_threadsafe(_enqueue, queue, (_DIMS, dims))
+            loop.call_soon_threadsafe(_enqueue, queue, (_DIMS, None))
 
         for signal in setting_signals.values():
             signal.subscribe(settings_cb)
         array_signal.subscribe(array_cb)
 
-        # Prime: emit initial dimensions and the current frame so a client sees
-        # an image immediately rather than waiting for the next detector update.
+        # Prime: emit dimensions and the current frame so a client sees an
+        # image immediately rather than waiting for the next detector update.
+        # The _DIMS sentinel makes the stream loop compute dims (off-loop).
         try:
-            initial_dims = await asyncio.to_thread(compute_dims)
-            _enqueue(queue, (_DIMS, initial_dims))
+            _enqueue(queue, (_DIMS, None))
             initial_frame = await asyncio.to_thread(array_signal.get)
             _enqueue(queue, (_FRAME, initial_frame))
         except Exception as exc:  # noqa: BLE001
             logger.warning("image_prime_failed", client_id=client_id, kind=self.kind, error=str(exc))
 
         recv_task = asyncio.create_task(self._receive_loop(ws, state))
-        stream_task = asyncio.create_task(self._stream_loop(ws, queue, state))
+        stream_task = asyncio.create_task(
+            self._stream_loop(ws, queue, state, setting_signals)
+        )
         try:
             await asyncio.wait(
                 {recv_task, stream_task}, return_when=asyncio.FIRST_COMPLETED
@@ -293,20 +287,35 @@ class ImageStreamManager:
                 )
 
     async def _stream_loop(
-        self, ws: LockedWS, queue: asyncio.Queue, state: _StreamState
+        self,
+        ws: LockedWS,
+        queue: asyncio.Queue,
+        state: _StreamState,
+        setting_signals: dict[str, EpicsSignalRO],
     ) -> None:
         log_fields = {"kind": self.kind}
         while True:
             kind, payload = await queue.get()
             if kind == _DIMS:
-                state.dimensions = payload
+                # Recompute sentinel: read the setting PVs off the event loop
+                # (the CA callback only enqueued this). A teardown race makes
+                # the read fail; that's expected, not a fault.
+                try:
+                    dims = await asyncio.to_thread(_compute_dimensions, setting_signals)
+                except Exception as exc:  # noqa: BLE001
+                    if not state.closing:
+                        logger.warning(
+                            "image_dims_compute_failed", kind=self.kind, error=str(exc)
+                        )
+                    continue
+                state.dimensions = dims
                 # finch reads only x/y; extra keys (colorMode/dataType) are
                 # ignored client-side but needed server-side to reshape.
                 # Resilient send: a slow client drops this dims message rather
                 # than tearing down the stream.
                 await send_payload_or_size_error(
                     ws,
-                    payload,
+                    dims,
                     log_event="image_dims_send",
                     log_fields=log_fields,
                     oversize_message="dimensions payload exceeds size limit",
@@ -429,17 +438,34 @@ class ImageStreamManager:
         image_array_pv = (
             message.get("imageArray_PV") or self.settings.camera_default_image_array_pv
         ).strip()
-        prefix = image_array_pv.split(":")[0]
+        base = _detector_base(image_array_pv)
         setting_pvs = {}
         for name, suffix in SETTING_SUFFIX.items():
             explicit = message.get(name)
-            setting_pvs[name] = explicit if explicit else f"{prefix}:cam1:{suffix}"
+            setting_pvs[name] = explicit if explicit else f"{base}cam1:{suffix}"
         return image_array_pv, setting_pvs
 
 
 # ---------------------------------------------------------------------- #
 # Module-level helpers (stateless; ported from ophyd-websocket)
 # ---------------------------------------------------------------------- #
+def _detector_base(image_array_pv: str) -> str:
+    """Detector base prefix for inferring cam1:* PVs from the image-array PV.
+
+    AreaDetector exposes the array at ``<base>image1:ArrayData`` and the camera
+    settings at ``<base>cam1:<field>``. Split on the ``image1:`` plugin token
+    rather than the first ``:`` so prefixes that themselves contain ``:`` (e.g.
+    ``XF:11IDB:ES{Cam:1}image1:ArrayData``) resolve correctly. Falls back to the
+    leading segment for non-standard array PVs that lack ``image1:`` (in which
+    case the client should pass explicit setting PVs).
+    """
+    token = "image1:"
+    if token in image_array_pv:
+        return image_array_pv.rsplit(token, 1)[0]
+    head = image_array_pv.split(":")[0]
+    return f"{head}:" if head else ""
+
+
 def _connect_signal(pv: str, name: str) -> EpicsSignalRO:
     """Create a connected read-only signal or raise with a clear message."""
     signal = EpicsSignalRO(pv, name=name)
@@ -535,7 +561,12 @@ def _build_display_image(
     array = np.asarray(raw, dtype=DTYPE_MAP[data_type])
     array = _normalize(array, log_normalization)
     array, mode = _reshape(array, height, width, color_mode)
-    if array.shape[0] > max_dimension or array.shape[1] > max_dimension:
-        new_size = (min(array.shape[1], max_dimension), min(array.shape[0], max_dimension))
-        return Image.fromarray(array, mode).resize(new_size, Image.LANCZOS)
-    return Image.fromarray(array, mode)
+    image = Image.fromarray(array, mode)
+    h, w = array.shape[0], array.shape[1]
+    if h > max_dimension or w > max_dimension:
+        # Scale both axes by one factor so the frame fits the max bounding box
+        # without distorting aspect ratio.
+        scale = max_dimension / max(h, w)
+        new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
+        return image.resize(new_size, Image.LANCZOS)
+    return image

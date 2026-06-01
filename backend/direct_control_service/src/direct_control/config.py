@@ -69,10 +69,13 @@ class Settings(BaseSettings):
     response_bytesize_limit: int = 100_000_000  # 100 MB
 
     # Image streaming (camera-socket / tiff-socket).
-    # Per-connection frame queue. The image-array CA callback pushes raw frames
-    # here; the streaming loop drains + encodes. Drop-oldest on overflow so a
-    # fast detector can't outrun a slow client and wedge the connection.
-    image_frame_queue_size: int = 1000
+    # Per-connection frame queue. The image-array CA callback pushes RAW (un-
+    # encoded) NDArray frames here; the streaming loop drains + encodes.
+    # Drop-oldest on overflow so a fast detector can't outrun a slow client.
+    # Keep this small: each queued frame is a full raw image (megabytes at
+    # detector sizes), and for a live view a deep queue only adds latency by
+    # showing stale frames. A handful is enough to absorb bursts.
+    image_frame_queue_size: int = 8
     # Downsample any frame wider/taller than this (LANCZOS) before encoding,
     # to cap per-frame wire size and browser decode cost.
     image_max_dimension: int = 2500
