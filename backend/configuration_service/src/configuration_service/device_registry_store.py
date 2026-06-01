@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 class DeviceRegistryStore:
     """
-    PostgreSQL-backed device registry (source of truth).
+    Device registry (source of truth), backed by PostgreSQL or SQLite.
 
     Parameters
     ----------
@@ -460,14 +460,16 @@ class DeviceRegistryStore:
     def ping(self) -> None:
         """Verify the DB is queryable. Raises on failure (used by /health).
 
-        On PostgreSQL, sets a short per-statement timeout (transaction-local, so
-        it never leaks back to the pool) so a hung or slow database surfaces as a
-        fast /health failure instead of blocking the probe — which could
-        otherwise trip a Kubernetes liveness probe and kill the pod. SQLite is
-        local and has no server-side statement timeout, so the probe is just the
-        SELECT (the connect-time busy-timeout bounds lock waits).
+        Sets a short timeout so a hung or slow/locked database surfaces as a fast
+        /health failure instead of blocking the probe — which could otherwise
+        trip a Kubernetes liveness probe and kill the pod. On PostgreSQL that's a
+        transaction-local ``statement_timeout`` (never leaks back to the pool);
+        on SQLite it's a connection-local ``busy_timeout`` that bounds the wait
+        on a write lock to ~2s instead of the 30s engine-wide busy-timeout.
         """
         with self._engine.connect() as conn:
             if conn.dialect.name == "postgresql":
                 conn.execute(text("SET LOCAL statement_timeout = 2000"))
+            elif conn.dialect.name == "sqlite":
+                conn.execute(text("PRAGMA busy_timeout = 2000"))
             conn.execute(text("SELECT 1")).first()

@@ -114,7 +114,7 @@ services:
     environment:
       CONFIG_LOAD_STRATEGY: "happi"
       CONFIG_PROFILE_PATH: "/profile"
-      # PostgreSQL persistence (configuration_service is Postgres-only).
+      # PostgreSQL persistence (config_service also supports SQLite; this pod uses Postgres).
       CONFIG_DATABASE_URL: "postgresql+psycopg://bluesky:bluesky@postgres:5432/config_service"
       # The happi DB references compound device classes (localdevs.Det,
       # localdevs.Spot). Loader walks those classes to index sub-PVs at

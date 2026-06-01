@@ -45,6 +45,7 @@ from sqlalchemy import (
     Table,
     Text,
     create_engine,
+    event,
 )
 from sqlalchemy.engine import Connection, Engine, make_url
 
@@ -73,6 +74,11 @@ device_audit_log = Table(
     Column("operation", String, nullable=False),
     Column("timestamp", Float, nullable=False),
     Column("details", Text),
+    # AUTOINCREMENT on SQLite so deleted ids are never reused — matching
+    # PostgreSQL IDENTITY. Without it, SQLite's rowid is max(id)+1 and would
+    # reuse the id of a deleted top row, breaking the never-reused guarantee the
+    # /changes cursor depends on. No-op on PostgreSQL.
+    sqlite_autoincrement=True,
 )
 
 registry_metadata = Table(
@@ -131,8 +137,9 @@ def make_engine(database_url: str) -> Engine:
     For SQLite: ``check_same_thread=False`` is required because that same
     threadpool hands connections across threads, and ``timeout`` sets the
     busy-timeout so concurrent writers wait for the single writer lock instead
-    of erroring immediately. (SQLite is intended for single-node/dev use; for
-    multi-writer production, use PostgreSQL.)
+    of erroring immediately. WAL journaling is enabled per-connection so readers
+    don't block behind a mid-commit writer. (SQLite is intended for
+    single-node/dev use; for multi-writer production, use PostgreSQL.)
     """
     if not database_url:
         raise ValueError(
@@ -143,11 +150,21 @@ def make_engine(database_url: str) -> Engine:
 
     backend = make_url(database_url).get_backend_name()
     if backend == "sqlite":
-        return create_engine(
+        engine = create_engine(
             database_url,
             connect_args={"check_same_thread": False, "timeout": 30},
             future=True,
         )
+
+        @event.listens_for(engine, "connect")
+        def _enable_wal(dbapi_conn, _record):
+            # WAL lets reads proceed concurrently with a writer (a no-op on
+            # in-memory databases, which are always journal-mode "memory").
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+
+        return engine
     if backend == "postgresql":
         return create_engine(
             database_url,

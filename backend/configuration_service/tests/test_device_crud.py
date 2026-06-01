@@ -7,7 +7,6 @@ as well as direct registry store persistence, audit log, reset, and export.
 
 import json
 import pytest
-from pathlib import Path
 from fastapi.testclient import TestClient
 
 from configuration_service.main import create_app
@@ -431,6 +430,46 @@ class TestDeviceRegistryStore:
         assert not inspect(db_engine).has_table("device_change_history")
 
         store.close()
+
+    def test_audit_id_never_reused_after_max_delete(self, db_engine):
+        """The /changes cursor (device_audit_log.id) must never reuse an id, even
+        after the highest row is deleted — PG IDENTITY guarantees this, and SQLite
+        needs AUTOINCREMENT (sqlite_autoincrement=True) to match. Without it,
+        SQLite reuses the deleted top id and a Layer-2 poller silently skips a
+        change."""
+        from sqlalchemy import select, text
+
+        from configuration_service.db import device_audit_log
+
+        DeviceRegistryStore(db_engine).initialize()
+        with db_engine.begin() as conn:
+            for name in ("a", "b", "c"):
+                conn.execute(
+                    device_audit_log.insert().values(
+                        device_name=name, operation="add", timestamp=1.0
+                    )
+                )
+        with db_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "DELETE FROM device_audit_log "
+                    "WHERE id = (SELECT max(id) FROM device_audit_log)"
+                )
+            )
+            conn.execute(
+                device_audit_log.insert().values(
+                    device_name="d", operation="add", timestamp=2.0
+                )
+            )
+        with db_engine.connect() as conn:
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    select(device_audit_log.c.id).order_by(device_audit_log.c.id)
+                ).all()
+            ]
+        # 'd' must get a fresh id (4), not reuse the deleted 3.
+        assert ids == [1, 2, 4], f"audit id was reused: {ids}"
 
 
 # ===== DeviceRegistry Method Tests =====

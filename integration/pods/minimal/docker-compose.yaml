@@ -50,7 +50,7 @@ services:
       # under CONFIG_PROFILE_PATH; `happi` makes that explicit.
       CONFIG_LOAD_STRATEGY: "happi"
       CONFIG_PROFILE_PATH: "/profile"
-      # PostgreSQL persistence (configuration_service is Postgres-only).
+      # PostgreSQL persistence (config_service also supports SQLite; this pod uses Postgres).
       CONFIG_DATABASE_URL: "postgresql+psycopg://bluesky:bluesky@postgres:5432/config_service"
       # The happi DB references compound classes (localdevs.Det, .Spot)
       # whose Component trees the loader walks at registry-load time to
