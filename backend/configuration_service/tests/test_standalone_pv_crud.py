@@ -16,11 +16,11 @@ from configuration_service.standalone_pv_store import StandalonePVStore
 
 
 @pytest.fixture
-def client(pg_url):
+def client(db_url):
     """Create test client with mock data, change history enabled."""
     settings = Settings(
         use_mock_data=True,
-        database_url=pg_url,
+        database_url=db_url,
         device_change_history_enabled=True,
     )
     app = create_app(settings)
@@ -46,18 +46,18 @@ def sample_pv_payload():
 class TestStandalonePVStore:
     """Test StandalonePVStore persistence layer."""
 
-    def test_initialize(self, pg_engine):
+    def test_initialize(self, db_engine):
         """Test store initialization creates table."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
         assert store._initialized is True
         # Safe to call again
         store.initialize()
         store.close()
 
-    def test_save_and_get_pv(self, pg_engine):
+    def test_save_and_get_pv(self, db_engine):
         """Test saving and retrieving a standalone PV."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
 
         store.save_pv(
@@ -84,9 +84,9 @@ class TestStandalonePVStore:
 
         store.close()
 
-    def test_save_pv_update_preserves_created_at(self, pg_engine):
+    def test_save_pv_update_preserves_created_at(self, db_engine):
         """Test that updating a PV preserves created_at."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
 
         store.save_pv(
@@ -110,9 +110,9 @@ class TestStandalonePVStore:
 
         store.close()
 
-    def test_delete_pv(self, pg_engine):
+    def test_delete_pv(self, db_engine):
         """Test deleting a standalone PV."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
 
         store.save_pv(pv_name="TEST:PV:1", description="Test")
@@ -124,9 +124,9 @@ class TestStandalonePVStore:
 
         store.close()
 
-    def test_get_all_pvs(self, pg_engine):
+    def test_get_all_pvs(self, db_engine):
         """Test listing all standalone PVs."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
 
         for i in range(3):
@@ -137,9 +137,9 @@ class TestStandalonePVStore:
 
         store.close()
 
-    def test_get_all_pvs_with_label_filter(self, pg_engine):
+    def test_get_all_pvs_with_label_filter(self, db_engine):
         """Test listing PVs filtered by labels."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
 
         store.save_pv(pv_name="PV:A", labels=["diagnostics", "ring"])
@@ -160,9 +160,9 @@ class TestStandalonePVStore:
 
         store.close()
 
-    def test_get_all_labels(self, pg_engine):
+    def test_get_all_labels(self, db_engine):
         """Test listing unique labels across all PVs."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
 
         store.save_pv(pv_name="PV:A", labels=["diagnostics", "ring"])
@@ -173,9 +173,9 @@ class TestStandalonePVStore:
 
         store.close()
 
-    def test_get_all_labels_empty(self, pg_engine):
+    def test_get_all_labels_empty(self, db_engine):
         """Test listing labels when no PVs exist."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
 
         labels = store.get_all_labels()
@@ -183,9 +183,9 @@ class TestStandalonePVStore:
 
         store.close()
 
-    def test_clear_all(self, pg_engine):
+    def test_clear_all(self, db_engine):
         """Test clearing all standalone PVs."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
 
         for i in range(3):
@@ -197,9 +197,9 @@ class TestStandalonePVStore:
 
         store.close()
 
-    def test_pv_persists_across_reopen(self, pg_engine):
+    def test_pv_persists_across_reopen(self, db_engine):
         """Test that PVs persist across store reopens (simulated restart)."""
-        store1 = StandalonePVStore(pg_engine)
+        store1 = StandalonePVStore(db_engine)
         store1.initialize()
         store1.save_pv(
             pv_name="PERSIST:PV:1",
@@ -211,7 +211,7 @@ class TestStandalonePVStore:
         store1.close()
 
         # Reopen and verify
-        store2 = StandalonePVStore(pg_engine)
+        store2 = StandalonePVStore(db_engine)
         store2.initialize()
         pv = store2.get_pv("PERSIST:PV:1")
         assert pv is not None
@@ -221,9 +221,9 @@ class TestStandalonePVStore:
         assert pv.labels == ["persistent"]
         store2.close()
 
-    def test_get_nonexistent_pv(self, pg_engine):
+    def test_get_nonexistent_pv(self, db_engine):
         """Test getting a PV that doesn't exist returns None."""
-        store = StandalonePVStore(pg_engine)
+        store = StandalonePVStore(db_engine)
         store.initialize()
 
         assert store.get_pv("NONEXISTENT") is None
@@ -566,7 +566,7 @@ class TestStandalonePVExistingEndpointIntegration:
 class TestStandalonePVPersistence:
     """Test that standalone PVs survive simulated service restarts."""
 
-    def test_pv_survives_restart(self, pg_url):
+    def test_pv_survives_restart(self, db_url):
         """Test that a registered standalone PV persists across app restarts."""
 
         payload = {
@@ -577,7 +577,7 @@ class TestStandalonePVPersistence:
 
         settings = Settings(
             use_mock_data=True,
-            database_url=pg_url,
+            database_url=db_url,
             device_change_history_enabled=True,
         )
 
@@ -605,12 +605,12 @@ class TestStandalonePVPersistence:
             assert pv["pv"] == "PERSIST:PV:RING"
             assert pv["device_name"] is None
 
-    def test_deleted_pv_stays_deleted_after_restart(self, pg_url):
+    def test_deleted_pv_stays_deleted_after_restart(self, db_url):
         """Test that a deleted standalone PV stays deleted after restart."""
 
         settings = Settings(
             use_mock_data=True,
-            database_url=pg_url,
+            database_url=db_url,
             device_change_history_enabled=True,
         )
 

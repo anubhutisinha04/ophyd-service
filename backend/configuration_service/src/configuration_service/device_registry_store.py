@@ -1,10 +1,14 @@
 """
-PostgreSQL store for the device registry (source of truth).
+Store for the device registry (source of truth).
+
+Backend-agnostic: works against either PostgreSQL or SQLite via the shared
+engine from ``db.py`` (the dialect-specific upsert and audit-id column are
+handled there).
 
 Two-table design:
 - device_registry: current active state (one row per device)
-- device_audit_log: append-only change history (its IDENTITY ``id`` is the
-  monotonic version the /changes feed exposes)
+- device_audit_log: append-only change history (its auto-incrementing ``id`` is
+  the monotonic version the /changes feed exposes)
 
 Startup flow:
 1. initialize() — create tables
@@ -22,10 +26,15 @@ import time
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete, func, select, text
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 
-from .db import device_audit_log, device_registry, metadata, registry_metadata
+from .db import (
+    device_audit_log,
+    device_registry,
+    metadata,
+    registry_metadata,
+    upsert,
+)
 from .models import (
     DeviceAuditEntry,
     DeviceInstantiationSpec,
@@ -61,7 +70,9 @@ class DeviceRegistryStore:
             conn.execute(text("DROP TABLE IF EXISTS device_change_history"))
 
         self._initialized = True
-        logger.info("Device registry store initialized (postgresql)")
+        logger.info(
+            "Device registry store initialized (%s)", self._engine.dialect.name
+        )
 
     def is_seeded(self) -> bool:
         """Check whether the registry has been seeded from a profile."""
@@ -102,7 +113,7 @@ class DeviceRegistryStore:
                 )
 
             conn.execute(
-                pg_insert(registry_metadata)
+                upsert(conn, registry_metadata)
                 .values(key="seeded", value=str(now))
                 .on_conflict_do_update(index_elements=["key"], set_={"value": str(now)})
             )
@@ -146,7 +157,7 @@ class DeviceRegistryStore:
 
         with self._engine.begin() as conn:
             conn.execute(
-                pg_insert(device_registry)
+                upsert(conn, device_registry)
                 .values(
                     name=name,
                     device_metadata=metadata_json,
@@ -449,11 +460,14 @@ class DeviceRegistryStore:
     def ping(self) -> None:
         """Verify the DB is queryable. Raises on failure (used by /health).
 
-        Sets a short per-statement timeout (transaction-local, so it never leaks
-        back to the pool) so a hung or slow database surfaces as a fast /health
-        failure instead of blocking the probe — which could otherwise trip a
-        Kubernetes liveness probe and kill the pod.
+        On PostgreSQL, sets a short per-statement timeout (transaction-local, so
+        it never leaks back to the pool) so a hung or slow database surfaces as a
+        fast /health failure instead of blocking the probe — which could
+        otherwise trip a Kubernetes liveness probe and kill the pod. SQLite is
+        local and has no server-side statement timeout, so the probe is just the
+        SELECT (the connect-time busy-timeout bounds lock waits).
         """
         with self._engine.connect() as conn:
-            conn.execute(text("SET LOCAL statement_timeout = 2000"))
+            if conn.dialect.name == "postgresql":
+                conn.execute(text("SET LOCAL statement_timeout = 2000"))
             conn.execute(text("SELECT 1")).first()

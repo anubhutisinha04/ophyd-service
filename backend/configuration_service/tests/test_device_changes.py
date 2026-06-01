@@ -13,10 +13,10 @@ from configuration_service.config import Settings
 
 
 @pytest.fixture
-def client(pg_url):
+def client(db_url):
     settings = Settings(
         use_mock_data=True,
-        database_url=pg_url,
+        database_url=db_url,
         device_change_history_enabled=True,
     )
     app = create_app(settings)

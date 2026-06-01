@@ -1,10 +1,10 @@
 """
-PostgreSQL store for standalone PV registration.
+Store for standalone PV registration.
 
-Persists standalone PVs (not associated with any ophyd device) so they survive
-service restarts and appear in the unified PV registry. Shares the engine (and
-database) with the device registry store; queries are built with SQLAlchemy Core
-against the shared schema in ``db.py``.
+Backend-agnostic (PostgreSQL or SQLite): persists standalone PVs (not associated
+with any ophyd device) so they survive service restarts and appear in the unified
+PV registry. Shares the engine (and database) with the device registry store;
+queries are built with SQLAlchemy Core against the shared schema in ``db.py``.
 
 Usage:
     store = StandalonePVStore(engine)
@@ -18,11 +18,10 @@ import time
 from typing import List, Optional
 
 from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine import Row
 
-from .db import metadata, standalone_pvs
+from .db import metadata, standalone_pvs, upsert
 from .models import StandalonePV
 
 logger = logging.getLogger(__name__)
@@ -30,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 class StandalonePVStore:
     """
-    PostgreSQL-backed store for standalone PV registrations.
+    Store for standalone PV registrations (PostgreSQL or SQLite).
 
     Parameters
     ----------
@@ -48,7 +47,9 @@ class StandalonePVStore:
             return
         metadata.create_all(self._engine)
         self._initialized = True
-        logger.info("Standalone PV store initialized (postgresql)")
+        logger.info(
+            "Standalone PV store initialized (%s)", self._engine.dialect.name
+        )
 
     def save_pv(
         self,
@@ -68,7 +69,7 @@ class StandalonePVStore:
 
         with self._engine.begin() as conn:
             conn.execute(
-                pg_insert(standalone_pvs)
+                upsert(conn, standalone_pvs)
                 .values(
                     pv_name=pv_name,
                     description=description,

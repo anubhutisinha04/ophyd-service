@@ -25,11 +25,11 @@ from configuration_service.device_registry_store import DeviceRegistryStore
 
 
 @pytest.fixture
-def client(pg_url):
+def client(db_url):
     """Create test client with mock data, DB persistence enabled."""
     settings = Settings(
         use_mock_data=True,
-        database_url=pg_url,
+        database_url=db_url,
         device_change_history_enabled=True,
     )
     app = create_app(settings)
@@ -72,25 +72,25 @@ def sample_device_payload():
 class TestDeviceRegistryStore:
     """Test DeviceRegistryStore persistence layer."""
 
-    def test_initialize(self, pg_engine):
+    def test_initialize(self, db_engine):
         """Test store initialization creates tables."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
         assert store._initialized is True
         # Safe to call again
         store.initialize()
         store.close()
 
-    def test_not_seeded_initially(self, pg_engine):
+    def test_not_seeded_initially(self, db_engine):
         """Test that a fresh DB is not seeded."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
         assert store.is_seeded() is False
         store.close()
 
-    def test_seed_from_registry(self, pg_engine):
+    def test_seed_from_registry(self, db_engine):
         """Test seeding the DB from a DeviceRegistry."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
         registry = DeviceRegistry()
@@ -126,9 +126,9 @@ class TestDeviceRegistryStore:
 
         store.close()
 
-    def test_load_all_devices(self, pg_engine):
+    def test_load_all_devices(self, db_engine):
         """Test loading all devices from DB into a DeviceRegistry."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
         registry = DeviceRegistry()
@@ -151,9 +151,9 @@ class TestDeviceRegistryStore:
 
         store.close()
 
-    def test_save_and_get_device(self, pg_engine):
+    def test_save_and_get_device(self, db_engine):
         """Test saving and retrieving a single device."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
         metadata = DeviceMetadata(
@@ -188,9 +188,9 @@ class TestDeviceRegistryStore:
 
         store.close()
 
-    def test_save_device_update(self, pg_engine):
+    def test_save_device_update(self, db_engine):
         """Test that updating a device preserves created_at."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
         metadata = DeviceMetadata(
@@ -224,9 +224,9 @@ class TestDeviceRegistryStore:
 
         store.close()
 
-    def test_delete_device(self, pg_engine):
+    def test_delete_device(self, db_engine):
         """Test deleting a device."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
         metadata = DeviceMetadata(
@@ -251,9 +251,9 @@ class TestDeviceRegistryStore:
 
         store.close()
 
-    def test_audit_log_filter_by_device(self, pg_engine):
+    def test_audit_log_filter_by_device(self, db_engine):
         """Test filtering audit log by device name."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
         for name in ["dev_a", "dev_b", "dev_a"]:
@@ -274,9 +274,9 @@ class TestDeviceRegistryStore:
 
         store.close()
 
-    def test_clear_and_reseed(self, pg_engine):
+    def test_clear_and_reseed(self, db_engine):
         """Test clearing DB and re-seeding from profile."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
         # Initial seed
@@ -325,9 +325,9 @@ class TestDeviceRegistryStore:
 
         store.close()
 
-    def test_export_happi(self, pg_engine):
+    def test_export_happi(self, db_engine):
         """Test exporting registry in happi format."""
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
         registry = DeviceRegistry()
@@ -361,13 +361,13 @@ class TestDeviceRegistryStore:
 
         store.close()
 
-    def test_export_happi_spec_missing_raises(self, pg_engine):
+    def test_export_happi_spec_missing_raises(self, db_engine):
         """Registry corruption (device row with NULL spec) must fail export, not synthesize defaults.
 
         Same semantic as the S3 status endpoints — silent fallback would emit a
         happi entry with active=True and empty args, hiding the corruption.
         """
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
         registry = DeviceRegistry()
@@ -384,9 +384,9 @@ class TestDeviceRegistryStore:
 
         store.close()
 
-    def test_data_survives_reopen(self, pg_engine):
+    def test_data_survives_reopen(self, db_engine):
         """Test that data persists across store reopens (simulated restart)."""
-        store1 = DeviceRegistryStore(pg_engine)
+        store1 = DeviceRegistryStore(db_engine)
         store1.initialize()
 
         registry = DeviceRegistry()
@@ -401,7 +401,7 @@ class TestDeviceRegistryStore:
         store1.close()
 
         # Reopen and verify
-        store2 = DeviceRegistryStore(pg_engine)
+        store2 = DeviceRegistryStore(db_engine)
         store2.initialize()
         assert store2.is_seeded() is True
         device = store2.get_device("persistent_motor")
@@ -409,28 +409,26 @@ class TestDeviceRegistryStore:
         assert device["metadata"].name == "persistent_motor"
         store2.close()
 
-    def test_drops_old_change_history_table(self, pg_engine):
+    def test_drops_old_change_history_table(self, db_engine):
         """Test that the legacy device_change_history table is dropped on init."""
-        from sqlalchemy import text
+        from sqlalchemy import inspect, text
 
         # Create the old table directly.
-        with pg_engine.begin() as conn:
+        with db_engine.begin() as conn:
             conn.execute(
                 text(
                     "CREATE TABLE device_change_history "
                     "(name TEXT PRIMARY KEY, operation TEXT NOT NULL)"
                 )
             )
+        assert inspect(db_engine).has_table("device_change_history")
 
         # Initialize the store — should drop the old table.
-        store = DeviceRegistryStore(pg_engine)
+        store = DeviceRegistryStore(db_engine)
         store.initialize()
 
-        with pg_engine.connect() as conn:
-            exists = conn.execute(
-                text("SELECT to_regclass('device_change_history')")
-            ).scalar_one()
-        assert exists is None
+        # ``inspect`` is dialect-aware (works on both PG and SQLite).
+        assert not inspect(db_engine).has_table("device_change_history")
 
         store.close()
 
@@ -1000,7 +998,7 @@ class TestExportEndpoint:
 class TestPersistenceAcrossRestarts:
     """Test that device state survives simulated service restarts."""
 
-    def test_created_device_survives_restart(self, pg_url):
+    def test_created_device_survives_restart(self, db_url):
         """Test that a runtime-created device persists across app restarts."""
 
         payload = {
@@ -1021,7 +1019,7 @@ class TestPersistenceAcrossRestarts:
 
         settings = Settings(
             use_mock_data=True,
-            database_url=pg_url,
+            database_url=db_url,
             device_change_history_enabled=True,
         )
 
@@ -1041,12 +1039,12 @@ class TestPersistenceAcrossRestarts:
             device = c2.get("/api/v1/devices/persistent_dev").json()
             assert device["ophyd_class"] == "EpicsScaler"
 
-    def test_deleted_device_stays_gone(self, pg_url):
+    def test_deleted_device_stays_gone(self, db_url):
         """Test that a deleted device stays gone after restart."""
 
         settings = Settings(
             use_mock_data=True,
-            database_url=pg_url,
+            database_url=db_url,
             device_change_history_enabled=True,
         )
 
@@ -1064,12 +1062,12 @@ class TestPersistenceAcrossRestarts:
             devices = c2.get("/api/v1/devices").json()
             assert "sample_x" not in devices
 
-    def test_profile_not_reread_after_seed(self, pg_url):
+    def test_profile_not_reread_after_seed(self, db_url):
         """Test that profile is NOT re-read after initial seeding."""
 
         settings = Settings(
             use_mock_data=True,
-            database_url=pg_url,
+            database_url=db_url,
             device_change_history_enabled=True,
         )
 

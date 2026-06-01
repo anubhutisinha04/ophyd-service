@@ -269,11 +269,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
         if settings.device_change_history_enabled:
-            # DB-as-source-of-truth mode (PostgreSQL).
+            # DB-as-source-of-truth mode (PostgreSQL or SQLite).
             if not settings.database_url:
                 raise RuntimeError(
                     "device_change_history_enabled is True but CONFIG_DATABASE_URL is not set. "
-                    "Provide a PostgreSQL DSN (postgresql+psycopg://...), or set "
+                    "Provide a PostgreSQL DSN (postgresql+psycopg://...) or a SQLite DSN "
+                    "(sqlite+pysqlite:///...), or set "
                     "CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=false to run without persistence."
                 )
             engine = make_engine(settings.database_url)

@@ -21,6 +21,7 @@ Scope notes:
 from __future__ import annotations
 
 import os
+import tempfile
 
 import schemathesis
 from hypothesis import settings as hypothesis_settings
@@ -30,13 +31,13 @@ from configuration_service.main import create_app
 
 
 # Module-scoped app so `@schema.parametrize()` can decorate at import time.
-# Mock-data mode against the test PostgreSQL (the lifespan creates tables +
-# seeds on startup). Contract tests only read GET schemas, so any seeded state
-# is fine.
-_database_url = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+psycopg://bluesky:bluesky@localhost:5432/config_service",
-)
+# Mock-data mode (the lifespan creates tables + seeds on startup). Contract
+# tests only read GET schemas, so any seeded state is fine. Uses the test
+# PostgreSQL when TEST_DATABASE_URL is set (CI), else a throwaway SQLite file so
+# the contract suite runs locally without a database server.
+_database_url = os.environ.get("TEST_DATABASE_URL")
+if not _database_url:
+    _database_url = f"sqlite+pysqlite:///{os.path.join(tempfile.mkdtemp(), 'openapi_contract.db')}"
 _settings = Settings(use_mock_data=True, database_url=_database_url)
 _app = create_app(_settings)
 

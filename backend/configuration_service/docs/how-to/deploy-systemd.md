@@ -72,7 +72,11 @@ Verify the CLI works:
 
 ## 5. Create the data directory
 
-The service persists to PostgreSQL. Create a database and user, e.g.:
+The service persists to a SQL database selected by the DSN scheme in
+`CONFIG_DATABASE_URL` — **PostgreSQL** (recommended for production / multi-writer
+deploys) or **SQLite** (single-node / small deployments, no server to run).
+
+For PostgreSQL, create a database and user, e.g.:
 
 ```bash
 sudo -u postgres psql <<'SQL'
@@ -81,7 +85,12 @@ CREATE DATABASE config_service OWNER bluesky;
 SQL
 ```
 
-The service creates its tables on first startup; no manual schema step is needed.
+For SQLite, just create the directory the database file will live in (e.g.
+`sudo install -d -o bs_config_svc /opt/bs_config_svc/data`) and point
+`CONFIG_DATABASE_URL` at it (see below).
+
+Either way, the service creates its tables on first startup; no manual schema
+step is needed.
 
 ## 6. Create the environment file
 
@@ -105,8 +114,10 @@ CONFIG_PROFILE_PATH=/opt/bluesky/profile_collection
 #   auto            - Auto-detect based on files present in profile_path
 CONFIG_LOAD_STRATEGY=empty
 
-# PostgreSQL connection (SQLAlchemy DSN). Required unless persistence is disabled.
+# Database connection (SQLAlchemy DSN). Required unless persistence is disabled.
+# PostgreSQL (production):
 CONFIG_DATABASE_URL=postgresql+psycopg://bluesky:change-me@localhost:5432/config_service
+# ...or SQLite (single-node): CONFIG_DATABASE_URL=sqlite+pysqlite:////opt/bs_config_svc/data/config.db
 
 # Enable device change history (CRUD operations and audit log)
 CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=true
@@ -129,7 +140,7 @@ EOF
 | `CONFIG_LOG_LEVEL` | `info` | Log level (`critical`, `error`, `warning`, `info`, `debug`, `trace`) |
 | `CONFIG_PROFILE_PATH` | — | Path to beamline profile collection |
 | `CONFIG_LOAD_STRATEGY` | `auto` | How to discover devices (see above) |
-| `CONFIG_DATABASE_URL` | — | PostgreSQL DSN (`postgresql+psycopg://…`); required when persistence is enabled |
+| `CONFIG_DATABASE_URL` | — | Database DSN — PostgreSQL (`postgresql+psycopg://…`) or SQLite (`sqlite+pysqlite:///…`); required when persistence is enabled |
 | `CONFIG_DEVICE_CHANGE_HISTORY_ENABLED` | `true` | Enable persistent storage and CRUD (requires `CONFIG_DATABASE_URL`) |
 | `CONFIG_METRICS_ENABLED` | `true` | Enable Prometheus metrics endpoint |
 | `CONFIG_METRICS_PORT` | `9004` | Prometheus metrics port |
@@ -254,8 +265,10 @@ chown -R xf31id:xf31id /opt/bs_config_svc
 systemctl start bluesky-configuration-service
 ```
 
-Note: persistent state lives in PostgreSQL, not on this host, so a source sync
-never touches the registry data. Take a `pg_dump` before a risky upgrade if you
+Note: with PostgreSQL, persistent state lives in the database, not in the source
+tree, so a source sync never touches the registry data. (With SQLite the data
+lives in the `CONFIG_DATABASE_URL` file — keep it outside the synced source
+directory, e.g. under `/opt/bs_config_svc/data`.) Take a `pg_dump` before a risky upgrade if you
 want a restore point.
 
 ## Troubleshooting
