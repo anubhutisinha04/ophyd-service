@@ -9,7 +9,7 @@ separately (see below).
 
 | Path | Role |
 |---|---|
-| `backend/configuration_service/` | Device/PV registry. REST on port 8004. Persists to PostgreSQL or SQLite (see below). |
+| `backend/configuration_service/` | Device/PV registry. REST on port 8004. Optional persistence to PostgreSQL or SQLite (see below). |
 | `backend/direct_control_service/` | Device commanding + PV monitoring. REST + WS on port 8003. |
 | `frontend/` | React + Vite UI (not part of `docker-compose.yml`). |
 | `integration/` | Richer multi-service pods (`pods/{minimal,full,dev}/`), the caproto IOC image (`ioc/`), happi seed data (`happi/`), and local device classes (`localdevs/`). |
@@ -112,9 +112,12 @@ Both backends expose Swagger UI:
 - **WebSocket endpoints on `direct_control_service` are not in the OpenAPI
   schema** (FastAPI limitation). Their contracts are documented separately
   in the service's own README.
-- **Persistence backend** — `configuration_service` uses SQLAlchemy and runs
-  against either PostgreSQL or SQLite, selected by the `CONFIG_DATABASE_URL`
-  scheme (`postgresql+psycopg://…` or `sqlite+pysqlite:///…`). PostgreSQL is
+- **Persistence backend** — when persistence is enabled (the default;
+  `CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=false` disables it and loads from the
+  profile each start), `configuration_service` uses SQLAlchemy against either
+  PostgreSQL or SQLite, selected by the `CONFIG_DATABASE_URL` scheme
+  (`postgresql+psycopg://user:pass@host:5432/config_service` or
+  `sqlite+pysqlite:////var/lib/config_service/config.db`). PostgreSQL is
   recommended for production / multi-writer deploys; SQLite suits single-node /
   dev use. This compose stack uses the bundled `postgres` service.
 - Startup happi-seeding (`CONFIG_LOAD_STRATEGY=happi`) is the dev shortcut here.
