@@ -1,29 +1,27 @@
 """
-SQLite Store for Standalone PV Registration.
+Store for standalone PV registration.
 
-Persists standalone PVs (not associated with any ophyd device) so they
-survive service restarts and appear in the unified PV registry.
-
-Design:
-- SQLite with WAL mode for concurrent read/write access (same pattern as device_change_history.py)
-- Shares the same database file as device_change_history
-- Thread-local connections with 30s timeout
+Backend-agnostic (PostgreSQL or SQLite): persists standalone PVs (not associated
+with any ophyd device) so they survive service restarts and appear in the unified
+PV registry. Shares the engine (and database) with the device registry store;
+queries are built with SQLAlchemy Core against the shared schema in ``db.py``.
 
 Usage:
-    store = StandalonePVStore("/var/lib/bluesky/config_service.db")
+    store = StandalonePVStore(engine)
     store.initialize()
     store.save_pv(pv_name="SR:C01:RING:CURR", description="Ring current", labels=["diagnostics"])
 """
 
 import json
 import logging
-import sqlite3
-import threading
 import time
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
+from sqlalchemy import delete, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Row
+
+from .db import metadata, standalone_pvs, upsert
 from .models import StandalonePV
 
 logger = logging.getLogger(__name__)
@@ -31,77 +29,27 @@ logger = logging.getLogger(__name__)
 
 class StandalonePVStore:
     """
-    SQLite-based store for standalone PV registrations.
+    Store for standalone PV registrations (PostgreSQL or SQLite).
 
     Parameters
     ----------
-    db_path : str or Path
-        Path to SQLite database file (shared with device_change_history)
+    engine : sqlalchemy.engine.Engine
+        Shared engine (created once in main.py, also used by the registry store).
     """
 
-    def __init__(self, db_path: str | Path):
-        self.db_path = Path(db_path)
-        self._local = threading.local()
+    def __init__(self, engine: Engine):
+        self._engine = engine
         self._initialized = False
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get thread-local database connection."""
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-
-            conn = sqlite3.connect(
-                str(self.db_path),
-                check_same_thread=False,
-                timeout=30.0,
-            )
-
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.row_factory = sqlite3.Row
-
-            self._local.conn = conn
-
-        return self._local.conn
-
-    @contextmanager
-    def _transaction(self):
-        """Context manager for database transactions."""
-        conn = self._get_connection()
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-
     def initialize(self) -> None:
-        """
-        Initialize database schema.
-
-        Creates the standalone_pvs table if it doesn't exist.
-        Safe to call multiple times.
-        """
+        """Create the standalone_pvs table if it doesn't exist. Safe to repeat."""
         if self._initialized:
             return
-
-        with self._transaction() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS standalone_pvs (
-                    pv_name TEXT PRIMARY KEY,
-                    description TEXT,
-                    protocol TEXT NOT NULL DEFAULT 'ca',
-                    access_mode TEXT NOT NULL DEFAULT 'read-only',
-                    labels TEXT NOT NULL DEFAULT '[]',
-                    source TEXT NOT NULL DEFAULT 'runtime',
-                    created_by TEXT,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-            """)
-
+        metadata.create_all(self._engine)
         self._initialized = True
-        logger.info(f"Standalone PV store initialized: {self.db_path}")
+        logger.info(
+            "Standalone PV store initialized (%s)", self._engine.dialect.name
+        )
 
     def save_pv(
         self,
@@ -114,117 +62,71 @@ class StandalonePVStore:
         created_by: Optional[str] = None,
     ) -> None:
         """
-        Save (upsert) a standalone PV. Preserves created_at on update.
-
-        Parameters
-        ----------
-        pv_name : str
-            EPICS PV name
-        description : str, optional
-            Human-readable description
-        protocol : str
-            EPICS protocol ("ca" or "pva")
-        access_mode : str
-            Access mode ("read-only" or "read-write")
-        labels : list of str, optional
-            Labels for RBAC grouping
-        source : str
-            Source identifier (default: "runtime")
-        created_by : str, optional
-            User who registered this PV
+        Save (upsert) a standalone PV. Preserves created_at/created_by on update.
         """
         now = time.time()
         labels_json = json.dumps(labels or [])
 
-        with self._transaction() as conn:
-            # Check if PV already exists to preserve created_at
-            cursor = conn.execute(
-                "SELECT created_at, created_by FROM standalone_pvs WHERE pv_name = ?",
-                (pv_name,),
+        with self._engine.begin() as conn:
+            conn.execute(
+                upsert(conn, standalone_pvs)
+                .values(
+                    pv_name=pv_name,
+                    description=description,
+                    protocol=protocol,
+                    access_mode=access_mode,
+                    labels=labels_json,
+                    source=source,
+                    created_by=created_by,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_update(
+                    index_elements=["pv_name"],
+                    set_={
+                        "description": description,
+                        "protocol": protocol,
+                        "access_mode": access_mode,
+                        "labels": labels_json,
+                        "source": source,
+                        "updated_at": now,
+                    },
+                )
             )
-            existing = cursor.fetchone()
-
-            if existing:
-                conn.execute(
-                    """
-                    UPDATE standalone_pvs
-                    SET description = ?, protocol = ?, access_mode = ?,
-                        labels = ?, source = ?, updated_at = ?
-                    WHERE pv_name = ?
-                    """,
-                    (description, protocol, access_mode, labels_json, source, now, pv_name),
-                )
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO standalone_pvs
-                        (pv_name, description, protocol, access_mode,
-                         labels, source, created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        pv_name,
-                        description,
-                        protocol,
-                        access_mode,
-                        labels_json,
-                        source,
-                        created_by,
-                        now,
-                        now,
-                    ),
-                )
 
         logger.debug(f"Saved standalone PV: {pv_name}")
 
     def delete_pv(self, pv_name: str) -> bool:
-        """
-        Delete a standalone PV.
-
-        Returns
-        -------
-        bool
-            True if PV was found and deleted
-        """
-        with self._transaction() as conn:
-            cursor = conn.execute("DELETE FROM standalone_pvs WHERE pv_name = ?", (pv_name,))
-            deleted = cursor.rowcount > 0
+        """Delete a standalone PV. Returns True if it was found and deleted."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                delete(standalone_pvs).where(standalone_pvs.c.pv_name == pv_name)
+            )
+            deleted = result.rowcount > 0
 
         if deleted:
             logger.debug(f"Deleted standalone PV: {pv_name}")
         return deleted
 
     def get_pv(self, pv_name: str) -> Optional[StandalonePV]:
-        """
-        Get a single standalone PV by name.
-
-        Returns
-        -------
-        StandalonePV or None
-        """
-        conn = self._get_connection()
-        cursor = conn.execute("SELECT * FROM standalone_pvs WHERE pv_name = ?", (pv_name,))
-        row = cursor.fetchone()
+        """Get a single standalone PV by name."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(standalone_pvs).where(standalone_pvs.c.pv_name == pv_name)
+            ).first()
         if row is None:
             return None
         return self._row_to_model(row)
 
     def get_all_pvs(self, labels: Optional[List[str]] = None) -> List[StandalonePV]:
         """
-        Get all standalone PVs, optionally filtered by labels.
-
-        Parameters
-        ----------
-        labels : list of str, optional
-            If provided, only return PVs that have ALL specified labels
-
-        Returns
-        -------
-        list of StandalonePV
+        Get all standalone PVs, optionally filtered to those having ALL given labels.
         """
-        conn = self._get_connection()
-        cursor = conn.execute("SELECT * FROM standalone_pvs ORDER BY pv_name")
-        pvs = [self._row_to_model(row) for row in cursor.fetchall()]
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(standalone_pvs).order_by(standalone_pvs.c.pv_name)
+            ).all()
+        pvs = [self._row_to_model(row) for row in rows]
 
         if labels:
             pvs = [pv for pv in pvs if all(label in pv.labels for label in labels)]
@@ -232,54 +134,37 @@ class StandalonePVStore:
         return pvs
 
     def get_all_labels(self) -> List[str]:
-        """
-        Get all unique labels across all standalone PVs.
-
-        Returns
-        -------
-        list of str
-            Sorted list of unique labels
-        """
-        conn = self._get_connection()
-        cursor = conn.execute("SELECT labels FROM standalone_pvs")
+        """Get all unique labels across all standalone PVs (sorted)."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(select(standalone_pvs.c.labels)).all()
         all_labels: set = set()
-        for row in cursor.fetchall():
-            labels = json.loads(row["labels"])
-            all_labels.update(labels)
+        for row in rows:
+            all_labels.update(json.loads(row[0]))
         return sorted(all_labels)
 
     def clear_all(self) -> int:
-        """
-        Remove all standalone PV records.
-
-        Returns
-        -------
-        int
-            Number of records deleted
-        """
-        with self._transaction() as conn:
-            cursor = conn.execute("DELETE FROM standalone_pvs")
-            count = cursor.rowcount
+        """Remove all standalone PV records. Returns the number deleted."""
+        with self._engine.begin() as conn:
+            result = conn.execute(delete(standalone_pvs))
+            count = result.rowcount
 
         logger.info(f"Cleared {count} standalone PVs")
         return count
 
-    def _row_to_model(self, row: sqlite3.Row) -> StandalonePV:
-        """Convert database row to StandalonePV model."""
+    def _row_to_model(self, row: Row) -> StandalonePV:
+        """Convert a database row to a StandalonePV model."""
+        m = row._mapping
         return StandalonePV(
-            pv_name=row["pv_name"],
-            description=row["description"],
-            protocol=row["protocol"],
-            access_mode=row["access_mode"],
-            labels=json.loads(row["labels"]),
-            source=row["source"],
-            created_by=row["created_by"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
+            pv_name=m["pv_name"],
+            description=m["description"],
+            protocol=m["protocol"],
+            access_mode=m["access_mode"],
+            labels=json.loads(m["labels"]),
+            source=m["source"],
+            created_by=m["created_by"],
+            created_at=m["created_at"],
+            updated_at=m["updated_at"],
         )
 
     def close(self) -> None:
-        """Close database connection."""
-        if hasattr(self._local, "conn") and self._local.conn:
-            self._local.conn.close()
-            self._local.conn = None
+        """No-op: the engine is owned and disposed by main.py."""

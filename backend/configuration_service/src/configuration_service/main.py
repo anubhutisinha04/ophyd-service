@@ -69,6 +69,9 @@ from .direct_control_client import (
 from .protocols import ConfigurationState
 from .loader import create_loader
 from .config import Settings
+from sqlalchemy.engine import Engine
+
+from .db import make_engine
 from .device_registry_store import DeviceRegistryStore
 from .standalone_pv_store import StandalonePVStore
 from .lock_manager import DeviceLockManager
@@ -251,6 +254,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     # so a warm-cache resolve never re-calls direct-control.
     enrichment_cache_container: Dict[str, dict] = {}
 
+    # The single SQLAlchemy engine shared by both persistent stores. Created in
+    # the lifespan, disposed at shutdown.
+    engine_container: Dict[str, "Engine"] = {}
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Manage application lifecycle - load configuration at startup."""
@@ -262,8 +269,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
         if settings.device_change_history_enabled:
-            # DB-as-source-of-truth mode
-            store = DeviceRegistryStore(settings.db_path)
+            # DB-as-source-of-truth mode (PostgreSQL or SQLite).
+            if not settings.database_url:
+                raise RuntimeError(
+                    "device_change_history_enabled is True but CONFIG_DATABASE_URL is not set. "
+                    "Provide a PostgreSQL DSN (postgresql+psycopg://...) or a SQLite DSN "
+                    "(sqlite+pysqlite:///...), or set "
+                    "CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=false to run without persistence."
+                )
+            engine = make_engine(settings.database_url)
+            engine_container["engine"] = engine
+
+            store = DeviceRegistryStore(engine)
             store.initialize()
             registry_store_container["store"] = store
 
@@ -273,7 +290,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 logger.info(
                     "loaded_from_database",
                     devices=len(registry.devices),
-                    db_path=str(settings.db_path),
+                    database_url=settings.database_url,
                 )
             else:
                 # First startup: seed from profile collection
@@ -305,13 +322,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         # returning 501 with the misleading "Set CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=true"
         # message even though the flag was set.
         if settings.device_change_history_enabled:
-            pv_store = StandalonePVStore(settings.db_path)
+            pv_store = StandalonePVStore(engine_container["engine"])
             pv_store.initialize()
             standalone_pv_container["store"] = pv_store
             _apply_standalone_pvs(registry, pv_store, logger)
             logger.info(
                 "standalone_pv_store_enabled",
-                db_path=str(settings.db_path),
+                database_url=settings.database_url,
             )
 
         # Initialize device lock manager (in-memory, ephemeral)
@@ -346,12 +363,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             standalone_pv_container["store"].close()
         if "store" in registry_store_container:
             registry_store_container["store"].close()
+        if "engine" in engine_container:
+            engine_container["engine"].dispose()
         if "client" in direct_control_container:
             await direct_control_container["client"].aclose()
         logger.info("configuration_service_shutdown")
         state_container.clear()
         registry_store_container.clear()
         standalone_pv_container.clear()
+        engine_container.clear()
         lock_manager_container.clear()
         pv_health_container.clear()
         direct_control_container.clear()
@@ -1655,7 +1675,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         """
         Register a standalone PV.
 
-        Adds the PV to the in-memory registry and persists it to SQLite.
+        Adds the PV to the in-memory registry and persists it to PostgreSQL.
         Returns 409 if the PV name already exists (device-bound or standalone).
         """
         pv_name = request.pv_name

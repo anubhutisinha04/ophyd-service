@@ -96,7 +96,7 @@ CONFIG_LOAD_STRATEGY=empty bluesky-configuration-service
 On the first startup with a profile, the service:
 
 1. Loads devices from the profile collection
-2. Seeds them into the SQLite database
+2. Seeds them into the PostgreSQL database
 3. Marks the database as seeded
 
 On subsequent startups, the service loads directly from the database. The profile collection is not re-read. This means runtime changes (creates, updates, deletes) persist across restarts.

@@ -113,6 +113,6 @@ Both backends expose Swagger UI:
 - The `seed_registry` sidecar is a dev-only shortcut. Production
   deployments seed the registry via profile files or CRUD calls from
   an upstream Experiment Execution Service.
-- `configuration_service` runs with `CONFIG_LOAD_STRATEGY=empty` and
-  `CONFIG_DB_PATH=/tmp/...` for the demo; DB resets on every
-  `docker compose down` and the seeder repopulates it on next `up`.
+- `configuration_service` runs with `CONFIG_LOAD_STRATEGY=empty` against the
+  compose `postgres` service for the demo; with no data volume the DB resets on
+  every `docker compose down` and the seeder repopulates it on next `up`.

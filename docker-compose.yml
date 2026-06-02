@@ -41,6 +41,18 @@ services:
       timeout: 2s
       retries: 10
 
+  postgres:
+    image: docker.io/postgres:16
+    environment:
+      POSTGRES_USER: bluesky
+      POSTGRES_PASSWORD: bluesky
+      POSTGRES_DB: config_service
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bluesky"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   configuration_service:
     build:
       context: ./backend/configuration_service
@@ -49,9 +61,8 @@ services:
       # Happi is the canonical seeder — same mechanism the integration pod uses.
       CONFIG_LOAD_STRATEGY: "happi"
       CONFIG_PROFILE_PATH: "/profile"
-      # Default db_path is /var/lib/bluesky, not writable by the non-root
-      # container user. /tmp always is.
-      CONFIG_DB_PATH: "/tmp/config_service.db"
+      # PostgreSQL persistence (config_service also supports SQLite; this stack uses Postgres).
+      CONFIG_DATABASE_URL: "postgresql+psycopg://bluesky:bluesky@postgres:5432/config_service"
       # The happi DB references compound device classes (localdevs.Det,
       # .Spot). Loader walks them at registry-load time to index sub-PVs;
       # without this PYTHONPATH the walker logs a warning and falls back
@@ -63,6 +74,9 @@ services:
       - ./integration/localdevs:/localdevs:ro
     ports:
       - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   direct_control_service:
     build:

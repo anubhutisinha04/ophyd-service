@@ -60,6 +60,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    # configuration_service supports SQLite and PostgreSQL; the test suite is
+    # parametrized over both. The SQLite half needs nothing; the PostgreSQL half
+    # connects via TEST_DATABASE_URL (set on the pytest step below) to this
+    # service container.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bluesky
+          POSTGRES_PASSWORD: bluesky
+          POSTGRES_DB: config_service
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bluesky"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     defaults:
       run:
         shell: bash
@@ -84,4 +103,6 @@ jobs:
           pip install --group dev
 
       - name: Run pytest
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://bluesky:bluesky@localhost:5432/config_service
         run: pytest

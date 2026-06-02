@@ -28,12 +28,22 @@ To force a specific format:
 CONFIG_PROFILE_PATH=/path/to/profile CONFIG_LOAD_STRATEGY=happi bluesky-configuration-service
 ```
 
-## With a custom database path
+## Pointing at PostgreSQL
 
-The default SQLite path is `/var/lib/bluesky/config_service.db`. Override it for development:
+The service persists to PostgreSQL. Provide a connection string (required unless
+persistence is disabled with `CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=false`):
 
 ```bash
-CONFIG_DB_PATH=/tmp/config.db CONFIG_LOAD_STRATEGY=mock bluesky-configuration-service
+CONFIG_DATABASE_URL=postgresql+psycopg://bluesky:bluesky@localhost:5432/config_service \
+    CONFIG_LOAD_STRATEGY=mock bluesky-configuration-service
+```
+
+The fastest way to get a local PostgreSQL:
+
+```bash
+docker run --rm -d -p 5432:5432 \
+    -e POSTGRES_USER=bluesky -e POSTGRES_PASSWORD=bluesky -e POSTGRES_DB=config_service \
+    postgres:16
 ```
 
 ## Development mode
@@ -70,7 +80,7 @@ Create a `.env` file in the working directory:
 
 ```
 CONFIG_LOAD_STRATEGY=mock
-CONFIG_DB_PATH=/tmp/config.db
+CONFIG_DATABASE_URL=postgresql+psycopg://bluesky:bluesky@localhost:5432/config_service
 CONFIG_LOG_LEVEL=DEBUG
 ```
 

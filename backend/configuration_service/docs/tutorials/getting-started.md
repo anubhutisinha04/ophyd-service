@@ -216,7 +216,7 @@ curl -s http://localhost:8004/api/v1/devices
 ["cam1", "det1", "sample_x", "sample_y"]
 ```
 
-The new device is persisted to SQLite and will survive service restarts.
+The new device is persisted to PostgreSQL and will survive service restarts.
 
 ## Delete a device
 
