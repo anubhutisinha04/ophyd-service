@@ -166,6 +166,11 @@ async def lifespan(app: FastAPI):
         await registry_client.cleanup()
         await config_http.aclose()
         await pv_monitor.cleanup()
+        # ophyd_cache is created on startup but, unlike the resources above, was
+        # the one with no shutdown teardown — drop its cached devices so their
+        # EPICS CA channels are released (pyepics tears them down on the next GC
+        # pass) instead of lingering past a graceful shutdown / reload.
+        app.state.ophyd_cache.clear()
         logger.info("Service shut down")
 
 
