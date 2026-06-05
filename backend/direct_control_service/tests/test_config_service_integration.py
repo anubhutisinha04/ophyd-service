@@ -55,7 +55,16 @@ _PV = "BL01:SAMPLE:X.RBV"
 def _dc_settings() -> DCSettings:
     # The URL is irrelevant: the fixture pre-injects an ASGI-backed client so no
     # real socket is opened. It is supplied only because the field is required.
-    return DCSettings(configuration_service_url="http://testserver")
+    #
+    # coordination_check_enabled is pinned True so is_service_available() always
+    # performs the real /health round-trip; otherwise an ambient
+    # DIRECT_CONTROL_COORDINATION_CHECK_ENABLED=false (the integration pods set
+    # exactly this) would short-circuit it to available=True and the health-probe
+    # test would pass vacuously.
+    return DCSettings(
+        configuration_service_url="http://testserver",
+        coordination_check_enabled=True,
+    )
 
 
 @pytest_asyncio.fixture

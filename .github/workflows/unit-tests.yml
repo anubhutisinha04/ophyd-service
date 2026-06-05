@@ -50,6 +50,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+          # Side-A integration tests boot the sibling configuration_service in
+          # process. It is not on PyPI, so install it from its path here; without
+          # it the tests importorskip() and silently skip.
+          pip install -e ../configuration_service
           pip install epicscorelibs
 
       - name: Run pytest

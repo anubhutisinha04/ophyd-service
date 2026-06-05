@@ -61,11 +61,13 @@ dev = [
     "pytest-mock>=3.12.0",
     "caproto>=1.1.0",  # for the test IOC (see tests/test_ioc.py)
     "httpx>=0.25.0",  # TestClient dependency (already a runtime dep but explicit here)
-    # Side-A integration tests (tests/test_config_service_integration.py): boot a
-    # real configuration_service ASGI app in-process and drive direct-control's
-    # registry/coordination clients against it.
-    "bluesky-configuration-service",
-    "asgi-lifespan",
+    # Side-A integration tests (tests/test_config_service_integration.py) boot a
+    # real configuration_service ASGI app in-process. The config-service package
+    # is NOT on PyPI (sibling monorepo package), so it is installed from its path
+    # in the integration/CI harness (.github/workflows/unit-tests.yml) rather than
+    # declared here; the test importorskip()s it so its absence skips rather than
+    # errors. asgi-lifespan (PyPI) runs the ASGI lifespan under ASGITransport.
+    "asgi-lifespan>=2.0",
     "black>=24.0.0",
     "ruff>=0.3.0",
     "mypy>=1.9.0",
