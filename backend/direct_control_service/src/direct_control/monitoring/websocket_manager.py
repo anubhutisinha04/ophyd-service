@@ -22,7 +22,7 @@ from ..models import (
     PVUpdate,
     WebSocketAction,
 )
-from ..registry_client import RegistryClient, RegistryValidationError
+from ..registry_client import RegistryValidationError
 from ._envelopes import (
     LockedWS,
     close_connections,
@@ -46,7 +46,7 @@ _PV_CALLBACK_ERROR_DONE_CB = partial(
 )
 
 if TYPE_CHECKING:
-    from ..protocols import DeviceControl, PVMonitor
+    from ..protocols import DeviceControl, PVMonitor, RegistryProvider
 
 
 logger = structlog.get_logger(__name__)
@@ -65,7 +65,7 @@ class WebSocketManager:
         pv_monitor: "PVMonitor",
         device_controller: "DeviceControl",
         settings: Settings,
-        registry_client: Optional[RegistryClient] = None,
+        registry_client: 'Optional[RegistryProvider]' = None,
     ):
         self.pv_monitor = pv_monitor
         self.device_controller = device_controller

@@ -50,8 +50,9 @@ from .models import (
 )
 from .ophyd_cache import OphydDeviceCache
 from .pv_health_reporter import PVHealthReporter
-from .protocols import CoordinationService, DeviceControl, PVMonitor
+from .protocols import CoordinationService, DeviceControl, PVMonitor, RegistryProvider
 from .registry_client import RegistryClient, RegistryValidationError
+from .registry_file import FileRegistryProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -90,18 +91,50 @@ def _maybe_export_openapi(app: FastAPI) -> None:
         ) from exc
 
 
+async def _check_config_health(config_http: httpx.AsyncClient) -> Optional[str]:
+    """One config-service /health poll. Returns None if healthy, else a reason.
+
+    Distinguishes timeout / connection error / non-2xx so a failed probe says
+    why, rather than a bare "unreachable".
+    """
+    try:
+        resp = await config_http.get("/health", timeout=2.0)
+    except httpx.TimeoutException as exc:
+        return f"timeout reaching /health: {exc}"
+    except httpx.RequestError as exc:
+        return f"cannot reach /health: {exc}"
+    if resp.status_code == 200:
+        return None
+    return f"/health returned HTTP {resp.status_code}"
+
+
 async def _probe_configuration_service(
-    settings: Settings, coordination_client: CoordinationService
+    settings: Settings, config_http: httpx.AsyncClient
 ) -> None:
     """Block startup until configuration_service is reachable, or fail hard.
 
-    configuration_service is direct_control's only HTTP backend and is required
-    for every registry-validated read/write and the device-lock coordination
-    gate. Without this probe a misconfigured or not-yet-started config-service
-    is invisible at boot and only surfaces later as per-request 503s — we fail
+    configuration_service is required whenever the registry is HTTP-backed
+    (registry validation) OR coordination is enabled (device-lock state).
+    Without this probe a misconfigured or not-yet-started config-service is
+    invisible at boot and only surfaces later as per-request 503s — we fail
     loudly at startup instead. Retries for config_service_startup_timeout
     seconds first so compose/k8s start ordering doesn't cause a spurious abort.
+
+    Skipped entirely when config-service isn't a dependency (file-backed
+    registry with coordination disabled), or when the probe is opted out.
     """
+    config_service_required = (
+        settings.registry_backend == "http" or settings.coordination_check_enabled
+    )
+    if not config_service_required:
+        logger.info(
+            "config_service_not_required",
+            registry_backend=settings.registry_backend,
+            coordination_check_enabled=settings.coordination_check_enabled,
+            note="file-backed registry with coordination disabled — not probing",
+        )
+        return
+
     if not settings.config_service_startup_probe:
         logger.warning(
             "config_service_startup_probe_disabled",
@@ -114,15 +147,15 @@ async def _probe_configuration_service(
     last_detail = "unreachable"
     while True:
         attempt += 1
-        availability = await coordination_client.is_service_available()
-        if availability.available:
+        detail = await _check_config_health(config_http)
+        if detail is None:
             logger.info(
                 "configuration_service_ready",
                 url=settings.configuration_service_url,
                 attempts=attempt,
             )
             return
-        last_detail = availability.detail or "unreachable"
+        last_detail = detail
         if time.monotonic() >= deadline:
             break
         logger.warning(
@@ -138,9 +171,10 @@ async def _probe_configuration_service(
         f"configuration_service at {settings.configuration_service_url} not "
         f"reachable after {settings.config_service_startup_timeout:.0f}s "
         f"({attempt} attempts): {last_detail}. direct_control requires it for "
-        f"registry validation and device-lock coordination. Set "
-        f"DIRECT_CONTROL_CONFIG_SERVICE_STARTUP_PROBE=false to start without it "
-        f"(monitoring-only deployments)."
+        f"registry validation and/or device-lock coordination. Set "
+        f"DIRECT_CONTROL_CONFIG_SERVICE_STARTUP_PROBE=false to start without it, "
+        f"or use a file-backed registry (DIRECT_CONTROL_REGISTRY_BACKEND=file) "
+        f"for monitoring-only deployments."
     )
 
 
@@ -160,7 +194,16 @@ async def lifespan(app: FastAPI):
     from .monitoring.websocket_manager import WebSocketManager
 
     coordination_client = CoordinationClient(settings)
-    registry_client = RegistryClient(settings)
+    registry_client: RegistryProvider
+    if settings.registry_backend == "file":
+        registry_client = FileRegistryProvider(settings.registry_file_path)
+        logger.info(
+            "registry_backend_file",
+            path=settings.registry_file_path,
+            note="standalone registry; configuration_service not used for validation",
+        )
+    else:
+        registry_client = RegistryClient(settings)
     device_controller = DeviceController(settings, coordination_client, registry_client)
     config_http = httpx.AsyncClient(base_url=settings.configuration_service_url, timeout=10.0)
     pv_monitor = PVMonitorManager(settings)
@@ -205,9 +248,10 @@ async def lifespan(app: FastAPI):
         coordination_enabled=settings.coordination_check_enabled,
     )
 
-    # Fail hard at startup if our only HTTP backend isn't reachable, rather
-    # than booting healthy and 503-ing on the first registry-validated request.
-    await _probe_configuration_service(settings, coordination_client)
+    # Fail hard at startup if our config-service dependency isn't reachable,
+    # rather than booting healthy and 503-ing on the first registry-validated
+    # request. No-op for file-backed registry with coordination disabled.
+    await _probe_configuration_service(settings, config_http)
 
     try:
         yield

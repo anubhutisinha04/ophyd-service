@@ -1,102 +1,150 @@
 """Startup readiness probe against configuration_service.
 
-direct_control's only HTTP backend is configuration_service; every registry-
-validated read/write and the device-lock coordination gate need it. The probe
+configuration_service is direct_control's dependency for registry validation
+(http backend) and the device-lock coordination gate. The probe
 (``_probe_configuration_service``) makes a misconfigured / not-yet-started
 config-service fail loudly at boot instead of surfacing later as per-request
-503s. These tests drive the probe directly with a fake coordination client so
-no app boot / real socket is involved.
+503s. These tests drive the probe directly with an httpx MockTransport client
+so no app boot / real socket is involved.
 """
 
 from __future__ import annotations
 
 import os
 
+import httpx
 import pytest
 
-# Probe import pulls in direct_control.main (and pyepics via monitoring); the
-# autouse _epics_env fixture in conftest has already set EPICS_CA_* by the time
-# a test runs, but importing at module load is fine because we only need the
-# function object, not a live IOC.
 os.environ.setdefault("DIRECT_CONTROL_CONFIGURATION_SERVICE_URL", "http://localhost:0")
 
 from direct_control.config import Settings  # noqa: E402
 from direct_control.main import _probe_configuration_service  # noqa: E402
-from direct_control.models import ServiceAvailability  # noqa: E402
-
-
-class _FakeCoord:
-    """Coordination client stub exposing only is_service_available.
-
-    ``results`` is a list of availability outcomes returned in order; the last
-    entry is repeated once exhausted so a never-ready run keeps failing.
-    ``calls`` records how many probes happened.
-    """
-
-    def __init__(self, results):
-        self._results = list(results)
-        self.calls = 0
-
-    async def is_service_available(self) -> ServiceAvailability:
-        self.calls += 1
-        idx = min(self.calls - 1, len(self._results) - 1)
-        return self._results[idx]
-
-    # The probe only calls is_service_available; these satisfy the
-    # CoordinationService protocol so the double type-checks cleanly.
-    async def check_device_available(self, device_name: str):  # pragma: no cover
-        raise NotImplementedError
-
-    async def cleanup(self) -> None:  # pragma: no cover
-        return None
 
 
 def _settings(
     *,
+    registry_backend: str = "http",
+    registry_file_path: str | None = None,
+    coordination_check_enabled: bool = True,
     config_service_startup_probe: bool = True,
     config_service_startup_timeout: float = 10.0,
 ) -> Settings:
     return Settings(
-        configuration_service_url="http://localhost:0",
+        configuration_service_url="http://cs",
+        registry_backend=registry_backend,
+        registry_file_path=registry_file_path,
+        coordination_check_enabled=coordination_check_enabled,
         config_service_startup_probe=config_service_startup_probe,
         config_service_startup_timeout=config_service_startup_timeout,
         config_service_startup_probe_interval=0.01,
     )
 
 
+def _http(handler):
+    """An AsyncClient whose requests are served by ``handler`` in-process.
+
+    ``handler`` receives the count of prior calls and returns either an
+    ``httpx.Response`` or an exception instance to raise (e.g. a ConnectError).
+    Returns ``(client, calls)`` where ``calls`` is a single-element list whose
+    [0] holds the number of /health polls made.
+    """
+    calls = [0]
+
+    def transport_handler(request: httpx.Request) -> httpx.Response:
+        result = handler(calls[0])
+        calls[0] += 1
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(transport_handler), base_url="http://cs"
+    )
+    return client, calls
+
+
+_CONNECT_ERR = httpx.ConnectError(
+    "refused", request=httpx.Request("GET", "http://cs/health")
+)
+
+
 async def test_probe_passes_when_config_service_ready():
-    coord = _FakeCoord([ServiceAvailability(available=True)])
-    await _probe_configuration_service(_settings(), coord)
-    assert coord.calls == 1
+    client, calls = _http(lambda n: httpx.Response(200))
+    await _probe_configuration_service(_settings(), client)
+    assert calls[0] == 1
+    await client.aclose()
 
 
 async def test_probe_retries_then_succeeds():
     """A config-service that comes up on the 3rd poll is awaited, not aborted."""
-    coord = _FakeCoord(
-        [
-            ServiceAvailability(available=False, detail="connect refused"),
-            ServiceAvailability(available=False, detail="connect refused"),
-            ServiceAvailability(available=True),
-        ]
+    client, calls = _http(
+        lambda n: httpx.Response(200) if n >= 2 else _CONNECT_ERR
     )
-    await _probe_configuration_service(_settings(), coord)
-    assert coord.calls == 3
+    await _probe_configuration_service(_settings(), client)
+    assert calls[0] == 3
+    await client.aclose()
 
 
 async def test_probe_fails_hard_when_never_ready():
     """Unreachable past the deadline -> RuntimeError carrying the last detail."""
-    coord = _FakeCoord([ServiceAvailability(available=False, detail="connect refused")])
-    with pytest.raises(RuntimeError, match="connect refused"):
+    client, calls = _http(lambda n: _CONNECT_ERR)
+    with pytest.raises(RuntimeError, match="not reachable"):
         await _probe_configuration_service(
-            _settings(config_service_startup_timeout=0.05), coord
+            _settings(config_service_startup_timeout=0.05), client
         )
-    assert coord.calls >= 1
+    assert calls[0] >= 1
+    await client.aclose()
+
+
+async def test_probe_fails_hard_on_non_200():
+    """A reachable config-service returning 503 still fails the probe."""
+    client, _ = _http(lambda n: httpx.Response(503))
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        await _probe_configuration_service(
+            _settings(config_service_startup_timeout=0.05), client
+        )
+    await client.aclose()
 
 
 async def test_probe_skipped_when_disabled():
     """Disabled probe never touches the dependency."""
-    coord = _FakeCoord([ServiceAvailability(available=False, detail="should not be hit")])
+    client, calls = _http(lambda n: httpx.Response(503))
     await _probe_configuration_service(
-        _settings(config_service_startup_probe=False), coord
+        _settings(config_service_startup_probe=False), client
     )
-    assert coord.calls == 0
+    assert calls[0] == 0
+    await client.aclose()
+
+
+async def test_probe_skipped_when_config_service_not_required(tmp_path):
+    """File-backed registry + coordination disabled => config-service unused."""
+    reg = tmp_path / "registry.json"
+    reg.write_text('{"devices": []}')
+    client, calls = _http(lambda n: httpx.Response(503))
+    await _probe_configuration_service(
+        _settings(
+            registry_backend="file",
+            registry_file_path=str(reg),
+            coordination_check_enabled=False,
+        ),
+        client,
+    )
+    assert calls[0] == 0
+    await client.aclose()
+
+
+async def test_probe_runs_for_file_registry_with_coordination_enabled(tmp_path):
+    """Hybrid: file registry but coordination on still needs config-service."""
+    reg = tmp_path / "registry.json"
+    reg.write_text('{"devices": []}')
+    client, calls = _http(lambda n: httpx.Response(200))
+    await _probe_configuration_service(
+        _settings(
+            registry_backend="file",
+            registry_file_path=str(reg),
+            coordination_check_enabled=True,
+        ),
+        client,
+    )
+    assert calls[0] == 1
+    await client.aclose()

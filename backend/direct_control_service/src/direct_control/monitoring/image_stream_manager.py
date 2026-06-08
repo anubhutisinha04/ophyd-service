@@ -46,7 +46,8 @@ from ophyd import EpicsSignalRO
 from PIL import Image
 
 from ..config import Settings
-from ..registry_client import RegistryClient, RegistryValidationError
+from ..protocols import RegistryProvider
+from ..registry_client import RegistryValidationError
 from ._envelopes import (
     LockedWS,
     close_connections,
@@ -117,7 +118,7 @@ class ImageStreamManager:
         self,
         settings: Settings,
         kind: str,
-        registry_client: Optional[RegistryClient] = None,
+        registry_client: Optional[RegistryProvider] = None,
     ) -> None:
         if kind not in ("camera", "tiff"):
             raise ValueError(f"ImageStreamManager kind must be camera|tiff, got {kind!r}")

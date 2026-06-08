@@ -26,8 +26,7 @@ from .models import (
 from .config import Settings
 
 if TYPE_CHECKING:
-    from .protocols import CoordinationService
-    from .registry_client import RegistryClient
+    from .protocols import CoordinationService, RegistryProvider
 
 
 logger = structlog.get_logger(__name__)
@@ -47,7 +46,7 @@ class DeviceController:
         self,
         settings: Settings,
         coordination: "CoordinationService",
-        registry_client: "RegistryClient",
+        registry_client: "RegistryProvider",
     ):
         """
         Initialize device controller.
