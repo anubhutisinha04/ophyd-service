@@ -44,6 +44,20 @@ class Settings(BaseSettings):
     coordination_check_enabled: bool = True
     coordination_timeout: float = 5.0
 
+    # Startup readiness probe against configuration_service. Because every
+    # registry-validated read/write and the device-lock coordination gate
+    # depend on configuration_service, a misconfigured or not-yet-started
+    # config-service is otherwise invisible at boot and only surfaces later as
+    # per-request 503s. With the probe enabled (default), startup blocks until
+    # config-service answers /health, retrying for up to
+    # config_service_startup_timeout seconds (absorbs compose/k8s start
+    # ordering) and then FAILS HARD rather than serving in a half-broken state.
+    # Set false only for monitoring-only deployments that never touch the
+    # registry (raw pv-socket / image sockets), or for tests.
+    config_service_startup_probe: bool = True
+    config_service_startup_timeout: float = 60.0
+    config_service_startup_probe_interval: float = 2.0
+
     # Command timeout
     command_timeout: float = 30.0
 

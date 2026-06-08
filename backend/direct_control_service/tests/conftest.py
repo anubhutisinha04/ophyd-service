@@ -98,6 +98,11 @@ def _epics_env(test_ioc):
     # Point at a harmless URL; the `client` fixture swaps the real
     # configuration_service client for a stub after lifespan runs.
     os.environ["DIRECT_CONTROL_CONFIGURATION_SERVICE_URL"] = "http://localhost:0"
+    # Skip the startup readiness probe: the unit-test app boots its lifespan
+    # against the harmless URL above (no real config-service), so the probe
+    # would block then fail. Integration tests that want the real probe drive
+    # is_service_available() directly instead of booting the app.
+    os.environ["DIRECT_CONTROL_CONFIG_SERVICE_STARTUP_PROBE"] = "false"
     yield
 
 

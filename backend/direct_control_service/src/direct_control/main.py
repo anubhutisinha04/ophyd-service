@@ -11,6 +11,7 @@ environment variables (pyepics reads EPICS_CA_* env vars at import time).
 
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -89,6 +90,60 @@ def _maybe_export_openapi(app: FastAPI) -> None:
         ) from exc
 
 
+async def _probe_configuration_service(
+    settings: Settings, coordination_client: CoordinationService
+) -> None:
+    """Block startup until configuration_service is reachable, or fail hard.
+
+    configuration_service is direct_control's only HTTP backend and is required
+    for every registry-validated read/write and the device-lock coordination
+    gate. Without this probe a misconfigured or not-yet-started config-service
+    is invisible at boot and only surfaces later as per-request 503s — we fail
+    loudly at startup instead. Retries for config_service_startup_timeout
+    seconds first so compose/k8s start ordering doesn't cause a spurious abort.
+    """
+    if not settings.config_service_startup_probe:
+        logger.warning(
+            "config_service_startup_probe_disabled",
+            note="Not verifying configuration_service reachability at startup",
+        )
+        return
+
+    deadline = time.monotonic() + settings.config_service_startup_timeout
+    attempt = 0
+    last_detail = "unreachable"
+    while True:
+        attempt += 1
+        availability = await coordination_client.is_service_available()
+        if availability.available:
+            logger.info(
+                "configuration_service_ready",
+                url=settings.configuration_service_url,
+                attempts=attempt,
+            )
+            return
+        last_detail = availability.detail or "unreachable"
+        if time.monotonic() >= deadline:
+            break
+        logger.warning(
+            "waiting_for_configuration_service",
+            url=settings.configuration_service_url,
+            attempt=attempt,
+            detail=last_detail,
+            retry_in_s=settings.config_service_startup_probe_interval,
+        )
+        await asyncio.sleep(settings.config_service_startup_probe_interval)
+
+    raise RuntimeError(
+        f"configuration_service at {settings.configuration_service_url} not "
+        f"reachable after {settings.config_service_startup_timeout:.0f}s "
+        f"({attempt} attempts): {last_detail}. direct_control requires it for "
+        f"registry validation and device-lock coordination. Set "
+        f"DIRECT_CONTROL_CONFIG_SERVICE_STARTUP_PROBE=false to start without it "
+        f"(monitoring-only deployments)."
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize clients and managers on startup, clean up on shutdown."""
@@ -149,6 +204,10 @@ async def lifespan(app: FastAPI):
         configuration_service_url=settings.configuration_service_url,
         coordination_enabled=settings.coordination_check_enabled,
     )
+
+    # Fail hard at startup if our only HTTP backend isn't reachable, rather
+    # than booting healthy and 503-ing on the first registry-validated request.
+    await _probe_configuration_service(settings, coordination_client)
 
     try:
         yield
