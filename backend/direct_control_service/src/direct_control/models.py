@@ -33,7 +33,9 @@ class DeviceLockStatus(str, Enum):
     """
 
     AVAILABLE = "available"
-    LOCKED = "locked"      # held by an active plan (lock written by queueserver to configuration_service)
+    LOCKED = (
+        "locked"  # held by an active plan (lock written by queueserver to configuration_service)
+    )
     DISABLED = "disabled"  # administratively disabled in configuration_service
     UNKNOWN = "unknown"
 
@@ -659,10 +661,13 @@ class HealthResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["healthy", "unhealthy"] = "healthy"
+    status: Literal["healthy", "unhealthy", "degraded"] = "healthy"
     timestamp: datetime
     coordination_service_available: bool
     coordination_service_detail: Optional[str] = None
+    # Set when running degraded/standalone (auto fell back to the file registry,
+    # coordination off) so the downgrade is visible rather than reported healthy.
+    degraded_detail: Optional[str] = None
     active_subscriptions: int = 0
     connected_pvs: int = 0
     websocket_connections: int = 0

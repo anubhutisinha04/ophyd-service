@@ -154,14 +154,19 @@ async def test_auto_uses_http_when_config_service_up(tmp_path):
     reg.write_text('{"devices": []}')
     settings = _settings(registry_backend="auto", registry_file_path=str(reg))
     client, _ = _http(lambda n: httpx.Response(200))
-    provider = await _resolve_registry_backend(settings, client)
-    assert isinstance(provider, RegistryClient)
-    assert settings.coordination_check_enabled is True
+    resolution = await _resolve_registry_backend(settings, client)
+    assert isinstance(resolution.provider, RegistryClient)
+    assert resolution.coordination_enabled is True
+    assert resolution.degraded_reason is None
     await client.aclose()
 
 
 async def test_auto_falls_back_to_file_and_disables_coordination(tmp_path):
-    """config-service down + file configured -> file registry, coordination OFF."""
+    """config-service down + file configured -> file registry, coordination OFF.
+
+    The decision is returned, not applied by mutating settings, so the caller
+    is the single point that applies it.
+    """
     reg = tmp_path / "registry.json"
     reg.write_text('{"devices": [{"name": "d", "pvs": []}]}')
     settings = _settings(
@@ -170,9 +175,29 @@ async def test_auto_falls_back_to_file_and_disables_coordination(tmp_path):
         config_service_startup_timeout=0.05,
     )
     client, _ = _http(lambda n: _CONNECT_ERR)
-    provider = await _resolve_registry_backend(settings, client)
-    assert isinstance(provider, FileRegistryProvider)
-    assert settings.coordination_check_enabled is False
+    resolution = await _resolve_registry_backend(settings, client)
+    assert isinstance(resolution.provider, FileRegistryProvider)
+    assert resolution.coordination_enabled is False
+    assert resolution.degraded_reason is not None
+    # resolve does not mutate settings — the caller applies the decision.
+    assert settings.coordination_check_enabled is True
+    await client.aclose()
+
+
+async def test_auto_honors_probe_optout_with_single_check(tmp_path):
+    """auto + probe disabled -> one /health check, no retry/wait window."""
+    reg = tmp_path / "registry.json"
+    reg.write_text('{"devices": [{"name": "d", "pvs": []}]}')
+    settings = _settings(
+        registry_backend="auto",
+        registry_file_path=str(reg),
+        config_service_startup_probe=False,
+        config_service_startup_timeout=30.0,  # would hang if the loop ran
+    )
+    client, calls = _http(lambda n: _CONNECT_ERR)
+    resolution = await _resolve_registry_backend(settings, client)
+    assert isinstance(resolution.provider, FileRegistryProvider)
+    assert calls[0] == 1  # single probe, not the retry loop
     await client.aclose()
 
 

@@ -18,14 +18,17 @@ logger = structlog.get_logger(__name__)
 
 
 class RegistryValidationError(Exception):
-    """Raised when a PV or device is not found in the Configuration Service registry."""
+    """Raised when a PV or device is not found in the device/PV registry.
+
+    Backend-neutral: the registry may be configuration_service (http backend)
+    or a local file (file backend), so the message does not name a specific
+    source.
+    """
 
     def __init__(self, name: str, resource_type: str = "resource"):
         self.name = name
         self.resource_type = resource_type
-        super().__init__(
-            f"{resource_type.upper()} '{name}' not found in Configuration Service registry"
-        )
+        super().__init__(f"{resource_type.upper()} '{name}' not found in the registry")
 
 
 class RegistryClient:

@@ -98,23 +98,30 @@ class FileRegistryProvider:
                     f"'name', got {entry!r}"
                 )
             name = entry["name"]
+            if not isinstance(name, str) or not name:
+                raise RuntimeError(
+                    f"Registry file {path}: device 'name' must be a non-empty string, got {name!r}"
+                )
             if name in self._devices:
                 raise RuntimeError(f"Registry file {path}: duplicate device name {name!r}")
             self._devices.add(name)
-            for pv in entry.get("pvs", []) or []:
-                if pv in self._pv_owner:
-                    raise RuntimeError(
-                        f"Registry file {path}: PV {pv!r} listed under more than one device"
-                    )
-                self._pv_owner[pv] = name
-
-        for pv in data.get("standalone_pvs", []) or []:
-            if pv in self._pv_owner:
+            pvs = entry.get("pvs", []) or []
+            if not isinstance(pvs, list):
                 raise RuntimeError(
-                    f"Registry file {path}: PV {pv!r} is both a device component "
-                    f"and a standalone PV"
+                    f"Registry file {path}: device {name!r} 'pvs' must be a list, "
+                    f"got {type(pvs).__name__}"
                 )
-            self._pv_owner[pv] = None
+            for pv in pvs:
+                self._register_pv(path, pv, name)
+
+        standalone = data.get("standalone_pvs", []) or []
+        if not isinstance(standalone, list):
+            raise RuntimeError(
+                f"Registry file {path}: 'standalone_pvs' must be a list, got "
+                f"{type(standalone).__name__}"
+            )
+        for pv in standalone:
+            self._register_pv(path, pv, None)
 
         logger.info(
             "file_registry_loaded",
@@ -122,6 +129,21 @@ class FileRegistryProvider:
             devices=len(self._devices),
             pvs=len(self._pv_owner),
         )
+
+    def _register_pv(self, path: str, pv: object, owner: Optional[str]) -> None:
+        """Add one PV→owner mapping, failing hard on bad type or duplicate."""
+        if not isinstance(pv, str) or not pv:
+            where = f"device {owner!r}" if owner is not None else "standalone_pvs"
+            raise RuntimeError(
+                f"Registry file {path}: PV in {where} must be a non-empty string, got {pv!r}"
+            )
+        if pv in self._pv_owner:
+            prior = self._pv_owner[pv]
+            raise RuntimeError(
+                f"Registry file {path}: PV {pv!r} is listed more than once "
+                f"(already owned by {prior!r})"
+            )
+        self._pv_owner[pv] = owner
 
     async def validate_pv(self, pv_name: str) -> None:
         """Raise RegistryValidationError if the PV is not in the file registry."""

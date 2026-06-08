@@ -14,7 +14,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import httpx
 import numpy as np
@@ -188,22 +188,42 @@ async def _probe_configuration_service(settings: Settings, config_http: httpx.As
     )
 
 
+class RegistryResolution(NamedTuple):
+    """Outcome of choosing the registry backend at startup.
+
+    ``coordination_enabled`` is the effective device-lock coordination decision
+    (auto-fallback forces it off). ``degraded_reason`` is None in normal
+    operation, or a human-readable string when the service is running in a
+    degraded/standalone mode (auto fell back to the file registry) — surfaced
+    by /health so the downgrade is never silent.
+    """
+
+    provider: RegistryProvider
+    coordination_enabled: bool
+    degraded_reason: Optional[str]
+
+
 async def _resolve_registry_backend(
     settings: Settings, config_http: httpx.AsyncClient
-) -> RegistryProvider:
+) -> RegistryResolution:
     """Pick the registry backend, gating startup on config-service as needed.
 
     - http: probe config-service (raises if down), use the HTTP registry.
     - file: probe config-service only if coordination is on, use the file.
-    - auto: prefer config-service; on startup-timeout fall back to the file
-      registry with coordination DISABLED (logged loudly), or raise if no file
-      is configured.
+    - auto: prefer config-service; if unreachable, fall back to the file
+      registry with coordination DISABLED (logged loudly + reported via
+      /health), or raise if no file is configured.
+
+    Returns the decision explicitly — including the effective coordination flag
+    — rather than mutating settings, so the caller applies it at one visible
+    point.
     """
     backend = settings.registry_backend
+    coordination_enabled = settings.coordination_check_enabled
 
     if backend == "http":
         await _probe_configuration_service(settings, config_http)
-        return RegistryClient(settings)
+        return RegistryResolution(RegistryClient(settings), coordination_enabled, None)
 
     if backend == "file":
         await _probe_configuration_service(settings, config_http)
@@ -212,34 +232,42 @@ async def _resolve_registry_backend(
             path=settings.registry_file_path,
             note="standalone registry; configuration_service not used for validation",
         )
-        return FileRegistryProvider(settings.registry_file_path)
+        return RegistryResolution(
+            FileRegistryProvider(settings.registry_file_path), coordination_enabled, None
+        )
 
     # auto
-    logger.info(
-        "registry_backend_auto_probing",
-        url=settings.configuration_service_url,
-    )
-    detail = await _await_config_service(settings, config_http)
+    logger.info("registry_backend_auto_probing", url=settings.configuration_service_url)
+    if settings.config_service_startup_probe:
+        detail = await _await_config_service(settings, config_http)
+    else:
+        # Opt-out honored: decide from a single /health check instead of
+        # blocking for the full startup window.
+        logger.warning(
+            "config_service_startup_probe_disabled",
+            note="auto backend deciding from a single /health check, no wait",
+        )
+        detail = await _check_config_health(config_http)
+
     if detail is None:
         logger.info("registry_backend_auto_resolved", choice="http")
-        return RegistryClient(settings)
+        return RegistryResolution(RegistryClient(settings), coordination_enabled, None)
 
     if settings.registry_file_path:
+        degraded_reason = (
+            f"configuration_service unreachable ({detail}); using file registry "
+            f"with device-lock coordination DISABLED — direct writes are NOT "
+            f"gated against plan locks"
+        )
         logger.warning(
             "registry_backend_auto_fallback_to_file",
             path=settings.registry_file_path,
             config_service_detail=detail,
-            note=(
-                "configuration_service unreachable; falling back to file registry "
-                "and DISABLING device-lock coordination — running degraded / "
-                "standalone, direct writes are NOT gated against plan locks"
-            ),
+            note=degraded_reason,
         )
-        # File registries cannot carry runtime lock state, so coordination must
-        # be off in this mode. Mutating settings propagates to the coordination
-        # client, which reads the flag live.
-        settings.coordination_check_enabled = False
-        return FileRegistryProvider(settings.registry_file_path)
+        return RegistryResolution(
+            FileRegistryProvider(settings.registry_file_path), False, degraded_reason
+        )
 
     raise RuntimeError(
         f"registry_backend=auto: configuration_service at "
@@ -270,8 +298,18 @@ async def lifespan(app: FastAPI):
     # Resolve the registry backend. This gates startup on config-service where
     # required (http, or file+coordination), and for backend=auto probes
     # config-service and may fall back to the file registry (disabling
-    # coordination). Fails hard if a required config-service is unreachable.
-    registry_client = await _resolve_registry_backend(settings, config_http)
+    # coordination). Fails hard if a required config-service is unreachable —
+    # close config_http first so the aborting boot doesn't leak it.
+    try:
+        resolution = await _resolve_registry_backend(settings, config_http)
+    except BaseException:
+        await config_http.aclose()
+        raise
+    registry_client = resolution.provider
+    # Apply the effective coordination decision at one explicit point. The
+    # coordination client reads settings.coordination_check_enabled live, so
+    # this takes effect for the gate even though the client predates this line.
+    settings.coordination_check_enabled = resolution.coordination_enabled
     device_controller = DeviceController(settings, coordination_client, registry_client)
     pv_monitor = PVMonitorManager(settings)
     ws_manager = WebSocketManager(
@@ -307,6 +345,9 @@ async def lifespan(app: FastAPI):
     app.state.tiff_ws_manager = tiff_ws_manager
     app.state.ophyd_cache = OphydDeviceCache()
     app.state.pv_health_reporter = PVHealthReporter(config_http)
+    # Non-None when auto fell back to the file registry (running standalone with
+    # coordination off). Surfaced by /health so the downgrade isn't silent.
+    app.state.degraded_reason = resolution.degraded_reason
 
     logger.info(
         "Service initialized",
@@ -394,6 +435,12 @@ def get_ophyd_cache() -> OphydDeviceCache:
 
 def get_pv_health_reporter() -> PVHealthReporter:
     return app.state.pv_health_reporter
+
+
+def get_degraded_reason() -> Optional[str]:
+    """Reason string when running degraded/standalone (auto fell back to file),
+    else None. ``getattr`` default covers fixtures that don't run lifespan."""
+    return getattr(app.state, "degraded_reason", None)
 
 
 # ----- PV value response builder (tiled-style content negotiation) -----
@@ -573,26 +620,44 @@ async def health_check(
     coordination_client: CoordinationService = Depends(get_coordination_client),
     pv_monitor: PVMonitor = Depends(get_pv_monitor),
     ws_manager=Depends(get_ws_manager),
+    degraded_reason: Optional[str] = Depends(get_degraded_reason),
 ):
     """Combined health check: coordination availability and monitoring stats.
 
     Returns 503 when configuration_service is unreachable so LB readiness
     probes can route away. ``coordination_service_detail`` carries the
     structured reason (timeout / connect-refused / non-2xx).
+
+    When running degraded/standalone (registry_backend=auto fell back to the
+    file registry, coordination off), status is reported as "degraded" with
+    ``degraded_detail`` set — so the downgrade is visible and never reads as a
+    plain "healthy". Still returns 200: the node is intentionally serving its
+    standalone role, just without lock gating.
     """
     coord = await coordination_client.is_service_available()
     stats = ws_manager.get_stats()
 
+    if degraded_reason is not None:
+        status = "degraded"
+    elif coord.available:
+        status = "healthy"
+    else:
+        status = "unhealthy"
+
     body = HealthResponse(
-        status="healthy" if coord.available else "unhealthy",
+        status=status,
         timestamp=datetime.now(),
         coordination_service_available=coord.available,
         coordination_service_detail=coord.detail,
+        degraded_detail=degraded_reason,
         active_subscriptions=len(pv_monitor.get_connected_pvs()),
         connected_pvs=stats["connected_pvs"],
         websocket_connections=stats["active_connections"],
     )
-    if not coord.available:
+    # 503 only when a REQUIRED config-service is unreachable. In degraded
+    # standalone mode config-service is intentionally absent, so the node is
+    # up (200) but flagged degraded.
+    if status == "unhealthy":
         return JSONResponse(status_code=503, content=body.model_dump(mode="json"))
     return body
 

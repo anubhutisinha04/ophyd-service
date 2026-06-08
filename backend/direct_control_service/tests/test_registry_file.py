@@ -80,7 +80,7 @@ def test_pv_under_two_devices_fails_hard(tmp_path):
             {"name": "b", "pvs": ["SHARED:PV"]},
         ]
     }
-    with pytest.raises(RuntimeError, match="more than one device"):
+    with pytest.raises(RuntimeError, match="listed more than once"):
         FileRegistryProvider(_write(tmp_path, data))
 
 
@@ -89,7 +89,26 @@ def test_pv_both_component_and_standalone_fails_hard(tmp_path):
         "devices": [{"name": "a", "pvs": ["DUP:PV"]}],
         "standalone_pvs": ["DUP:PV"],
     }
-    with pytest.raises(RuntimeError, match="both a device component"):
+    with pytest.raises(RuntimeError, match="listed more than once"):
+        FileRegistryProvider(_write(tmp_path, data))
+
+
+def test_string_pvs_value_fails_hard(tmp_path):
+    """A bare string for 'pvs' must fail, not iterate into single-char PVs."""
+    data = {"devices": [{"name": "d", "pvs": "BL01:X"}]}
+    with pytest.raises(RuntimeError, match="'pvs' must be a list"):
+        FileRegistryProvider(_write(tmp_path, data))
+
+
+def test_non_string_device_name_fails_hard(tmp_path):
+    data = {"devices": [{"name": ["a", "b"], "pvs": []}]}
+    with pytest.raises(RuntimeError, match="'name' must be a non-empty string"):
+        FileRegistryProvider(_write(tmp_path, data))
+
+
+def test_non_string_pv_fails_hard(tmp_path):
+    data = {"devices": [{"name": "d", "pvs": [123]}]}
+    with pytest.raises(RuntimeError, match="must be a non-empty string"):
         FileRegistryProvider(_write(tmp_path, data))
 
 

@@ -9,7 +9,7 @@
     "/health": {
       "get": {
         "summary": "Health Check",
-        "description": "Combined health check: coordination availability and monitoring stats.\n\nReturns 503 when configuration_service is unreachable so LB readiness\nprobes can route away. ``coordination_service_detail`` carries the\nstructured reason (timeout / connect-refused / non-2xx).",
+        "description": "Combined health check: coordination availability and monitoring stats.\n\nReturns 503 when configuration_service is unreachable so LB readiness\nprobes can route away. ``coordination_service_detail`` carries the\nstructured reason (timeout / connect-refused / non-2xx).\n\nWhen running degraded/standalone (registry_backend=auto fell back to the\nfile registry, coordination off), status is reported as \"degraded\" with\n``degraded_detail`` set \u2014 so the downgrade is visible and never reads as a\nplain \"healthy\". Still returns 200: the node is intentionally serving its\nstandalone role, just without lock gating.",
         "operationId": "health_check_health_get",
         "responses": {
           "200": {
@@ -815,7 +815,8 @@
             "type": "string",
             "enum": [
               "healthy",
-              "unhealthy"
+              "unhealthy",
+              "degraded"
             ],
             "title": "Status",
             "default": "healthy"
@@ -839,6 +840,17 @@
               }
             ],
             "title": "Coordination Service Detail"
+          },
+          "degraded_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Degraded Detail"
           },
           "active_subscriptions": {
             "type": "integer",
