@@ -36,16 +36,24 @@ class Settings(BaseSettings):
     # fails at startup instead of silently pointing at localhost:8004.
     configuration_service_url: str
 
-    # Registry backend. "http" (default) validates PV/device existence against
-    # configuration_service over HTTP. "file" reads a static device/PV registry
-    # from a local JSON/YAML file instead — for standalone / monitoring-only
-    # deployments with no configuration_service. The file carries ONLY the
-    # static registry (what devices/PVs exist); it cannot carry device-lock
-    # coordination state (runtime, shared, mutable), so file mode is normally
-    # paired with coordination_check_enabled=false. Selection is explicit and
-    # never falls back between backends.
-    registry_backend: str = "http"  # http | file
-    # Path to the JSON/YAML registry file. Required when registry_backend=file.
+    # Registry backend:
+    #   "http" (default) — validate PV/device existence against
+    #     configuration_service over HTTP.
+    #   "file" — read a static device/PV registry from a local JSON/YAML file
+    #     instead, for standalone / monitoring-only deployments with no
+    #     configuration_service.
+    #   "auto" — prefer configuration_service; if it is unreachable at startup
+    #     and registry_file_path is set, fall back to the file registry AND
+    #     disable device-lock coordination (running degraded/standalone, logged
+    #     loudly). If config-service is down and no file is configured, fail to
+    #     start. This is the only mode that switches backends, and it never does
+    #     so silently — the fallback is logged and downgrades coordination.
+    # The file carries ONLY the static registry (what devices/PVs exist); it
+    # cannot carry device-lock coordination state (runtime, shared, mutable),
+    # which is why falling back to it forces coordination off.
+    registry_backend: str = "http"  # http | file | auto
+    # Path to the JSON/YAML registry file. Required when registry_backend=file;
+    # optional for "auto" (no file => auto degrades to http-or-fail).
     registry_file_path: Optional[str] = None
 
     # EPICS configuration
@@ -126,13 +134,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_registry_backend(self) -> "Settings":
-        if self.registry_backend not in ("http", "file"):
+        if self.registry_backend not in ("http", "file", "auto"):
             raise ValueError(
-                f"registry_backend must be 'http' or 'file', got "
-                f"{self.registry_backend!r}"
+                f"registry_backend must be 'http', 'file', or 'auto', got {self.registry_backend!r}"
             )
         if self.registry_backend == "file" and not self.registry_file_path:
-            raise ValueError(
-                "registry_backend='file' requires DIRECT_CONTROL_REGISTRY_FILE_PATH"
-            )
+            raise ValueError("registry_backend='file' requires DIRECT_CONTROL_REGISTRY_FILE_PATH")
         return self

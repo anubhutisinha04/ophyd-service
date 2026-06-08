@@ -41,9 +41,7 @@ SUB_TYPE_META = "meta"
 # Hoisted out of `_make_pv_callback` so the EPICS-callback hot path doesn't
 # allocate a new closure per fired update.
 _PV_BROADCAST_DONE_CB = partial(log_threadsafe_future_exceptions, where="pv_broadcast_update")
-_PV_CALLBACK_ERROR_DONE_CB = partial(
-    log_threadsafe_future_exceptions, where="pv_callback_error"
-)
+_PV_CALLBACK_ERROR_DONE_CB = partial(log_threadsafe_future_exceptions, where="pv_callback_error")
 
 if TYPE_CHECKING:
     from ..protocols import DeviceControl, PVMonitor, RegistryProvider
@@ -65,7 +63,7 @@ class WebSocketManager:
         pv_monitor: "PVMonitor",
         device_controller: "DeviceControl",
         settings: Settings,
-        registry_client: 'Optional[RegistryProvider]' = None,
+        registry_client: "Optional[RegistryProvider]" = None,
     ):
         self.pv_monitor = pv_monitor
         self.device_controller = device_controller
@@ -141,7 +139,9 @@ class WebSocketManager:
                 logger.warning("subscribe_unknown_client", client_id=client_id)
                 return
 
-            new_pvs: list[tuple[str, Callable[[PVUpdate], None], Callable[[BaseException], None]]] = []
+            new_pvs: list[
+                tuple[str, Callable[[PVUpdate], None], Callable[[BaseException], None]]
+            ] = []
             for pv_name in pv_names:
                 self._subscriptions[client_id].add(pv_name)
                 if pv_name not in self._pv_clients:

@@ -46,7 +46,6 @@ from .models import (
     PVSetBatchResponse,
     PVSetRequest,
     PVSetResponse,
-    PVValue,
 )
 from .ophyd_cache import OphydDeviceCache
 from .pv_health_reporter import PVHealthReporter
@@ -82,9 +81,7 @@ def _maybe_export_openapi(app: FastAPI) -> None:
         out.write_text(json.dumps(app.openapi(), indent=2) + "\n")
         logger.info("openapi_schema_exported", path=str(out))
     except Exception as exc:
-        logger.error(
-            "openapi_schema_export_failed", path=path, error=str(exc), exc_info=True
-        )
+        logger.error("openapi_schema_export_failed", path=path, error=str(exc), exc_info=True)
         raise RuntimeError(
             f"OpenAPI schema export to {path} failed: {exc}. "
             f"Unset {_OPENAPI_EXPORT_PATH_ENV} to skip export."
@@ -108,20 +105,54 @@ async def _check_config_health(config_http: httpx.AsyncClient) -> Optional[str]:
     return f"/health returned HTTP {resp.status_code}"
 
 
-async def _probe_configuration_service(
+async def _await_config_service(
     settings: Settings, config_http: httpx.AsyncClient
-) -> None:
+) -> Optional[str]:
+    """Poll config-service /health until ready or the startup timeout elapses.
+
+    Returns None once /health answers 200, else the last failure detail.
+    Retries for config_service_startup_timeout seconds so compose/k8s start
+    ordering doesn't cause a spurious failure.
+    """
+    deadline = time.monotonic() + settings.config_service_startup_timeout
+    attempt = 0
+    last_detail = "unreachable"
+    while True:
+        attempt += 1
+        detail = await _check_config_health(config_http)
+        if detail is None:
+            logger.info(
+                "configuration_service_ready",
+                url=settings.configuration_service_url,
+                attempts=attempt,
+            )
+            return None
+        last_detail = detail
+        if time.monotonic() >= deadline:
+            return last_detail
+        logger.warning(
+            "waiting_for_configuration_service",
+            url=settings.configuration_service_url,
+            attempt=attempt,
+            detail=last_detail,
+            retry_in_s=settings.config_service_startup_probe_interval,
+        )
+        await asyncio.sleep(settings.config_service_startup_probe_interval)
+
+
+async def _probe_configuration_service(settings: Settings, config_http: httpx.AsyncClient) -> None:
     """Block startup until configuration_service is reachable, or fail hard.
 
-    configuration_service is required whenever the registry is HTTP-backed
-    (registry validation) OR coordination is enabled (device-lock state).
-    Without this probe a misconfigured or not-yet-started config-service is
-    invisible at boot and only surfaces later as per-request 503s — we fail
-    loudly at startup instead. Retries for config_service_startup_timeout
-    seconds first so compose/k8s start ordering doesn't cause a spurious abort.
+    For the http/file backends. configuration_service is required whenever the
+    registry is HTTP-backed (registry validation) OR coordination is enabled
+    (device-lock state). Without this probe a misconfigured or not-yet-started
+    config-service is invisible at boot and only surfaces later as per-request
+    503s — we fail loudly at startup instead.
 
     Skipped entirely when config-service isn't a dependency (file-backed
     registry with coordination disabled), or when the probe is opted out.
+    The auto backend does its own probe-and-fallback in
+    ``_resolve_registry_backend`` and does not call this.
     """
     config_service_required = (
         settings.registry_backend == "http" or settings.coordination_check_enabled
@@ -142,39 +173,80 @@ async def _probe_configuration_service(
         )
         return
 
-    deadline = time.monotonic() + settings.config_service_startup_timeout
-    attempt = 0
-    last_detail = "unreachable"
-    while True:
-        attempt += 1
-        detail = await _check_config_health(config_http)
-        if detail is None:
-            logger.info(
-                "configuration_service_ready",
-                url=settings.configuration_service_url,
-                attempts=attempt,
-            )
-            return
-        last_detail = detail
-        if time.monotonic() >= deadline:
-            break
-        logger.warning(
-            "waiting_for_configuration_service",
-            url=settings.configuration_service_url,
-            attempt=attempt,
-            detail=last_detail,
-            retry_in_s=settings.config_service_startup_probe_interval,
-        )
-        await asyncio.sleep(settings.config_service_startup_probe_interval)
+    detail = await _await_config_service(settings, config_http)
+    if detail is None:
+        return
 
     raise RuntimeError(
         f"configuration_service at {settings.configuration_service_url} not "
         f"reachable after {settings.config_service_startup_timeout:.0f}s "
-        f"({attempt} attempts): {last_detail}. direct_control requires it for "
-        f"registry validation and/or device-lock coordination. Set "
+        f"({detail}). direct_control requires it for registry validation and/or "
+        f"device-lock coordination. Set "
         f"DIRECT_CONTROL_CONFIG_SERVICE_STARTUP_PROBE=false to start without it, "
         f"or use a file-backed registry (DIRECT_CONTROL_REGISTRY_BACKEND=file) "
         f"for monitoring-only deployments."
+    )
+
+
+async def _resolve_registry_backend(
+    settings: Settings, config_http: httpx.AsyncClient
+) -> RegistryProvider:
+    """Pick the registry backend, gating startup on config-service as needed.
+
+    - http: probe config-service (raises if down), use the HTTP registry.
+    - file: probe config-service only if coordination is on, use the file.
+    - auto: prefer config-service; on startup-timeout fall back to the file
+      registry with coordination DISABLED (logged loudly), or raise if no file
+      is configured.
+    """
+    backend = settings.registry_backend
+
+    if backend == "http":
+        await _probe_configuration_service(settings, config_http)
+        return RegistryClient(settings)
+
+    if backend == "file":
+        await _probe_configuration_service(settings, config_http)
+        logger.info(
+            "registry_backend_file",
+            path=settings.registry_file_path,
+            note="standalone registry; configuration_service not used for validation",
+        )
+        return FileRegistryProvider(settings.registry_file_path)
+
+    # auto
+    logger.info(
+        "registry_backend_auto_probing",
+        url=settings.configuration_service_url,
+    )
+    detail = await _await_config_service(settings, config_http)
+    if detail is None:
+        logger.info("registry_backend_auto_resolved", choice="http")
+        return RegistryClient(settings)
+
+    if settings.registry_file_path:
+        logger.warning(
+            "registry_backend_auto_fallback_to_file",
+            path=settings.registry_file_path,
+            config_service_detail=detail,
+            note=(
+                "configuration_service unreachable; falling back to file registry "
+                "and DISABLING device-lock coordination — running degraded / "
+                "standalone, direct writes are NOT gated against plan locks"
+            ),
+        )
+        # File registries cannot carry runtime lock state, so coordination must
+        # be off in this mode. Mutating settings propagates to the coordination
+        # client, which reads the flag live.
+        settings.coordination_check_enabled = False
+        return FileRegistryProvider(settings.registry_file_path)
+
+    raise RuntimeError(
+        f"registry_backend=auto: configuration_service at "
+        f"{settings.configuration_service_url} unreachable after "
+        f"{settings.config_service_startup_timeout:.0f}s ({detail}) and no "
+        f"DIRECT_CONTROL_REGISTRY_FILE_PATH configured to fall back to. "
+        f"Cannot start."
     )
 
 
@@ -194,18 +266,13 @@ async def lifespan(app: FastAPI):
     from .monitoring.websocket_manager import WebSocketManager
 
     coordination_client = CoordinationClient(settings)
-    registry_client: RegistryProvider
-    if settings.registry_backend == "file":
-        registry_client = FileRegistryProvider(settings.registry_file_path)
-        logger.info(
-            "registry_backend_file",
-            path=settings.registry_file_path,
-            note="standalone registry; configuration_service not used for validation",
-        )
-    else:
-        registry_client = RegistryClient(settings)
-    device_controller = DeviceController(settings, coordination_client, registry_client)
     config_http = httpx.AsyncClient(base_url=settings.configuration_service_url, timeout=10.0)
+    # Resolve the registry backend. This gates startup on config-service where
+    # required (http, or file+coordination), and for backend=auto probes
+    # config-service and may fall back to the file registry (disabling
+    # coordination). Fails hard if a required config-service is unreachable.
+    registry_client = await _resolve_registry_backend(settings, config_http)
+    device_controller = DeviceController(settings, coordination_client, registry_client)
     pv_monitor = PVMonitorManager(settings)
     ws_manager = WebSocketManager(
         pv_monitor=pv_monitor,
@@ -247,11 +314,6 @@ async def lifespan(app: FastAPI):
         configuration_service_url=settings.configuration_service_url,
         coordination_enabled=settings.coordination_check_enabled,
     )
-
-    # Fail hard at startup if our config-service dependency isn't reachable,
-    # rather than booting healthy and 503-ing on the first registry-validated
-    # request. No-op for file-backed registry with coordination disabled.
-    await _probe_configuration_service(settings, config_http)
 
     try:
         yield
@@ -682,9 +744,7 @@ async def set_pv_batch(
         try:
             await registry_client.validate_pv(item.pv_name)
         except RegistryValidationError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 404, coordination_checked=False)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 404, coordination_checked=False))
             logger.warning(
                 "pv_set_batch_registry_invalid",
                 pv_name=item.pv_name,
@@ -692,9 +752,7 @@ async def set_pv_batch(
             )
             break
         except RuntimeError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 503, coordination_checked=False)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 503, coordination_checked=False))
             logger.warning(
                 "pv_set_batch_registry_unavailable",
                 pv_name=item.pv_name,
@@ -705,9 +763,7 @@ async def set_pv_batch(
         try:
             resp = await device_controller.set_pv(item)
         except DeviceDisabledError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 409, coordination_checked=True)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 409, coordination_checked=True))
             logger.warning(
                 "pv_set_batch_device_disabled",
                 pv_name=item.pv_name,
@@ -715,9 +771,7 @@ async def set_pv_batch(
             )
             break
         except DeviceLockedError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 423, coordination_checked=True)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 423, coordination_checked=True))
             logger.warning(
                 "pv_set_batch_device_locked",
                 pv_name=item.pv_name,
@@ -725,9 +779,7 @@ async def set_pv_batch(
             )
             break
         except CoordinationCheckError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 503, coordination_checked=True)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 503, coordination_checked=True))
             logger.error(
                 "pv_set_batch_coordination_failed",
                 pv_name=item.pv_name,
@@ -739,9 +791,7 @@ async def set_pv_batch(
             # Past the coord gate — this is a real PV-health event
             # (typically a pyepics CA timeout or rejected put).
             pv_health_reporter.report(item.pv_name, success=False, message=str(e))
-            results.append(
-                _batch_failure_result(item.pv_name, e, 500, coordination_checked=True)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 500, coordination_checked=True))
             logger.error(
                 "pv_set_batch_item_error",
                 pv_name=item.pv_name,
@@ -813,7 +863,7 @@ def _extract_pv_name(leaf) -> Optional[str]:
         pv = str(source)
         for scheme in _SIGNAL_SOURCE_SCHEMES:
             if pv.startswith(scheme):
-                return pv[len(scheme):]
+                return pv[len(scheme) :]
         return pv
     return None
 
@@ -1169,9 +1219,7 @@ async def access_nested_device(
         logger.error("coordination_check_failed", device_path=device_path, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
     except NotImplementedError as e:
-        _raise_http_501_not_implemented(
-            e, "nested_device_not_implemented", device_path=device_path
-        )
+        _raise_http_501_not_implemented(e, "nested_device_not_implemented", device_path=device_path)
     except Exception as e:
         logger.error("nested_device_error", device_path=device_path, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

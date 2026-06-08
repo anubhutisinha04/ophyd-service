@@ -18,7 +18,12 @@ import pytest
 os.environ.setdefault("DIRECT_CONTROL_CONFIGURATION_SERVICE_URL", "http://localhost:0")
 
 from direct_control.config import Settings  # noqa: E402
-from direct_control.main import _probe_configuration_service  # noqa: E402
+from direct_control.main import (  # noqa: E402
+    _probe_configuration_service,
+    _resolve_registry_backend,
+)
+from direct_control.registry_client import RegistryClient  # noqa: E402
+from direct_control.registry_file import FileRegistryProvider  # noqa: E402
 
 
 def _settings(
@@ -63,9 +68,7 @@ def _http(handler):
     return client, calls
 
 
-_CONNECT_ERR = httpx.ConnectError(
-    "refused", request=httpx.Request("GET", "http://cs/health")
-)
+_CONNECT_ERR = httpx.ConnectError("refused", request=httpx.Request("GET", "http://cs/health"))
 
 
 async def test_probe_passes_when_config_service_ready():
@@ -77,9 +80,7 @@ async def test_probe_passes_when_config_service_ready():
 
 async def test_probe_retries_then_succeeds():
     """A config-service that comes up on the 3rd poll is awaited, not aborted."""
-    client, calls = _http(
-        lambda n: httpx.Response(200) if n >= 2 else _CONNECT_ERR
-    )
+    client, calls = _http(lambda n: httpx.Response(200) if n >= 2 else _CONNECT_ERR)
     await _probe_configuration_service(_settings(), client)
     assert calls[0] == 3
     await client.aclose()
@@ -89,9 +90,7 @@ async def test_probe_fails_hard_when_never_ready():
     """Unreachable past the deadline -> RuntimeError carrying the last detail."""
     client, calls = _http(lambda n: _CONNECT_ERR)
     with pytest.raises(RuntimeError, match="not reachable"):
-        await _probe_configuration_service(
-            _settings(config_service_startup_timeout=0.05), client
-        )
+        await _probe_configuration_service(_settings(config_service_startup_timeout=0.05), client)
     assert calls[0] >= 1
     await client.aclose()
 
@@ -100,18 +99,14 @@ async def test_probe_fails_hard_on_non_200():
     """A reachable config-service returning 503 still fails the probe."""
     client, _ = _http(lambda n: httpx.Response(503))
     with pytest.raises(RuntimeError, match="HTTP 503"):
-        await _probe_configuration_service(
-            _settings(config_service_startup_timeout=0.05), client
-        )
+        await _probe_configuration_service(_settings(config_service_startup_timeout=0.05), client)
     await client.aclose()
 
 
 async def test_probe_skipped_when_disabled():
     """Disabled probe never touches the dependency."""
     client, calls = _http(lambda n: httpx.Response(503))
-    await _probe_configuration_service(
-        _settings(config_service_startup_probe=False), client
-    )
+    await _probe_configuration_service(_settings(config_service_startup_probe=False), client)
     assert calls[0] == 0
     await client.aclose()
 
@@ -147,4 +142,44 @@ async def test_probe_runs_for_file_registry_with_coordination_enabled(tmp_path):
         client,
     )
     assert calls[0] == 1
+    await client.aclose()
+
+
+# ----- registry_backend=auto resolution -----
+
+
+async def test_auto_uses_http_when_config_service_up(tmp_path):
+    """config-service reachable -> auto picks the HTTP registry, coordination kept."""
+    reg = tmp_path / "registry.json"
+    reg.write_text('{"devices": []}')
+    settings = _settings(registry_backend="auto", registry_file_path=str(reg))
+    client, _ = _http(lambda n: httpx.Response(200))
+    provider = await _resolve_registry_backend(settings, client)
+    assert isinstance(provider, RegistryClient)
+    assert settings.coordination_check_enabled is True
+    await client.aclose()
+
+
+async def test_auto_falls_back_to_file_and_disables_coordination(tmp_path):
+    """config-service down + file configured -> file registry, coordination OFF."""
+    reg = tmp_path / "registry.json"
+    reg.write_text('{"devices": [{"name": "d", "pvs": []}]}')
+    settings = _settings(
+        registry_backend="auto",
+        registry_file_path=str(reg),
+        config_service_startup_timeout=0.05,
+    )
+    client, _ = _http(lambda n: _CONNECT_ERR)
+    provider = await _resolve_registry_backend(settings, client)
+    assert isinstance(provider, FileRegistryProvider)
+    assert settings.coordination_check_enabled is False
+    await client.aclose()
+
+
+async def test_auto_fails_hard_when_down_and_no_file():
+    """config-service down + no file -> hard failure (non-zero exit at startup)."""
+    settings = _settings(registry_backend="auto", config_service_startup_timeout=0.05)
+    client, _ = _http(lambda n: _CONNECT_ERR)
+    with pytest.raises(RuntimeError, match="no .*REGISTRY_FILE_PATH"):
+        await _resolve_registry_backend(settings, client)
     await client.aclose()

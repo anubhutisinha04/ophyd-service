@@ -59,8 +59,7 @@ def _load_registry_file(path: str) -> dict:
         data = json.loads(text)
     else:
         raise RuntimeError(
-            f"Unsupported registry file extension {suffix!r} for {path}; "
-            f"use .json, .yaml, or .yml"
+            f"Unsupported registry file extension {suffix!r} for {path}; use .json, .yaml, or .yml"
         )
 
     if not isinstance(data, dict):
@@ -89,8 +88,7 @@ class FileRegistryProvider:
         devices = data.get("devices", [])
         if not isinstance(devices, list):
             raise RuntimeError(
-                f"Registry file {path}: 'devices' must be a list, got "
-                f"{type(devices).__name__}"
+                f"Registry file {path}: 'devices' must be a list, got {type(devices).__name__}"
             )
 
         for entry in devices:
@@ -101,15 +99,12 @@ class FileRegistryProvider:
                 )
             name = entry["name"]
             if name in self._devices:
-                raise RuntimeError(
-                    f"Registry file {path}: duplicate device name {name!r}"
-                )
+                raise RuntimeError(f"Registry file {path}: duplicate device name {name!r}")
             self._devices.add(name)
             for pv in entry.get("pvs", []) or []:
                 if pv in self._pv_owner:
                     raise RuntimeError(
-                        f"Registry file {path}: PV {pv!r} listed under more than "
-                        f"one device"
+                        f"Registry file {path}: PV {pv!r} listed under more than one device"
                     )
                 self._pv_owner[pv] = name
 
