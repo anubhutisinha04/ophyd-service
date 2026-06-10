@@ -9,6 +9,8 @@
 #   ioc_random_walk_v  — caproto.ioc_examples.random_walk (random_walk:vert-*)
 #   ioc_thermo         — caproto.ioc_examples.thermo_sim (thermo:*)
 #   ioc_fake_motor     — caproto.ioc_examples.fake_motor_record (sim:mtr1/2/3, full motor records)
+#   ioc_adsim          — custom ioc_adsim.py: simulated AreaDetector (13SIM1:cam1:* + live
+#                        13SIM1:image1:ArrayData) for the camera-socket / tiff-socket
 #   configuration_service / direct_control_service — same images as minimal
 #
 # Devices the registry knows about by default (from happi_db.json): spot,
@@ -85,13 +87,35 @@ services:
       timeout: 2s
       retries: 10
 
+  ioc_adsim:
+    <<: *ioc-base
+    command: ["python", "/app/ioc_adsim.py", "--list-pvs", "--interfaces", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f ioc_adsim.py > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  postgres:
+    image: docker.io/postgres:16
+    environment:
+      POSTGRES_USER: bluesky
+      POSTGRES_PASSWORD: bluesky
+      POSTGRES_DB: config_service
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bluesky"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   configuration_service:
     build:
       context: ../../../backend/configuration_service
     environment:
       CONFIG_LOAD_STRATEGY: "happi"
       CONFIG_PROFILE_PATH: "/profile"
-      CONFIG_DB_PATH: "/tmp/config_service.db"
+      # PostgreSQL persistence (config_service also supports SQLite; this pod uses Postgres).
+      CONFIG_DATABASE_URL: "postgresql+psycopg://bluesky:bluesky@postgres:5432/config_service"
       # The happi DB references compound device classes (localdevs.Det,
       # localdevs.Spot). Loader walks those classes to index sub-PVs at
       # registry-load time, so the module must be importable. Falls back
@@ -102,6 +126,9 @@ services:
       - ../../localdevs:/localdevs:ro
     ports:
       - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   direct_control_service:
     build:
@@ -109,11 +136,20 @@ services:
     environment:
       DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
       DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
+      # Enable control: read-only defaults to true (monitor-only); the
+      # exerciser does PV writes, so this integration pod allows them.
+      DIRECT_CONTROL_GLOBAL_READ_ONLY: "false"
       # pyepics: list every IOC service so CA search reaches them all on the
       # compose network. Disable broadcast — explicit list keeps stray
       # search requests from leaving the docker net.
-      EPICS_CA_ADDR_LIST: "ioc ioc_random_walk ioc_random_walk_h ioc_random_walk_v ioc_thermo ioc_fake_motor"
+      EPICS_CA_ADDR_LIST: "ioc ioc_random_walk ioc_random_walk_h ioc_random_walk_v ioc_thermo ioc_fake_motor ioc_adsim"
       EPICS_CA_AUTO_ADDR_LIST: "NO"
+      # Device-level control (/api/v1/device/execute) instantiates the
+      # registry's device classes in THIS container; the happi DB references
+      # compound classes localdevs.Det / localdevs.Spot.
+      PYTHONPATH: "/localdevs"
+    volumes:
+      - ../../localdevs:/localdevs:ro
     ports:
       - "8003:8003"
     depends_on:
@@ -130,6 +166,8 @@ services:
       ioc_thermo:
         condition: service_healthy
       ioc_fake_motor:
+        condition: service_healthy
+      ioc_adsim:
         condition: service_healthy
 
   frontend:

@@ -12,13 +12,13 @@ from configuration_service.models import DeviceLabel
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(db_url):
     """Create test client with mock data.
 
     Uses the lifespan context manager to properly initialize
     the ConfigurationState with mock loader.
     """
-    settings = Settings(use_mock_data=True, db_path=tmp_path / "test.db")
+    settings = Settings(use_mock_data=True, database_url=db_url)
     app = create_app(settings)
 
     # Use context manager to trigger lifespan events
@@ -455,17 +455,17 @@ class TestCorsOriginsRespectsSettings:
     """
 
     @staticmethod
-    def _client(tmp_path, allowed: list[str]) -> TestClient:
+    def _client(db_url, allowed: list[str]) -> TestClient:
         settings = Settings(
             use_mock_data=True,
-            db_path=tmp_path / "test.db",
+            database_url=db_url,
             cors_origins=allowed,
         )
         app = create_app(settings)
         return TestClient(app)
 
-    def test_allowed_origin_gets_cors_header(self, tmp_path):
-        with self._client(tmp_path, ["http://allowed.example"]) as client:
+    def test_allowed_origin_gets_cors_header(self, db_url):
+        with self._client(db_url, ["http://allowed.example"]) as client:
             resp = client.get(
                 "/health",
                 headers={"Origin": "http://allowed.example"},
@@ -475,8 +475,8 @@ class TestCorsOriginsRespectsSettings:
                 resp.headers.get("access-control-allow-origin") == "http://allowed.example"
             )
 
-    def test_disallowed_origin_gets_no_cors_header(self, tmp_path):
-        with self._client(tmp_path, ["http://allowed.example"]) as client:
+    def test_disallowed_origin_gets_no_cors_header(self, db_url):
+        with self._client(db_url, ["http://allowed.example"]) as client:
             resp = client.get(
                 "/health",
                 headers={"Origin": "http://evil.example"},
@@ -551,7 +551,7 @@ class TestM3StandalonePVStoreInitFailureFailsStartup:
                 pass  # Entering the with-block runs lifespan; we expect it to raise.
 
     def test_lifespan_succeeds_when_flag_disabled_and_init_would_fail(
-        self, tmp_path, monkeypatch
+        self, monkeypatch
     ):
         """When the flag is OFF the broken initializer must never run.
 
@@ -576,7 +576,6 @@ class TestM3StandalonePVStoreInitFailureFailsStartup:
 
         settings = Settings(
             use_mock_data=True,
-            db_path=tmp_path / "test.db",
             device_change_history_enabled=False,
         )
         app = create_app(settings)

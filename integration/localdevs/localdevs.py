@@ -47,6 +47,26 @@ class RandomWalk(Device):
     x = Cpt(EpicsSignal, "x", kind="hinted")
 
 
+class ADSimDetector(Device):
+    """`ioc_adsim.py` shape — a simulated AreaDetector under a `13SIM1:` prefix.
+
+    Components mirror the PVs the direct-control camera-socket / tiff-socket
+    read: the cam1 region/format settings plus the image1 array. Prefix is the
+    detector base (e.g. ``13SIM1:``), so component suffixes carry the cam1:/
+    image1: plugin segments.
+    """
+    min_x = Cpt(EpicsSignal, "cam1:MinX", kind="config")
+    min_y = Cpt(EpicsSignal, "cam1:MinY", kind="config")
+    size_x = Cpt(EpicsSignal, "cam1:SizeX", kind="config")
+    size_y = Cpt(EpicsSignal, "cam1:SizeY", kind="config")
+    color_mode = Cpt(EpicsSignal, "cam1:ColorMode", kind="config")
+    data_type = Cpt(EpicsSignal, "cam1:DataType", kind="config")
+    acquire = Cpt(EpicsSignal, "cam1:Acquire", kind="normal")
+    acquire_time = Cpt(EpicsSignal, "cam1:AcquireTime", kind="config")
+    array_counter = Cpt(EpicsSignalRO, "image1:ArrayCounter_RBV", kind="normal")
+    image = Cpt(EpicsSignalRO, "image1:ArrayData", kind="hinted")
+
+
 class SetInProgress(RuntimeError):
     """Raised when a Eurotherm `set` lands while another set is already in flight."""
 

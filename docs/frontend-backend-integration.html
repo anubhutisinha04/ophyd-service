@@ -396,8 +396,8 @@ uses standard HTTP status codes (200 / 404 / 423 / 503 / 500).</p>
 
 <p>Response is a tiled-style envelope with <code>value</code>, <code>shape</code>,
 <code>dtype</code>, <code>units</code>, alarm fields, etc. For streaming updates use the
-WebSocket endpoints (<code>/api/v1/pv-socket</code> and <code>/api/v1/device-socket</code>) — see the
-direct-control service README for those.</p>
+WebSocket endpoints (PV, device, camera, and TIFF sockets) — see
+<a href="#streaming">§9</a>.</p>
 
 <h2>7. End-to-end example: configuring for Ni_L</h2>
 
@@ -563,7 +563,93 @@ dashboard "purge after IOC maintenance" action:</p>
 upstream-middleware policy that gates everything else on the service.
 Wire them behind whatever your deployment uses for admin actions.</p>
 
-<h2 id="follow-ups">9. Follow-ups (not yet wired up)</h2>
+<h2 id="streaming">9. Streaming endpoints (WebSockets)</h2>
+
+<p>Beyond one-shot reads (§6), direct-control serves four WebSocket endpoints
+for live updates. All four are read-only monitors — no writes, so no device
+lock applies. They are <strong>not</strong> in the OpenAPI schema (a FastAPI
+limitation), so they are documented here and in the service README.</p>
+
+<table>
+<tr><th>Path</th><th>finch name</th><th>Payload</th></tr>
+<tr><td><code>/api/v1/pv-socket</code></td><td><code>ophydSocketPVPath</code></td><td>Per-PV scalar monitor updates (tiled-style JSON).</td></tr>
+<tr><td><code>/api/v1/device-socket</code></td><td><code>ophydSocketDevicePath</code></td><td>Device-level monitor updates (a device's sub-PVs).</td></tr>
+<tr><td><code>/api/v1/camera-socket</code></td><td><code>ophydSocketCameraPath</code></td><td>AreaDetector image streaming (binary frames).</td></tr>
+<tr><td><code>/api/v1/tiff-socket</code></td><td><code>ophydSocketTIFFPath</code></td><td>TIFF-detector image streaming (binary frames).</td></tr>
+</table>
+
+<p>The first two (<code>pv-socket</code>, <code>device-socket</code>) carry JSON
+monitor updates — see the direct-control README for those shapes. The two image
+sockets are covered below.</p>
+
+<h3>9.1 Image sockets — camera-socket and tiff-socket</h3>
+
+<p>Both stream a live detector as a sequence of <strong>binary image
+frames</strong> interleaved with small JSON control messages. They share one
+wire contract and differ only in how the client names the detector.</p>
+
+<p><strong>Client → server (subscribe).</strong> The first message selects the
+detector:</p>
+
+<pre><code>// camera-socket: explicit AreaDetector PVs. Any omitted field is inferred
+// from imageArray_PV; imageArray_PV itself falls back to the configured default.
+{
+  "imageArray_PV": "13SIM1:image1:ArrayData",
+  "startX": "13SIM1:cam1:MinX",
+  "startY": "13SIM1:cam1:MinY",
+  "sizeX":  "13SIM1:cam1:SizeX",
+  "sizeY":  "13SIM1:cam1:SizeY",
+  "colorMode": "13SIM1:cam1:ColorMode",
+  "dataType":  "13SIM1:cam1:DataType"
+}
+
+// tiff-socket: just a detector prefix (default "13PIL1"). The server expands it
+// to {prefix}:image1:ArrayData plus {prefix}:cam1:* settings.
+{ "prefix": "13PIL1" }</code></pre>
+
+<p><strong>Client → server (control).</strong> Toggle log vs. linear
+normalization at any time:</p>
+
+<pre><code>{ "toggleLogNormalization": true }</code></pre>
+
+<p><strong>Server → client.</strong> Three message kinds on the same socket:</p>
+
+<table>
+<tr><th>Kind</th><th>Frame</th><th>Meaning</th></tr>
+<tr><td>Dimensions</td><td>JSON <code>{"x": int, "y": int}</code></td><td>Current image width/height (SizeX/SizeY − MinX/MinY). Sent on connect and whenever the ROI changes. finch reads only <code>x</code>/<code>y</code>.</td></tr>
+<tr><td>Normalization ack</td><td>JSON <code>{"logNormalization": bool}</code></td><td>Echoes the active mode after a <code>toggleLogNormalization</code>.</td></tr>
+<tr><td>Image frame</td><td>binary blob</td><td>One encoded frame (JPEG by default). finch decodes via <code>createImageBitmap(new Blob([data], {type: "image/jpeg"}))</code>.</td></tr>
+</table>
+
+<div class="callout">
+<strong>Why no app-level heartbeat.</strong> finch misreads any
+non-<code>logNormalization</code> JSON text frame as a <code>{x, y}</code>
+dimensions message, so these sockets deliberately send no keep-alive text
+frames.
+</div>
+
+<h3>9.2 Encoding and backpressure</h3>
+
+<ul>
+<li><strong>Wire encoding</strong> is a server config flip via
+<code>DIRECT_CONTROL_IMAGE_ENCODING</code> — <code>jpeg</code> (default),
+<code>png</code>, or <code>webp</code>. There is <strong>no TIFF wire
+encoding</strong> (browsers can't decode TIFF); the <code>tiff-socket</code>
+name refers to the <em>source detector</em>, not the frame format.</li>
+<li>Frames wider/taller than <code>image_max_dimension</code> (default 2500&nbsp;px)
+are LANCZOS-downsampled before encoding.</li>
+<li>Each connection has a small drop-oldest frame queue
+(<code>image_frame_queue_size</code>, default 8): a slow client drops frames
+rather than stalling the stream or the other sockets.</li>
+</ul>
+
+<p>For a live camera to stream against locally, <code>integration/pods/full</code>
+includes <code>ioc_adsim</code> — a caproto AreaDetector sim serving
+<code>13SIM1:cam1:*</code> + <code>13SIM1:image1:ArrayData</code>. Register the
+camera device via the <code>cam</code> body in
+<code>integration/happi/runtime_seed.json</code>.</p>
+
+<h2 id="follow-ups">10. Follow-ups (not yet wired up)</h2>
 
 <div class="callout todo">
 <strong>Presets storage.</strong> Where the per-edge preset table actually lives
@@ -580,7 +666,7 @@ Those don't go through this endpoint. When/if the queueserver integration
 lands, the frontend will need a separate "submit plan" API for them.
 </div>
 
-<h2>10. Things to watch out for</h2>
+<h2>11. Things to watch out for</h2>
 
 <ul>
   <li><strong>Don't silently swallow <code>ok: false</code>.</strong> If the batch halted
@@ -596,7 +682,7 @@ lands, the frontend will need a separate "submit plan" API for them.
       with 422 rather than silently doing nothing.</li>
 </ul>
 
-<h2>11. Reference</h2>
+<h2>12. Reference</h2>
 
 <ul>
   <li>OpenAPI schemas (codegen-friendly source of truth):

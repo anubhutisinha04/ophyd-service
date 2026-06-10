@@ -638,7 +638,7 @@ class StandalonePVCreateRequest(BaseModel):
     # min_length=1 keeps an empty pv_name out of the registry. An empty key
     # is unremovable via DELETE /api/v1/pvs/standalone/{pv_name:path} since
     # an empty path segment doesn't match the route — once it's in the
-    # SQLite store the only way to clear it is to recreate the container.
+    # PostgreSQL store the only way to clear it is to recreate the container.
     #
     # pattern=^[\x21-\x7e]+$ requires printable ASCII only — no whitespace,
     # no ASCII controls (NUL/BEL/ESC), no high-bit Unicode (ZWSP, NBSP,

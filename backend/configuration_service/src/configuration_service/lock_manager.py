@@ -4,7 +4,7 @@ Device Lock Manager for Configuration Service.
 Manages in-memory device lock state for A4 coordination between
 Experiment Execution (SVC-001) and Direct Control (SVC-003).
 
-Lock state is ephemeral (not persisted to SQLite). On service restart,
+Lock state is ephemeral (not persisted to the database). On service restart,
 all locks are cleared. Lock/unlock events are written to the audit log
 separately by the endpoint handlers.
 

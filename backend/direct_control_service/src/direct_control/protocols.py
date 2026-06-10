@@ -24,6 +24,7 @@ from .models import (
     CoordinationStatus,
     DeviceCommandRequest,
     DeviceCommandResponse,
+    InstantiationSpec,
     PVSetRequest,
     PVSetResponse,
     PVUpdate,
@@ -76,6 +77,44 @@ class CoordinationService(Protocol):
             available, a `detail` string describing why (timeout,
             connection error, non-2xx response). Pre-S6 this returned a
             bare bool that hid the failure mode.
+        """
+        ...
+
+    async def cleanup(self) -> None:
+        """Cleanup resources (HTTP client, etc.)."""
+        ...
+
+
+@runtime_checkable
+class RegistryProvider(Protocol):
+    """Protocol for the device/PV existence registry.
+
+    Confirms a PV/device exists before an operation reaches EPICS, and maps a
+    PV to its owning device for the coordination gate. Implementations:
+    - RegistryClient: HTTP client to configuration_service (the authoritative
+      shared registry used in full beamline deployments)
+    - FileRegistryProvider: a static JSON/YAML file (standalone / monitoring-
+      only deployments with no configuration_service)
+    """
+
+    async def validate_pv(self, pv_name: str) -> None:
+        """Raise RegistryValidationError if the PV is not registered."""
+        ...
+
+    async def validate_device(self, device_name: str) -> None:
+        """Raise RegistryValidationError if the device is not registered."""
+        ...
+
+    async def get_owning_device(self, pv_name: str) -> Optional[str]:
+        """Return the device owning this PV, or None for standalone/unknown PVs."""
+        ...
+
+    async def get_instantiation_spec(self, device_name: str) -> Optional["InstantiationSpec"]:
+        """Return how to construct the live device, or None when the registry
+        has no class/ctor information for it (device-level control is then
+        unavailable for that device; PV-level operations still work).
+
+        Raises RuntimeError if the registry backend is unreachable.
         """
         ...
 

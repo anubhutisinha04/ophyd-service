@@ -17,8 +17,9 @@ src/configuration_service/
 ├── cli.py                   CLI entry point (argparse + uvicorn)
 ├── loader.py                Profile loaders (HappiProfileLoader, BitsProfileLoader, MockProfileLoader, EmptyProfileLoader)
 ├── class_capabilities.py    Static lookup table: ophyd class name → capability flags
-├── device_registry_store.py SQLite persistence for device registry + audit log
-├── standalone_pv_store.py   SQLite persistence for standalone PVs
+├── db.py                    SQLAlchemy schema (tables) + engine factory
+├── device_registry_store.py PostgreSQL persistence for device registry + audit log
+├── standalone_pv_store.py   PostgreSQL persistence for standalone PVs
 ├── lock_manager.py          In-memory device lock state (ephemeral)
 └── __init__.py              Package exports
 ```
@@ -56,7 +57,7 @@ lifespan(app)
 
 ## DB-as-source-of-truth
 
-When `device_change_history_enabled=true` (the default), the SQLite database is the source of truth for the device registry.
+When `device_change_history_enabled=true` (the default), the PostgreSQL database (configured via `CONFIG_DATABASE_URL`) is the source of truth for the device registry.
 
 **First startup**: The loader reads from the profile collection and seeds the database. The DB is marked as seeded.
 
@@ -64,15 +65,15 @@ When `device_change_history_enabled=true` (the default), the SQLite database is 
 
 **Reset**: `POST /api/v1/registry/reset` wipes the device tables and re-seeds from the profile. All runtime changes are lost.
 
-### SQLite schema
+### Schema
 
-Three tables in the same database file:
+Four tables (defined as SQLAlchemy Core in `db.py`):
 
 **device_registry** — current state, one row per device:
 - `name` (PK), `device_metadata` (JSON), `instantiation_spec` (JSON), `created_at`, `updated_at`
 
 **device_audit_log** — append-only history:
-- `id` (autoincrement), `device_name`, `operation`, `timestamp`, `details` (JSON)
+- `id` (IDENTITY — the monotonic version the `/changes` feed exposes), `device_name`, `operation`, `timestamp`, `details` (JSON)
 
 **registry_metadata** — tracks seeding status:
 - `key` (PK), `value`

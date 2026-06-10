@@ -11,9 +11,10 @@ environment variables (pyepics reads EPICS_CA_* env vars at import time).
 
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import httpx
 import numpy as np
@@ -23,19 +24,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from ._array_metadata import describe_array
-from .config import Settings
+from .config import READ_ONLY_MESSAGE, Settings
 from .coordination_client import CoordinationClient
 from .device_controller import DeviceController
+from .device_manager import DeviceManager
 from .models import (
+    ComponentNotFoundError,
     CoordinationCheckError,
     DeviceCommandRequest,
     DeviceCommandResponse,
     DeviceDisabledError,
     DeviceLockedError,
+    DeviceNotInstantiableError,
     EnrichmentRequest,
     EnrichmentResponse,
     EnrichmentResultItem,
     HealthResponse,
+    MethodNotAllowedError,
     NestedDeviceRequest,
     NestedDeviceResponse,
     PVNotFoundError,
@@ -45,12 +50,12 @@ from .models import (
     PVSetBatchResponse,
     PVSetRequest,
     PVSetResponse,
-    PVValue,
 )
 from .ophyd_cache import OphydDeviceCache
 from .pv_health_reporter import PVHealthReporter
-from .protocols import CoordinationService, DeviceControl, PVMonitor
+from .protocols import CoordinationService, DeviceControl, PVMonitor, RegistryProvider
 from .registry_client import RegistryClient, RegistryValidationError
+from .registry_file import FileRegistryProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -80,13 +85,199 @@ def _maybe_export_openapi(app: FastAPI) -> None:
         out.write_text(json.dumps(app.openapi(), indent=2) + "\n")
         logger.info("openapi_schema_exported", path=str(out))
     except Exception as exc:
-        logger.error(
-            "openapi_schema_export_failed", path=path, error=str(exc), exc_info=True
-        )
+        logger.error("openapi_schema_export_failed", path=path, error=str(exc), exc_info=True)
         raise RuntimeError(
             f"OpenAPI schema export to {path} failed: {exc}. "
             f"Unset {_OPENAPI_EXPORT_PATH_ENV} to skip export."
         ) from exc
+
+
+async def _check_config_health(config_http: httpx.AsyncClient) -> Optional[str]:
+    """One config-service /health poll. Returns None if healthy, else a reason.
+
+    Distinguishes timeout / connection error / non-2xx so a failed probe says
+    why, rather than a bare "unreachable".
+    """
+    try:
+        resp = await config_http.get("/health", timeout=2.0)
+    except httpx.TimeoutException as exc:
+        return f"timeout reaching /health: {exc}"
+    except httpx.RequestError as exc:
+        return f"cannot reach /health: {exc}"
+    if resp.status_code == 200:
+        return None
+    return f"/health returned HTTP {resp.status_code}"
+
+
+async def _await_config_service(
+    settings: Settings, config_http: httpx.AsyncClient
+) -> Optional[str]:
+    """Poll config-service /health until ready or the startup timeout elapses.
+
+    Returns None once /health answers 200, else the last failure detail.
+    Retries for config_service_startup_timeout seconds so compose/k8s start
+    ordering doesn't cause a spurious failure.
+    """
+    deadline = time.monotonic() + settings.config_service_startup_timeout
+    attempt = 0
+    last_detail = "unreachable"
+    while True:
+        attempt += 1
+        detail = await _check_config_health(config_http)
+        if detail is None:
+            logger.info(
+                "configuration_service_ready",
+                url=settings.configuration_service_url,
+                attempts=attempt,
+            )
+            return None
+        last_detail = detail
+        if time.monotonic() >= deadline:
+            return last_detail
+        logger.warning(
+            "waiting_for_configuration_service",
+            url=settings.configuration_service_url,
+            attempt=attempt,
+            detail=last_detail,
+            retry_in_s=settings.config_service_startup_probe_interval,
+        )
+        await asyncio.sleep(settings.config_service_startup_probe_interval)
+
+
+async def _probe_configuration_service(settings: Settings, config_http: httpx.AsyncClient) -> None:
+    """Block startup until configuration_service is reachable, or fail hard.
+
+    For the http/file backends. configuration_service is required whenever the
+    registry is HTTP-backed (registry validation) OR coordination is enabled
+    (device-lock state). Without this probe a misconfigured or not-yet-started
+    config-service is invisible at boot and only surfaces later as per-request
+    503s — we fail loudly at startup instead.
+
+    Skipped entirely when config-service isn't a dependency (file-backed
+    registry with coordination disabled), or when the probe is opted out.
+    The auto backend does its own probe-and-fallback in
+    ``_resolve_registry_backend`` and does not call this.
+    """
+    config_service_required = (
+        settings.registry_backend == "http" or settings.coordination_check_enabled
+    )
+    if not config_service_required:
+        logger.info(
+            "config_service_not_required",
+            registry_backend=settings.registry_backend,
+            coordination_check_enabled=settings.coordination_check_enabled,
+            note="file-backed registry with coordination disabled — not probing",
+        )
+        return
+
+    if not settings.config_service_startup_probe:
+        logger.warning(
+            "config_service_startup_probe_disabled",
+            note="Not verifying configuration_service reachability at startup",
+        )
+        return
+
+    detail = await _await_config_service(settings, config_http)
+    if detail is None:
+        return
+
+    raise RuntimeError(
+        f"configuration_service at {settings.configuration_service_url} not "
+        f"reachable after {settings.config_service_startup_timeout:.0f}s "
+        f"({detail}). direct_control requires it for registry validation and/or "
+        f"device-lock coordination. Set "
+        f"DIRECT_CONTROL_CONFIG_SERVICE_STARTUP_PROBE=false to start without it, "
+        f"or use a file-backed registry (DIRECT_CONTROL_REGISTRY_BACKEND=file) "
+        f"for monitoring-only deployments."
+    )
+
+
+class RegistryResolution(NamedTuple):
+    """Outcome of choosing the registry backend at startup.
+
+    ``effective_backend`` is the resolved choice ("http" or "file"); for auto it
+    reflects which one actually got picked. ``coordination_enabled`` is the
+    effective device-lock coordination decision — off in file/standalone mode,
+    where there is no configuration_service to read lock state from. Both are
+    surfaced via /health and /api/v1/stats so the running mode is always visible.
+    """
+
+    provider: RegistryProvider
+    coordination_enabled: bool
+    effective_backend: str
+
+
+async def _resolve_registry_backend(
+    settings: Settings, config_http: httpx.AsyncClient
+) -> RegistryResolution:
+    """Pick the registry backend, gating startup on config-service as needed.
+
+    - http: probe config-service (raises if down), use the HTTP registry with
+      coordination as configured.
+    - file: fully-featured standalone mode on the local registry file. No
+      config-service, so the lock-coordination check is turned off (access is
+      governed by global_read_only instead).
+    - auto: prefer config-service; if unreachable, run the same fully-featured
+      standalone mode on the file registry, or raise if no file is configured.
+
+    Returns the decision explicitly (effective backend + coordination flag)
+    rather than mutating settings, so the caller applies it at one visible point.
+    """
+    backend = settings.registry_backend
+
+    if backend == "http":
+        await _probe_configuration_service(settings, config_http)
+        return RegistryResolution(
+            RegistryClient(settings), settings.coordination_check_enabled, "http"
+        )
+
+    if backend == "file":
+        logger.info(
+            "registry_backend_file",
+            path=settings.registry_file_path,
+            note="standalone mode: file registry, configuration_service not used",
+        )
+        return RegistryResolution(FileRegistryProvider(settings.registry_file_path), False, "file")
+
+    # auto
+    logger.info("registry_backend_auto_probing", url=settings.configuration_service_url)
+    if settings.config_service_startup_probe:
+        detail = await _await_config_service(settings, config_http)
+    else:
+        # Opt-out honored: decide from a single /health check instead of
+        # blocking for the full startup window.
+        logger.warning(
+            "config_service_startup_probe_disabled",
+            note="auto backend deciding from a single /health check, no wait",
+        )
+        detail = await _check_config_health(config_http)
+
+    if detail is None:
+        logger.info("registry_backend_auto_resolved", choice="http")
+        return RegistryResolution(
+            RegistryClient(settings), settings.coordination_check_enabled, "http"
+        )
+
+    if settings.registry_file_path:
+        logger.warning(
+            "registry_backend_auto_using_file",
+            path=settings.registry_file_path,
+            config_service_detail=detail,
+            note=(
+                "configuration_service unreachable; running fully-featured "
+                "standalone on the file registry (lock coordination off, "
+                "access governed by global_read_only)"
+            ),
+        )
+        return RegistryResolution(FileRegistryProvider(settings.registry_file_path), False, "file")
+
+    raise RuntimeError(
+        f"registry_backend=auto: configuration_service at "
+        f"{settings.configuration_service_url} unreachable after "
+        f"{settings.config_service_startup_timeout:.0f}s ({detail}) and no "
+        f"DIRECT_CONTROL_REGISTRY_FILE_PATH configured to fall back to. "
+        f"Cannot start."
+    )
 
 
 @asynccontextmanager
@@ -100,13 +291,31 @@ async def lifespan(app: FastAPI):
 
     # Import pyepics-dependent managers after env vars are in place.
     from .monitoring.device_websocket_manager import DeviceWebSocketManager
+    from .monitoring.image_stream_manager import ImageStreamManager
     from .monitoring.pv_monitor import PVMonitorManager
     from .monitoring.websocket_manager import WebSocketManager
 
     coordination_client = CoordinationClient(settings)
-    registry_client = RegistryClient(settings)
-    device_controller = DeviceController(settings, coordination_client, registry_client)
     config_http = httpx.AsyncClient(base_url=settings.configuration_service_url, timeout=10.0)
+    # Resolve the registry backend. This gates startup on config-service where
+    # required (http, or file+coordination), and for backend=auto probes
+    # config-service and may fall back to the file registry (disabling
+    # coordination). Fails hard if a required config-service is unreachable —
+    # close config_http first so the aborting boot doesn't leak it.
+    try:
+        resolution = await _resolve_registry_backend(settings, config_http)
+    except BaseException:
+        await config_http.aclose()
+        raise
+    registry_client = resolution.provider
+    # Apply the effective coordination decision at one explicit point. The
+    # coordination client reads settings.coordination_check_enabled live, so
+    # this takes effect for the gate even though the client predates this line.
+    settings.coordination_check_enabled = resolution.coordination_enabled
+    device_manager = DeviceManager(settings)
+    device_controller = DeviceController(
+        settings, coordination_client, registry_client, device_manager
+    )
     pv_monitor = PVMonitorManager(settings)
     ws_manager = WebSocketManager(
         pv_monitor=pv_monitor,
@@ -119,17 +328,32 @@ async def lifespan(app: FastAPI):
         device_controller=device_controller,
         settings=settings,
     )
+    # Image-streaming sockets (finch camera-socket / tiff-socket). Read-only
+    # EPICS monitors with their own raw-numpy path — see ImageStreamManager.
+    # registry_client gives them the same PV-existence gate as the other sockets.
+    camera_ws_manager = ImageStreamManager(
+        settings=settings, kind="camera", registry_client=registry_client
+    )
+    tiff_ws_manager = ImageStreamManager(
+        settings=settings, kind="tiff", registry_client=registry_client
+    )
 
     app.state.settings = settings
     app.state.coordination_client = coordination_client
     app.state.device_controller = device_controller
+    app.state.device_manager = device_manager
     app.state.registry_client = registry_client
     app.state.config_http = config_http
     app.state.pv_monitor = pv_monitor
     app.state.ws_manager = ws_manager
     app.state.device_ws_manager = device_ws_manager
+    app.state.camera_ws_manager = camera_ws_manager
+    app.state.tiff_ws_manager = tiff_ws_manager
     app.state.ophyd_cache = OphydDeviceCache()
     app.state.pv_health_reporter = PVHealthReporter(config_http)
+    # The resolved registry backend ("http" | "file"). Surfaced by /health and
+    # /api/v1/stats so the running mode (incl. auto's choice) is always visible.
+    app.state.effective_registry_backend = resolution.effective_backend
 
     logger.info(
         "Service initialized",
@@ -147,11 +371,21 @@ async def lifespan(app: FastAPI):
         # shutdown indefinitely.
         await app.state.pv_health_reporter.drain(timeout=5.0)
         await ws_manager.close_all()
+        await camera_ws_manager.close_all()
+        await tiff_ws_manager.close_all()
         await device_ws_manager.cleanup()
+        # Destroy live control devices so classic-ophyd CA channels are
+        # released before the loop goes away.
+        await device_manager.cleanup()
         await coordination_client.cleanup()
         await registry_client.cleanup()
         await config_http.aclose()
         await pv_monitor.cleanup()
+        # ophyd_cache is created on startup but, unlike the resources above, was
+        # the one with no shutdown teardown — drop its cached devices so their
+        # EPICS CA channels are released (pyepics tears them down on the next GC
+        # pass) instead of lingering past a graceful shutdown / reload.
+        app.state.ophyd_cache.clear()
         logger.info("Service shut down")
 
 
@@ -210,6 +444,21 @@ def get_ophyd_cache() -> OphydDeviceCache:
 
 def get_pv_health_reporter() -> PVHealthReporter:
     return app.state.pv_health_reporter
+
+
+def get_effective_registry_backend() -> str:
+    """The resolved registry backend ("http" | "file"). ``getattr`` default
+    covers fixtures that don't run lifespan."""
+    return getattr(app.state, "effective_registry_backend", "http")
+
+
+def require_writable(settings: Settings = Depends(get_settings)) -> None:
+    """Reject the request with 403 when the deployment is read-only.
+
+    Applied to every control/write REST endpoint. The WebSocket set/stop
+    handlers enforce the same gate inline."""
+    if settings.global_read_only:
+        raise HTTPException(status_code=403, detail=READ_ONLY_MESSAGE)
 
 
 # ----- PV value response builder (tiled-style content negotiation) -----
@@ -369,32 +618,54 @@ def _raise_http_for_device_unavailable(
     raise HTTPException(status_code=423, detail=str(exc))
 
 
-def _raise_http_501_not_implemented(
-    exc: NotImplementedError,
-    event: str,
+# Device-control client errors → HTTP status. These are typed refusals from
+# the controller/driver layer, distinct from the coord-gate (409/423) and
+# from real execution failures (500).
+_DEVICE_CONTROL_CLIENT_ERRORS = (
+    MethodNotAllowedError,
+    ComponentNotFoundError,
+    DeviceNotInstantiableError,
+)
+
+
+def _raise_http_for_control_client_error(
+    exc: Exception,
+    event_prefix: str,
     **log_fields: Any,
 ) -> None:
-    """Translate a placeholder ``NotImplementedError`` into a clear 501.
+    """Map a typed device-control refusal to its HTTP status.
 
-    Per the no-silent-fallbacks audit, device-method endpoints whose
-    underlying ophyd integration isn't done must surface 501 with the
-    exception's message rather than 200 OK with ``success=False``.
+    400: method outside the allowlist / unsupported on the target object.
+    404: nested component path doesn't exist on the live device.
+    422: device has no instantiation spec (or it's inactive) — device-level
+         control isn't possible until the registry entry carries class info.
     """
-    logger.warning(event, error=str(exc), **log_fields)
-    raise HTTPException(status_code=501, detail=str(exc))
+    if isinstance(exc, MethodNotAllowedError):
+        status_code = 400
+    elif isinstance(exc, ComponentNotFoundError):
+        status_code = 404
+    else:
+        status_code = 422
+    logger.warning(f"{event_prefix}_rejected", error=str(exc), **log_fields)
+    raise HTTPException(status_code=status_code, detail=str(exc))
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check(
+    settings: Settings = Depends(get_settings),
     coordination_client: CoordinationService = Depends(get_coordination_client),
     pv_monitor: PVMonitor = Depends(get_pv_monitor),
     ws_manager=Depends(get_ws_manager),
+    registry_backend: str = Depends(get_effective_registry_backend),
 ):
     """Combined health check: coordination availability and monitoring stats.
 
-    Returns 503 when configuration_service is unreachable so LB readiness
-    probes can route away. ``coordination_service_detail`` carries the
-    structured reason (timeout / connect-refused / non-2xx).
+    Returns 503 when a REQUIRED configuration_service (http backend) is
+    unreachable so LB readiness probes can route away;
+    ``coordination_service_detail`` carries the structured reason. In
+    file/standalone mode there is no config-service requirement, so the node is
+    healthy. ``registry_backend`` and ``read_only`` report the running mode so
+    a file-backed or read-only deployment is always visible, never silent.
     """
     coord = await coordination_client.is_service_available()
     stats = ws_manager.get_stats()
@@ -404,6 +675,8 @@ async def health_check(
         timestamp=datetime.now(),
         coordination_service_available=coord.available,
         coordination_service_detail=coord.detail,
+        registry_backend=registry_backend,
+        read_only=settings.global_read_only,
         active_subscriptions=len(pv_monitor.get_connected_pvs()),
         connected_pvs=stats["connected_pvs"],
         websocket_connections=stats["active_connections"],
@@ -419,6 +692,7 @@ async def get_stats(
     coordination_client: CoordinationService = Depends(get_coordination_client),
     ws_manager=Depends(get_ws_manager),
     device_ws_manager=Depends(get_device_ws_manager),
+    registry_backend: str = Depends(get_effective_registry_backend),
 ):
     coord = await coordination_client.is_service_available()
     pv_stats = ws_manager.get_stats()
@@ -427,6 +701,8 @@ async def get_stats(
     return {
         "service": "direct_control",
         "timestamp": datetime.now().isoformat(),
+        "registry_backend": registry_backend,
+        "read_only": settings.global_read_only,
         "coordination_enabled": settings.coordination_check_enabled,
         "coordination_service_available": coord.available,
         "coordination_service_detail": coord.detail,
@@ -441,12 +717,21 @@ async def get_stats(
             "subscribed_devices": device_stats["subscribed_devices"],
             "total_device_pvs": device_stats["total_device_pvs"],
         },
+        "device_control": {
+            "instantiated_devices": (
+                app.state.device_manager.size() if hasattr(app.state, "device_manager") else 0
+            ),
+        },
         "buffer_size": settings.pv_buffer_size,
         "max_connections": settings.ws_max_connections,
     }
 
 
-@app.post("/api/v1/pv/set", response_model=PVSetResponse)
+@app.post(
+    "/api/v1/pv/set",
+    response_model=PVSetResponse,
+    dependencies=[Depends(require_writable)],
+)
 async def set_pv(
     request: PVSetRequest,
     device_controller: DeviceControl = Depends(get_device_controller),
@@ -528,7 +813,11 @@ def _batch_failure_result(
     )
 
 
-@app.post("/api/v1/pv/set/batch", response_model=PVSetBatchResponse)
+@app.post(
+    "/api/v1/pv/set/batch",
+    response_model=PVSetBatchResponse,
+    dependencies=[Depends(require_writable)],
+)
 async def set_pv_batch(
     request: PVSetBatchRequest,
     device_controller: DeviceControl = Depends(get_device_controller),
@@ -560,9 +849,7 @@ async def set_pv_batch(
         try:
             await registry_client.validate_pv(item.pv_name)
         except RegistryValidationError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 404, coordination_checked=False)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 404, coordination_checked=False))
             logger.warning(
                 "pv_set_batch_registry_invalid",
                 pv_name=item.pv_name,
@@ -570,9 +857,7 @@ async def set_pv_batch(
             )
             break
         except RuntimeError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 503, coordination_checked=False)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 503, coordination_checked=False))
             logger.warning(
                 "pv_set_batch_registry_unavailable",
                 pv_name=item.pv_name,
@@ -583,9 +868,7 @@ async def set_pv_batch(
         try:
             resp = await device_controller.set_pv(item)
         except DeviceDisabledError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 409, coordination_checked=True)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 409, coordination_checked=True))
             logger.warning(
                 "pv_set_batch_device_disabled",
                 pv_name=item.pv_name,
@@ -593,9 +876,7 @@ async def set_pv_batch(
             )
             break
         except DeviceLockedError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 423, coordination_checked=True)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 423, coordination_checked=True))
             logger.warning(
                 "pv_set_batch_device_locked",
                 pv_name=item.pv_name,
@@ -603,9 +884,7 @@ async def set_pv_batch(
             )
             break
         except CoordinationCheckError as e:
-            results.append(
-                _batch_failure_result(item.pv_name, e, 503, coordination_checked=True)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 503, coordination_checked=True))
             logger.error(
                 "pv_set_batch_coordination_failed",
                 pv_name=item.pv_name,
@@ -617,9 +896,7 @@ async def set_pv_batch(
             # Past the coord gate — this is a real PV-health event
             # (typically a pyepics CA timeout or rejected put).
             pv_health_reporter.report(item.pv_name, success=False, message=str(e))
-            results.append(
-                _batch_failure_result(item.pv_name, e, 500, coordination_checked=True)
-            )
+            results.append(_batch_failure_result(item.pv_name, e, 500, coordination_checked=True))
             logger.error(
                 "pv_set_batch_item_error",
                 pv_name=item.pv_name,
@@ -691,7 +968,7 @@ def _extract_pv_name(leaf) -> Optional[str]:
         pv = str(source)
         for scheme in _SIGNAL_SOURCE_SCHEMES:
             if pv.startswith(scheme):
-                return pv[len(scheme):]
+                return pv[len(scheme) :]
         return pv
     return None
 
@@ -935,17 +1212,25 @@ async def get_connected_pvs(pv_monitor: PVMonitor = Depends(get_pv_monitor)):
     return pv_monitor.get_connected_pvs()
 
 
-@app.post("/api/v1/device/execute", response_model=DeviceCommandResponse)
+@app.post(
+    "/api/v1/device/execute",
+    response_model=DeviceCommandResponse,
+    dependencies=[Depends(require_writable)],
+)
 async def execute_device_method(
     request: DeviceCommandRequest,
     device_controller: DeviceControl = Depends(get_device_controller),
     registry_client: RegistryClient = Depends(get_registry_client),
 ):
     """
-    Execute Ophyd device method with coordination check (High Fidelity Channel).
+    Execute an ophyd / ophyd-async device method with coordination check
+    (High Fidelity Channel).
 
-    Always returns a confirmed result. Use when confirmation is required.
-    Raises 404/423/503/500 on various failure modes.
+    The device is instantiated live from its registry instantiation spec;
+    Status completion is awaited unless ``use_put=true``. Raises
+    400 (method not allowed) / 404 (device not in registry) /
+    409/423 (disabled/locked) / 422 (no instantiation spec) /
+    503 (registry or coordination unavailable) / 500 (execution failure).
     """
     try:
         await registry_client.validate_device(request.device_name)
@@ -961,10 +1246,11 @@ async def execute_device_method(
     except CoordinationCheckError as e:
         logger.error("coordination_check_failed", device_name=request.device_name, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
-    except NotImplementedError as e:
-        _raise_http_501_not_implemented(
-            e, "device_method_not_implemented", device_name=request.device_name
-        )
+    except _DEVICE_CONTROL_CLIENT_ERRORS as e:
+        _raise_http_for_control_client_error(e, "device_method", device_name=request.device_name)
+    except RuntimeError as e:
+        # Registry spec lookup hit an unreachable/erroring backend.
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error(
             "device_command_error",
@@ -975,7 +1261,11 @@ async def execute_device_method(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/device/{device_name}/stop", response_model=DeviceCommandResponse)
+@app.post(
+    "/api/v1/device/{device_name}/stop",
+    response_model=DeviceCommandResponse,
+    dependencies=[Depends(require_writable)],
+)
 async def stop_device(
     device_name: str,
     device_controller: DeviceControl = Depends(get_device_controller),
@@ -998,8 +1288,10 @@ async def stop_device(
     except CoordinationCheckError as e:
         logger.error("coordination_check_failed", device_name=device_name, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
-    except NotImplementedError as e:
-        _raise_http_501_not_implemented(e, "device_stop_not_implemented", device_name=device_name)
+    except _DEVICE_CONTROL_CLIENT_ERRORS as e:
+        _raise_http_for_control_client_error(e, "device_stop", device_name=device_name)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error("device_stop_error", device_name=device_name, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1009,25 +1301,33 @@ async def stop_device(
 async def access_nested_device(
     device_path: str,
     request: Optional[NestedDeviceRequest] = None,
+    settings: Settings = Depends(get_settings),
     device_controller: DeviceControl = Depends(get_device_controller),
     registry_client: RegistryClient = Depends(get_registry_client),
 ):
     """
     Access nested device component (e.g. motor1.user_readback).
 
-    Coordination-checked for writes; 404/423/503/500 on failure modes.
+    Reads are always allowed; write methods are coordination-checked and
+    rejected with 403 in read-only mode. 404/423/503/500 on failure modes.
     """
     device_name = device_path.split(".")[0]
+
+    method = request.method if request else "read"
+    value = request.value if request else None
+    timeout = request.timeout if request else None
+
+    # Read-only gate: only the write methods are blocked; component reads stay
+    # available for monitoring. (Mirrors device_controller's write-method set.)
+    if settings.global_read_only and method in ("set", "put", "trigger", "stop"):
+        raise HTTPException(status_code=403, detail=READ_ONLY_MESSAGE)
+
     try:
         await registry_client.validate_device(device_name)
     except RegistryValidationError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
-
-    method = request.method if request else "read"
-    value = request.value if request else None
-    timeout = request.timeout if request else None
 
     try:
         result = await device_controller.access_nested_device(
@@ -1046,10 +1346,10 @@ async def access_nested_device(
     except CoordinationCheckError as e:
         logger.error("coordination_check_failed", device_path=device_path, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
-    except NotImplementedError as e:
-        _raise_http_501_not_implemented(
-            e, "nested_device_not_implemented", device_path=device_path
-        )
+    except _DEVICE_CONTROL_CLIENT_ERRORS as e:
+        _raise_http_for_control_client_error(e, "nested_device", device_path=device_path)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error("nested_device_error", device_path=device_path, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1079,10 +1379,10 @@ async def get_nested_device_value(
             "value": value,
             "timestamp": datetime.now().isoformat(),
         }
-    except NotImplementedError as e:
-        _raise_http_501_not_implemented(
-            e, "nested_device_read_not_implemented", device_path=device_path
-        )
+    except _DEVICE_CONTROL_CLIENT_ERRORS as e:
+        _raise_http_for_control_client_error(e, "nested_device_read", device_path=device_path)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error("nested_device_read_error", device_path=device_path, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
@@ -1098,6 +1398,18 @@ async def websocket_pv_socket(websocket: WebSocket):
 async def websocket_device_socket(websocket: WebSocket):
     """Device-level monitoring WebSocket — finch `ophydSocketDevicePath`."""
     await app.state.device_ws_manager.handle_client(websocket)
+
+
+@app.websocket("/api/v1/camera-socket")
+async def websocket_camera_socket(websocket: WebSocket):
+    """AreaDetector image streaming WebSocket — finch `ophydSocketCameraPath`."""
+    await app.state.camera_ws_manager.handle_client(websocket)
+
+
+@app.websocket("/api/v1/tiff-socket")
+async def websocket_tiff_socket(websocket: WebSocket):
+    """TIFF-detector image streaming WebSocket — finch `ophydSocketTIFFPath`."""
+    await app.state.tiff_ws_manager.handle_client(websocket)
 
 
 def create_app() -> FastAPI:

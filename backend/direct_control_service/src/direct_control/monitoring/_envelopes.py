@@ -10,7 +10,7 @@ import asyncio
 import concurrent.futures
 import json
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 import structlog
 from fastapi import WebSocket
@@ -109,6 +109,22 @@ class LockedWS:
                 async with asyncio.timeout(self._send_timeout):
                     await self._ws.send_text(data)
 
+    async def send_bytes(self, data: bytes) -> None:
+        """Send a binary frame through the same serialized, size-capped path.
+
+        Used by the image-streaming sockets (camera/tiff) for JPEG/WebP
+        frames. Shares ``_send_lock`` with ``send_text``/``send_json`` so a
+        broadcast, a heartbeat, and a frame can't interleave at the ASGI
+        layer, and enforces the same byte cap before the frame hits the wire.
+        """
+        self._raise_if_over_limit(len(data))
+        async with self._send_lock:
+            if self._send_timeout is None:
+                await self._ws.send_bytes(data)
+            else:
+                async with asyncio.timeout(self._send_timeout):
+                    await self._ws.send_bytes(data)
+
     def _check_size(self, text: str) -> None:
         limit = self._max_message_bytes
         if limit is None:
@@ -120,8 +136,11 @@ class LockedWS:
         n = len(text)
         if n * 4 <= limit:
             return
-        size = len(text.encode("utf-8"))
-        if size > limit:
+        self._raise_if_over_limit(len(text.encode("utf-8")))
+
+    def _raise_if_over_limit(self, size: int) -> None:
+        limit = self._max_message_bytes
+        if limit is not None and size > limit:
             raise WebSocketResponseTooLarge(
                 f"WS message size {size} bytes exceeds "
                 f"DIRECT_CONTROL_RESPONSE_BYTESIZE_LIMIT ({limit}). "
@@ -195,9 +214,9 @@ async def fanout_error(
             )
 
 
-async def send_payload_or_size_error(
+async def _send_or_translate_failure(
     ws: "LockedWS",
-    payload: Any,
+    send: Callable[[], Awaitable[None]],
     *,
     log_event: str,
     log_fields: dict,
@@ -205,12 +224,13 @@ async def send_payload_or_size_error(
     error_envelope_fields: dict,
     notify_on_generic_exception: bool = False,
 ) -> None:
-    """Send ``payload`` through the size-cap-aware ``LockedWS`` and translate
-    failures into either a structured error envelope or a log line.
+    """Run ``send`` and translate any failure into a log line and/or a
+    structured error envelope. Shared by the JSON and binary send helpers
+    so the failure-handling contract lives in one place.
 
     Three failure paths are unified here:
-    - ``TimeoutError``: log a warning. Connection is likely wedged; one
-      missed update is acceptable and the next send will close it.
+    - ``TimeoutError``: log a warning. The client is wedged; one missed
+      update/frame is acceptable and the connection stays alive.
     - ``WebSocketResponseTooLarge``: log + emit a ``send_error`` envelope
       so the client knows their update was dropped (per the finch
       no-silent-fallbacks contract).
@@ -219,12 +239,9 @@ async def send_payload_or_size_error(
       where losing the message silently is harmful (e.g. ``meta`` on
       subscribe); leave false for per-update fan-outs where the next
       tick recovers and notifying every drop would amplify noise.
-
-    Re-uses ``send_error`` for the structured envelope so the field-name
-    contract (``error`` not ``message``) lives in one place.
     """
     try:
-        await ws.send_json(payload)
+        await send()
         return
     except TimeoutError:
         logger.warning(f"{log_event}_timeout", **log_fields)
@@ -246,6 +263,80 @@ async def send_payload_or_size_error(
             error=str(inner_err),
             **log_fields,
         )
+
+
+async def send_payload_or_size_error(
+    ws: "LockedWS",
+    payload: Any,
+    *,
+    log_event: str,
+    log_fields: dict,
+    oversize_message: str,
+    error_envelope_fields: dict,
+    notify_on_generic_exception: bool = False,
+) -> None:
+    """Send a JSON ``payload`` through the size-cap-aware ``LockedWS``,
+    translating failures via :func:`_send_or_translate_failure`.
+
+    Re-uses ``send_error`` for the structured envelope so the field-name
+    contract (``error`` not ``message``) lives in one place.
+    """
+    await _send_or_translate_failure(
+        ws,
+        lambda: ws.send_json(payload),
+        log_event=log_event,
+        log_fields=log_fields,
+        oversize_message=oversize_message,
+        error_envelope_fields=error_envelope_fields,
+        notify_on_generic_exception=notify_on_generic_exception,
+    )
+
+
+async def send_bytes_or_size_error(
+    ws: "LockedWS",
+    data: bytes,
+    *,
+    log_event: str,
+    log_fields: dict,
+    oversize_message: str,
+    error_envelope_fields: dict,
+    notify_on_generic_exception: bool = False,
+) -> None:
+    """Binary parallel of :func:`send_payload_or_size_error` for image
+    frames. A slow-client ``TimeoutError`` drops the single frame (the
+    stream stays up and the next frame recovers — this is what makes the
+    drop-oldest queue's backpressure actually hold); an oversize frame
+    emits a structured error envelope instead of silently dying.
+    """
+    await _send_or_translate_failure(
+        ws,
+        lambda: ws.send_bytes(data),
+        log_event=log_event,
+        log_fields=log_fields,
+        oversize_message=oversize_message,
+        error_envelope_fields=error_envelope_fields,
+        notify_on_generic_exception=notify_on_generic_exception,
+    )
+
+
+async def close_connections(
+    sockets: "list[LockedWS]",
+    *,
+    code: int = 1001,
+    reason: str = "Service shutting down",
+) -> None:
+    """Close a pre-snapshotted list of connections on shutdown.
+
+    Per-socket errors are swallowed so one wedged client can't block the
+    others from closing. Callers snapshot ``self._connections.values()``
+    under their own lock and clear the registry before calling this, so the
+    close I/O runs outside the lock.
+    """
+    for ws in sockets:
+        try:
+            await ws.close(code=code, reason=reason)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def heartbeat_loop(ws: WebSocket, interval: float) -> None:

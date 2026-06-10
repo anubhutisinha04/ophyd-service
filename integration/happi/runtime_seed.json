@@ -21,7 +21,8 @@
       "ioc_random_walk_h": {"prefix": "random_walk:horiz-", "pvs": ["random_walk:horiz-dt", "random_walk:horiz-x"]},
       "ioc_random_walk_v": {"prefix": "random_walk:vert-",  "pvs": ["random_walk:vert-dt", "random_walk:vert-x"]},
       "ioc_thermo":        {"prefix": "thermo:",            "pvs": ["thermo:I (RO)", "thermo:SP", "thermo:K", "thermo:omega", "thermo:Tvar"]},
-      "ioc_fake_motor":    {"prefix": "sim:",               "pvs": ["sim:mtr1 (motor record: .VAL .RBV .VELO .ACCL .STOP .DMOV .HLM .LLM ...)", "sim:mtr2", "sim:mtr3"]}
+      "ioc_fake_motor":    {"prefix": "sim:",               "pvs": ["sim:mtr1 (motor record: .VAL .RBV .VELO .ACCL .STOP .DMOV .HLM .LLM ...)", "sim:mtr2", "sim:mtr3"]},
+      "ioc_adsim":         {"prefix": "13SIM1:",            "pvs": ["13SIM1:image1:ArrayData (live frame)", "13SIM1:cam1:SizeX/SizeY/MinX/MinY/ColorMode/DataType", "13SIM1:cam1:Acquire/AcquireTime"]}
     },
     "notes": [
       "metadata.name and instantiation_spec.name MUST match (server returns 400 otherwise).",
@@ -130,6 +131,38 @@
         "device_class": "localdevs.Thermo",
         "args": ["thermo:"],
         "kwargs": {"name": "thermo"},
+        "active": true
+      }
+    },
+
+    "cam": {
+      "metadata": {
+        "name": "cam",
+        "device_label": "detector",
+        "ophyd_class": "ADSimDetector",
+        "module": "localdevs",
+        "is_readable": true,
+        "is_subscribable": true,
+        "pvs": {
+          "image":        "13SIM1:image1:ArrayData",
+          "array_counter":"13SIM1:image1:ArrayCounter_RBV",
+          "min_x":        "13SIM1:cam1:MinX",
+          "min_y":        "13SIM1:cam1:MinY",
+          "size_x":       "13SIM1:cam1:SizeX",
+          "size_y":       "13SIM1:cam1:SizeY",
+          "color_mode":   "13SIM1:cam1:ColorMode",
+          "data_type":    "13SIM1:cam1:DataType",
+          "acquire":      "13SIM1:cam1:Acquire",
+          "acquire_time": "13SIM1:cam1:AcquireTime"
+        },
+        "labels": ["detector", "camera"],
+        "documentation": "Simulated AreaDetector at 13SIM1: (ioc_adsim) — live Mono/UInt8 image1:ArrayData plus cam1 region/format settings, for the camera-socket / tiff-socket."
+      },
+      "instantiation_spec": {
+        "name": "cam",
+        "device_class": "localdevs.ADSimDetector",
+        "args": ["13SIM1:"],
+        "kwargs": {"name": "cam"},
         "active": true
       }
     }
