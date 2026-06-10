@@ -163,13 +163,18 @@ class WebSocketManager:
                 logger.error("pv_subscription_failed", pv_name=pv_name, error=str(e))
                 async with self._lock:
                     self._pv_callbacks.pop(pv_name, None)
-                    self._pv_clients.pop(pv_name, None)
-                    # Roll back the speculative add to the client's subscription
-                    # set; otherwise a never-subscribed PV counts toward the
-                    # per-client cap and later refresh/unsubscribe paths treat
-                    # the client as actually subscribed.
-                    if client_id in self._subscriptions:
-                        self._subscriptions[client_id].discard(pv_name)
+                    # Roll back EVERY client in this PV's set — not just the
+                    # one that initiated the EPICS subscribe. A second client
+                    # that joined while the subscribe was in flight piggybacks
+                    # on this attempt; popping only the set while leaving its
+                    # _subscriptions entry gave it a phantom subscription
+                    # (counted toward its cap, never delivered, never torn
+                    # down). Cleared everywhere, a later resubscribe retries
+                    # the EPICS connection cleanly for any of them.
+                    affected = self._pv_clients.pop(pv_name, set())
+                    for affected_id in affected:
+                        if affected_id in self._subscriptions:
+                            self._subscriptions[affected_id].discard(pv_name)
 
         # Send current values in parallel. Read the connection once so the
         # per-PV value+meta sends don't reacquire the manager lock 2N times.
