@@ -20,6 +20,7 @@ from .models import (
     DeviceCommandResponse,
     CommandMode,
     ControlError,
+    CoordinationCheckError,
     DeviceLockedError,
     DeviceDisabledError,
     DeviceLockStatus,
@@ -147,7 +148,17 @@ class DeviceController:
         # without a device owner (standalone) fall back to the PV name —
         # configuration_service will return 404 for those, and the
         # coordination check treats that as "no lock concept, available".
-        coord_target = (await self.registry_client.get_owning_device(pv_name)) or pv_name
+        # A registry FAILURE during this lookup is part of the coordination
+        # gate: fail closed (503), never fall through as "standalone" — that
+        # would bypass the device-lock gate exactly when the lock authority
+        # is unhealthy.
+        try:
+            owner = await self.registry_client.get_owning_device(pv_name)
+        except RuntimeError as e:
+            raise CoordinationCheckError(
+                f"Cannot determine owning device for PV {pv_name!r}: {e}"
+            ) from e
+        coord_target = owner or pv_name
         coord_status = await self.coordination.check_device_available(coord_target)
         self._raise_for_unavailable(coord_target, "device_name", coord_status)
 
