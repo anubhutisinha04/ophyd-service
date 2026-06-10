@@ -673,6 +673,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         Returns append-only history of all device mutations (seed, add,
         update, delete, reset). Use device_name to filter to a specific device.
         """
+        # PostgreSQL text fields cannot contain NUL — without this guard a
+        # \x00 in the filter reaches the driver and 500s (backend-dependent:
+        # SQLite tolerates it). Reject loudly instead.
+        if device_name is not None and "\x00" in device_name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="device_name must not contain NUL (0x00) characters",
+            )
         return registry_store.get_audit_log(device_name=device_name, limit=limit)
 
     @app.get(
