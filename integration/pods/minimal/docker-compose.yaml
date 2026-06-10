@@ -79,6 +79,12 @@ services:
       # pyepics: point CA search at the compose-network IOC only.
       EPICS_CA_ADDR_LIST: ioc
       EPICS_CA_AUTO_ADDR_LIST: "NO"
+      # Device-level control (/api/v1/device/execute) instantiates the
+      # registry's device classes in THIS container; the happi DB references
+      # compound classes localdevs.Det / localdevs.Spot.
+      PYTHONPATH: "/localdevs"
+    volumes:
+      - ../../localdevs:/localdevs:ro
     ports:
       - "8003:8003"
     depends_on:

@@ -88,32 +88,73 @@ fi
 status=$(req POST "${DIRECT_URL}/api/v1/pv/set" "{\"pv_name\":\"mini:dot:mtrx\",\"value\":${original}}")
 expect_success "$status" "restored mini:dot:mtrx to ${original}" 200
 
-# Unimplemented device operations surface as 501 Not Implemented to prevent
-# silent failures (e.g., /stop appearing to succeed when it doesn't actually do anything).
-# This requires full ophyd-device integration via the Configuration Service.
-step "Device-level operations"
+# Device-level operations are real: direct_control fetches the device's
+# instantiation spec from configuration_service, instantiates the class
+# (classic ophyd or ophyd-async, dispatched per device), connects it, and
+# runs the verb with Status completion awaited.
+step "Device-level operations (live ophyd devices)"
 
+# read on a signal-backed device (ophyd.signal.EpicsSignal)
 body='{"device_name":"beam_current","method":"read","args":[],"kwargs":{}}'
 status=$(req POST "${DIRECT_URL}/api/v1/device/execute" "$body")
-expect_status 501 "$status" "POST /api/v1/device/execute (requires ophyd integration)"
-pass "POST /api/v1/device/execute"
+expect_status 200 "$status" "POST /api/v1/device/execute beam_current read()"
+val=$(jq -r '.result.beam_current.value' < /tmp/exer_body)
+pass "device/execute beam_current read()  value=${val}"
 
+# device-level set → get round-trip (set waits for the ophyd Status)
+status=$(req POST "${DIRECT_URL}/api/v1/device/execute" '{"device_name":"motor_spotx","method":"get"}')
+expect_status 200 "$status" "device/execute motor_spotx get() (pre-write)"
+dev_original=$(jq -r '.result' < /tmp/exer_body)
+
+dev_target=1.25
+status=$(req POST "${DIRECT_URL}/api/v1/device/execute" "{\"device_name\":\"motor_spotx\",\"method\":\"set\",\"args\":[${dev_target}]}")
+expect_status 200 "$status" "device/execute motor_spotx set(${dev_target})"
+
+sleep 0.5
+status=$(req POST "${DIRECT_URL}/api/v1/device/execute" '{"device_name":"motor_spotx","method":"get"}')
+expect_status 200 "$status" "device/execute motor_spotx get() (readback)"
+dev_observed=$(jq -r '.result' < /tmp/exer_body)
+
+if awk -v o="$dev_observed" -v t="$dev_target" 'BEGIN{exit !(o-t <= 0.01 && t-o <= 0.01)}'; then
+    pass "device-level readback observed=${dev_observed} within tolerance of ${dev_target}"
+else
+    fail "device-level readback observed=${dev_observed} != target=${dev_target}"
+fi
+
+status=$(req POST "${DIRECT_URL}/api/v1/device/execute" "{\"device_name\":\"motor_spotx\",\"method\":\"set\",\"args\":[${dev_original}]}")
+expect_status 200 "$status" "restored motor_spotx to ${dev_original}"
+
+# compound device (localdevs.Det): device-level read + nested component access.
+# Requires the localdevs mount on direct_control_service (see the pod compose).
+status=$(req POST "${DIRECT_URL}/api/v1/device/execute" '{"device_name":"pinhole","method":"read"}')
+expect_status 200 "$status" "device/execute pinhole read() (compound device)"
+pass "device/execute pinhole read()  keys=$(jq -r '.result | keys | join(",")' < /tmp/exer_body)"
+
+status=$(req POST "${DIRECT_URL}/api/v1/device/pinhole.exp" '{"method":"get"}')
+expect_status 200 "$status" "POST /api/v1/device/pinhole.exp get (nested component)"
+pass "device/pinhole.exp get  value=$(jq -r '.result' < /tmp/exer_body)"
+
+status=$(req GET "${DIRECT_URL}/api/v1/device/pinhole.det/value")
+expect_status 200 "$status" "GET /api/v1/device/pinhole.det/value"
+pass "/api/v1/device/pinhole.det/value"
+
+step "Device-level refusals (typed, never silent)"
+
+# stop on a bare signal: 'stop' is an allowlisted verb but EpicsSignal
+# doesn't implement it → 400, not a fake success
 status=$(req POST "${DIRECT_URL}/api/v1/device/beam_current/stop")
-expect_status 501 "$status" "POST /api/v1/device/beam_current/stop (requires ophyd integration)"
-pass "POST /api/v1/device/beam_current/stop"
+expect_status 400 "$status" "POST /api/v1/device/beam_current/stop (Signal has no stop)"
+pass "stop on a signal device → 400 (does not support)"
 
-status=$(req POST "${DIRECT_URL}/api/v1/device/beam_current.readback" '{"method":"read"}')
-expect_status 501 "$status" "POST /api/v1/device/beam_current.readback (requires ophyd integration)"
-pass "POST /api/v1/device/beam_current.readback (nested component)"
+# arbitrary method names are rejected by the allowlist
+status=$(req POST "${DIRECT_URL}/api/v1/device/execute" '{"device_name":"beam_current","method":"destroy"}')
+expect_status 400 "$status" "device/execute method=destroy (outside allowlist)"
+pass "non-allowlisted method → 400"
 
-step "Device-path form"
-
-status=$(req GET "${DIRECT_URL}/api/v1/device/spot.roi/value")
-case "$status" in
-    200) pass "/api/v1/device/spot.roi/value" ;;
-    404) note "/api/v1/device/spot.roi → 404 (components not exposed via device-path yet; compound-leaf must be read as PV directly)" ;;
-    *) note "/api/v1/device/spot.roi/value  HTTP $status" ;;
-esac
+# unknown nested component on a live device
+status=$(req POST "${DIRECT_URL}/api/v1/device/pinhole.no_such_signal" '{"method":"read"}')
+expect_status 404 "$status" "device/pinhole.no_such_signal (unknown component)"
+pass "unknown nested component → 404"
 
 # ─── Error cases ─────────────────────────────────────────────────────────
 step "Error handling"

@@ -144,6 +144,12 @@ services:
       # search requests from leaving the docker net.
       EPICS_CA_ADDR_LIST: "ioc ioc_random_walk ioc_random_walk_h ioc_random_walk_v ioc_thermo ioc_fake_motor ioc_adsim"
       EPICS_CA_AUTO_ADDR_LIST: "NO"
+      # Device-level control (/api/v1/device/execute) instantiates the
+      # registry's device classes in THIS container; the happi DB references
+      # compound classes localdevs.Det / localdevs.Spot.
+      PYTHONPATH: "/localdevs"
+    volumes:
+      - ../../localdevs:/localdevs:ro
     ports:
       - "8003:8003"
     depends_on:

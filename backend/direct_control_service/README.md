@@ -7,8 +7,8 @@ monitoring via WebSocket, running on a single port.
 
 - **A4 Device Coordination**: Checks the device-lock state in `configuration_service` before any write; returns `423 Locked` if a plan holds the device.
 - **PV Control**: Low-fidelity channel for EPICS PV set/get (fire-and-forget or put-completion).
-- **Device Method Execution**: High-fidelity channel for Ophyd device methods, always confirmed.
-- **Nested Device Access**: Navigate device component hierarchies (ophyd-websocket compatible).
+- **Device Method Execution**: High-fidelity channel — instantiates the registry's device class as a live ophyd object and runs the verb with Status completion awaited. Supports **both classic ophyd and ophyd-async** device classes, dispatched per device by framework detection.
+- **Nested Device Access**: Navigate live device component hierarchies (ophyd-websocket compatible).
 - **EPICS PV Monitoring**: Channel Access + PVAccess subscriptions via ophyd (pyepics, p4p).
 - **WebSocket Streaming**: Real-time PV and device updates; writes route through coordination.
 - **ophyd-websocket compatible**: `pv-socket`, `device-socket`, `control-socket` endpoints.
@@ -61,6 +61,7 @@ locks via `POST /api/v1/devices/lock`; direct_control reads them via
 |------------|-----------|---------|
 | `configuration_service` | `/api/v1/devices/{name}`, `/api/v1/pvs` | Device + PV registry |
 | `configuration_service` | `/api/v1/devices/{name}/status` | A4 device lock status (read-only) |
+| `configuration_service` | `/api/v1/devices/{name}/instantiation` | Instantiation spec (class path + ctor args) for device-level control |
 
 ## Configuration
 
@@ -75,6 +76,10 @@ All settings use the `DIRECT_CONTROL_` environment variable prefix.
 | `DIRECT_CONTROL_COORDINATION_CHECK_ENABLED` | `true` | Enable A4 coordination checks |
 | `DIRECT_CONTROL_COORDINATION_TIMEOUT` | `5.0` | Coordination check timeout (s) |
 | `DIRECT_CONTROL_COMMAND_TIMEOUT` | `30.0` | Command execution timeout (s) |
+| `DIRECT_CONTROL_DEVICE_CONNECT_TIMEOUT` | `10.0` | Connect timeout (s) when instantiating a live device for device-level control |
+| `DIRECT_CONTROL_GLOBAL_READ_ONLY` | `true` | Monitor-only by default: all control/write operations return 403 until set to `false` |
+| `DIRECT_CONTROL_REGISTRY_BACKEND` | `http` | `http` (configuration_service) \| `file` (standalone, local registry file) \| `auto` |
+| `DIRECT_CONTROL_REGISTRY_FILE_PATH` | — | Registry file path; required for `file`, optional fallback for `auto` |
 | `DIRECT_CONTROL_WS_MAX_CONNECTIONS` | `100` | Max WebSocket connections |
 | `DIRECT_CONTROL_WS_HEARTBEAT_INTERVAL` | `30` | Heartbeat interval (s) |
 | `DIRECT_CONTROL_WS_MESSAGE_QUEUE_SIZE` | `1000` | Message queue size |
@@ -178,8 +183,47 @@ Binary mode (`Accept: application/octet-stream` or `?format=binary`):
 ### Device Control (High Fidelity, coordination-checked)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/device/execute` | Execute Ophyd device method |
-| POST | `/api/v1/device/{device_name}/stop` | Stop a device |
+| POST | `/api/v1/device/execute` | Execute a device method on a live ophyd / ophyd-async object |
+| POST | `/api/v1/device/{device_name}/stop` | Stop a device (`stop()` with completion) |
+
+The service instantiates the device from its registry **instantiation spec**
+(class path + constructor args), connects it (cached after first use), and
+runs the method via a framework-matched driver — classic ophyd (pyepics,
+`Status.wait` on a worker thread) or ophyd-async (aioca/p4p, awaited
+`AsyncStatus`) — detected per device from the imported class.
+
+Allowed methods: `set`, `put`, `get`, `read`, `describe`,
+`read_configuration`, `describe_configuration`, `trigger`, `stop`.
+`use_put=true` returns right after initiating a Status-returning method
+instead of awaiting completion.
+
+Status codes: `400` method outside the allowlist or unsupported by the
+device class · `404` device not in registry / unknown nested component ·
+`409` disabled · `422` device has no instantiation spec (device-level
+control unavailable; PV-level operations still work) · `423` locked by a
+plan · `503` registry unreachable.
+
+In standalone (`file`) registry mode, a device entry opts into device-level
+control by carrying class info:
+
+```json
+{
+  "devices": [
+    {
+      "name": "m1",
+      "pvs": ["BL01:M1.RBV"],
+      "device_class": "ophyd.EpicsMotor",
+      "args": ["BL01:M1"],
+      "kwargs": {},
+      "framework": "ophyd-sync"
+    }
+  ]
+}
+```
+
+`framework` (`ophyd-sync` | `ophyd-async`) is optional and advisory — the
+imported class is classified authoritatively, and a mismatching tag is a
+hard error. Entries without `device_class` stay PV-gateway-only.
 
 ### Device metadata
 Device metadata (the device list, per-device records, component trees) is **not**
