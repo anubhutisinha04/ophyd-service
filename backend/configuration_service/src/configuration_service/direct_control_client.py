@@ -129,15 +129,24 @@ class DirectControlClient:
                 f"results for {len(specs)} requests"
             )
 
-        return [
-            EnrichmentResult(
-                ok=row["ok"],
-                pv_name=row.get("pv_name"),
-                error_type=row.get("error_type"),
-                message=row.get("message"),
-            )
-            for row in rows
-        ]
+        # Row parsing sits under the same malformed-body contract as the
+        # envelope above: a row missing "ok" (or not a dict) must degrade to
+        # DirectControlUnavailable, not escape as a KeyError → 500.
+        try:
+            return [
+                EnrichmentResult(
+                    ok=row["ok"],
+                    pv_name=row.get("pv_name"),
+                    error_type=row.get("error_type"),
+                    message=row.get("message"),
+                )
+                for row in rows
+            ]
+        except (KeyError, TypeError, AttributeError) as e:
+            raise DirectControlUnavailable(
+                f"direct-control returned malformed result row: "
+                f"{type(e).__name__}: {e}"
+            ) from e
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -463,13 +463,21 @@ class DeviceRegistryStore:
         Sets a short timeout so a hung or slow/locked database surfaces as a fast
         /health failure instead of blocking the probe — which could otherwise
         trip a Kubernetes liveness probe and kill the pod. On PostgreSQL that's a
-        transaction-local ``statement_timeout`` (never leaks back to the pool);
-        on SQLite it's a connection-local ``busy_timeout`` that bounds the wait
-        on a write lock to ~2s instead of the 30s engine-wide busy-timeout.
+        transaction-local ``statement_timeout`` (never leaks back to the pool).
+        On SQLite ``busy_timeout`` is CONNECTION-scoped and the connection is
+        pooled, so the prior value is restored afterwards — otherwise one
+        /health probe would permanently drop that connection's write-lock wait
+        from the engine-configured 30s to 2s for every later checkout.
         """
         with self._engine.connect() as conn:
+            if conn.dialect.name == "sqlite":
+                prior = conn.exec_driver_sql("PRAGMA busy_timeout").scalar()
+                conn.exec_driver_sql("PRAGMA busy_timeout = 2000")
+                try:
+                    conn.execute(text("SELECT 1")).first()
+                finally:
+                    conn.exec_driver_sql(f"PRAGMA busy_timeout = {int(prior)}")
+                return
             if conn.dialect.name == "postgresql":
                 conn.execute(text("SET LOCAL statement_timeout = 2000"))
-            elif conn.dialect.name == "sqlite":
-                conn.execute(text("PRAGMA busy_timeout = 2000"))
             conn.execute(text("SELECT 1")).first()
