@@ -868,8 +868,10 @@ async def test_s8_failed_pv_subscribes_purged_from_bookkeeping():
     assert outcome.failed_pvs[0].signal == "bad_signal"
 
     # Bookkeeping must reflect the actual subscribed-vs-failed split.
-    assert "IOC:good" in mgr._pv_callbacks
-    assert "IOC:bad" not in mgr._pv_callbacks, (
+    # (_pv_callbacks is keyed by (device, pv) so shared PVs across devices
+    # keep independent callbacks — see test_monitoring_reliability.)
+    assert ("dev", "IOC:good") in mgr._pv_callbacks
+    assert ("dev", "IOC:bad") not in mgr._pv_callbacks, (
         "failed PV must be removed from _pv_callbacks (S8 regression)"
     )
     assert mgr._device_pvs["dev"] == {"good_signal": "IOC:good"}, (

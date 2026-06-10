@@ -124,6 +124,14 @@ class PVMonitorManager:
 
                 except Exception as e:
                     logger.error("pv_subscription_error", pv_name=pv_name, error=str(e))
+                    # Drop any bookkeeping registered before the failure — a
+                    # destroyed signal left in _signals would make every later
+                    # subscribe() for this PV attach callbacks to a dead
+                    # object and serve the stale cached value forever.
+                    self._signals.pop(pv_name, None)
+                    self._connection_status.pop(pv_name, None)
+                    self._latest_values.pop(pv_name, None)
+                    self._buffers.pop(pv_name, None)
                     if signal is not None:
                         try:
                             signal.destroy()
