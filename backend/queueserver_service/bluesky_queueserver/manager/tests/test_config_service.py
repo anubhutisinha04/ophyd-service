@@ -135,6 +135,37 @@ def test_disabled_settings_reject_client_construction():
         ConfigServiceClient(ConfigServiceSettings(enabled=False))
 
 
+def test_settings_lock_scope_defaults_to_environment():
+    s = ConfigServiceSettings.from_config_dict(
+        {"enabled": True, "url": "http://cs.test"}
+    )
+    assert s.lock_scope == "environment"
+
+
+def test_settings_lock_scope_plan():
+    s = ConfigServiceSettings.from_config_dict(
+        {"enabled": True, "url": "http://cs.test", "lock_scope": "plan"}
+    )
+    assert s.lock_scope == "plan"
+
+
+def test_settings_lock_scope_invalid_raises():
+    with pytest.raises(ValueError, match="lock_scope"):
+        ConfigServiceSettings.from_config_dict(
+            {"enabled": True, "url": "http://cs.test", "lock_scope": "device"}
+        )
+
+
+def test_settings_lock_scope_ignored_when_disabled():
+    # Disabled sections return defaults without validating tuning keys —
+    # lock_scope only matters when the integration is on.
+    s = ConfigServiceSettings.from_config_dict(
+        {"enabled": False, "lock_scope": "device"}
+    )
+    assert s.enabled is False
+    assert s.lock_scope == "environment"
+
+
 # ===== Happy-path wrappers =====
 
 
@@ -655,10 +686,19 @@ def _call_overlay_handler(
 
     class _Stub:
         re_state = "idle"
+        list_refresh_calls = 0
+
+        def _refresh_lists_from_nspace(self):
+            # The real implementation recomputes existing/allowed lists from
+            # the namespace; here we only record that the handler asked for
+            # the refresh after mutating the namespace.
+            self.list_refresh_calls += 1
+            return True
 
     stub = _Stub()
     stub._re_namespace = dict(namespace)
     stub._config_service_overlay_names = set(overlay_names)
+    stub._existing_plans_and_devices_changed = False
 
     real_instantiate = worker_mod.instantiate_device_from_spec
     worker_mod.instantiate_device_from_spec = lambda spec: f"instance({spec['name']})"
@@ -743,3 +783,271 @@ def test_overlay_handler_incremental_respects_explicit_deletes_only():
     # incremental merges: m1 stays, m2 drops.
     assert stub._config_service_overlay_names == {"m1"}
 
+
+def test_overlay_handler_refreshes_lists_and_flags_update():
+    """After mutating the namespace the handler must recompute the
+    existing/allowed lists (prepare_plan converts device-name strings
+    against them) and raise the list-updated flag so the manager
+    re-downloads its copies."""
+    result, stub = _call_overlay_handler(
+        overlay_names=set(),
+        namespace={},
+        upserts={"m1": _upsert("m1")["spec"]},
+        deletes=[],
+        replace=False,
+    )
+    assert result["status"] == "accepted"
+    assert stub.list_refresh_calls == 1
+    assert stub._existing_plans_and_devices_changed is True
+
+
+
+# ===== P0.2 regression: env-open sync failures must surface =====
+
+
+@pytest.mark.asyncio
+async def test_load_lists_returns_false_when_worker_download_fails():
+    """``_load_existing_plans_and_devices_from_worker`` must report the
+    failure (return False) so the awaited env-open path can fail loudly
+    when config-service is enabled, instead of the sync silently never
+    running (INTEGRATION P0.2)."""
+    from bluesky_queueserver.manager.manager import RunEngineManager
+
+    class _Stub:
+        async def _worker_request_plans_and_devices_list(self):
+            return None, "0MQ communication error"
+
+    loaded = await RunEngineManager._load_existing_plans_and_devices_from_worker(_Stub())
+    assert loaded is False
+
+
+@pytest.mark.asyncio
+async def test_load_lists_propagates_sync_exception():
+    """When the config-service sync raises during the awaited env-open
+    list load, the exception must propagate (env-open reports failure) —
+    not be swallowed."""
+    from bluesky_queueserver.manager.manager import RunEngineManager
+
+    class _Stub:
+        _config_service_settings = _settings()  # enabled=True
+
+        async def _worker_request_plans_and_devices_list(self):
+            return {
+                "existing_plans": {},
+                "existing_devices": {},
+                "config_service_device_data": {},
+            }, ""
+
+        def _set_existing_plans_and_devices(self, *, existing_plans, existing_devices):
+            self._existing_plans = existing_plans
+            self._existing_devices = existing_devices
+
+        def _generate_lists_of_allowed_plans_and_devices(self):
+            pass
+
+        async def _sync_config_service_on_env_open(self):
+            raise ConfigServiceUnreachable("config-service is down")
+
+        def _status_update(self):
+            pass
+
+    with pytest.raises(ConfigServiceUnreachable, match="down"):
+        await RunEngineManager._load_existing_plans_and_devices_from_worker(_Stub())
+
+
+@pytest.mark.asyncio
+async def test_load_lists_returns_true_on_success():
+    from bluesky_queueserver.manager.manager import RunEngineManager
+
+    class _Stub:
+        _config_service_settings = ConfigServiceSettings()  # disabled
+
+        async def _worker_request_plans_and_devices_list(self):
+            return {"existing_plans": {}, "existing_devices": {}}, ""
+
+        def _set_existing_plans_and_devices(self, *, existing_plans, existing_devices):
+            pass
+
+        def _generate_lists_of_allowed_plans_and_devices(self):
+            pass
+
+        def _status_update(self):
+            pass
+
+    loaded = await RunEngineManager._load_existing_plans_and_devices_from_worker(_Stub())
+    assert loaded is True
+
+
+# ===== Manager lock-state reconciliation (P0.1 regression) ==================
+#
+# A failed unlock at env-close used to leave _config_service_locked_devices
+# populated, which made the env-open guard skip lock_devices for every later
+# environment — device locking silently disabled for the manager's lifetime.
+# Now the bookkeeping (locked devices + the item_id actually on the wire) is
+# kept on failure as a DEBT: the next env-open sync (or per-plan acquisition)
+# releases the stale set first, then locks for the new owner. The six
+# scenarios below are the regression contract (originally written against
+# the interim flag mechanism of PR #40).
+
+
+class _LockClientStub:
+    """Records lock/unlock calls; optionally fails unlocks."""
+
+    def __init__(self, *, unlock_error: Exception | None = None):
+        self.lock_calls: List[tuple] = []
+        self.unlock_calls: List[tuple] = []
+        self.unlock_error = unlock_error
+
+    async def lock_devices(self, device_names, *, item_id, plan_name):
+        self.lock_calls.append((list(device_names), item_id, plan_name))
+        return {"success": True}
+
+    async def unlock_devices(self, device_names, *, item_id):
+        self.unlock_calls.append((list(device_names), item_id))
+        if self.unlock_error is not None:
+            raise self.unlock_error
+        return {"success": True}
+
+
+def _manager_lock_stub(client, *, devices=("m1", "det1")):
+    """Bare RunEngineManager carrying only what the lock-state methods touch.
+
+    The full manager needs a multiprocess harness; these methods only read
+    the config-service attributes, so __new__ + explicit attrs keeps the
+    regression tests at unit-test weight.
+    """
+    from types import SimpleNamespace
+
+    from bluesky_queueserver.manager.manager import RunEngineManager
+
+    manager = RunEngineManager.__new__(RunEngineManager)
+    manager._config_service_settings = SimpleNamespace(
+        enabled=True, lock_scope="environment"
+    )
+    manager._config_service_lock_item_id = "env:test-uid"
+    manager._config_service_locked_devices = []
+    manager._config_service_locked_item_id = ""
+    manager._config_service_device_data = {}
+    manager._config_service_prefetched_info = None
+    manager._config_service_state = ConfigServiceState()
+    manager._config_service_sync_alock = None
+    manager._existing_devices = {name: {} for name in devices}
+
+    async def _get_client():
+        return client
+
+    manager._get_config_service_client = _get_client
+    return manager
+
+
+@pytest.fixture
+def _stub_env_open_sync(monkeypatch):
+    """Replace the bootstrap/cursor part of the env-open sync; these tests
+    exercise only the lock-state portion of _sync_config_service_on_env_open."""
+    import bluesky_queueserver.manager.config_service as cs_module
+
+    async def _fake_sync(client, *, expected_device_names, device_data, prefetched_info):
+        return ConfigServiceState(cursor=7, epoch="epoch-1")
+
+    monkeypatch.setattr(cs_module, "sync_devices_on_env_open", _fake_sync)
+
+
+@pytest.mark.asyncio
+async def test_unlock_failure_keeps_bookkeeping():
+    """Env-close path: the unlock raises, but the locked list AND the on-wire
+    item_id must survive so the next acquisition can reconcile (clearing them
+    would orphan server locks)."""
+    client = _LockClientStub(unlock_error=ConfigServiceUnreachable("down"))
+    manager = _manager_lock_stub(client)
+    manager._config_service_locked_devices = ["m1", "det1"]
+    manager._config_service_locked_item_id = "env:test-uid"
+
+    with pytest.raises(ConfigServiceUnreachable):
+        await manager._unlock_config_service_devices()
+
+    assert manager._config_service_locked_devices == ["m1", "det1"]
+    assert manager._config_service_locked_item_id == "env:test-uid"
+
+
+@pytest.mark.asyncio
+async def test_unlock_failure_suppressed_keeps_bookkeeping():
+    """Env-destroy path (suppress_errors=True): no raise, but the stale state
+    must be KEPT (pre-fix it was cleared, orphaning the server-side locks so
+    the next env-open's lock attempt would 409)."""
+    client = _LockClientStub(unlock_error=ConfigServiceUnreachable("down"))
+    manager = _manager_lock_stub(client)
+    manager._config_service_locked_devices = ["m1"]
+    manager._config_service_locked_item_id = "env:test-uid"
+
+    await manager._unlock_config_service_devices(suppress_errors=True)
+
+    assert manager._config_service_locked_devices == ["m1"]
+    assert manager._config_service_locked_item_id == "env:test-uid"
+
+
+@pytest.mark.asyncio
+async def test_unlock_success_clears_bookkeeping():
+    client = _LockClientStub()
+    manager = _manager_lock_stub(client)
+    manager._config_service_locked_devices = ["m1"]
+    manager._config_service_locked_item_id = "env:old-uid"
+
+    await manager._unlock_config_service_devices()
+
+    assert manager._config_service_locked_devices == []
+    assert manager._config_service_locked_item_id == ""
+    assert client.unlock_calls == [(["m1"], "env:old-uid")]
+
+
+@pytest.mark.asyncio
+async def test_env_open_reconciles_stale_locks(_stub_env_open_sync):
+    """THE P0.1 regression: after a failed unlock in a previous environment,
+    the next env-open must release the stale set (under its ORIGINAL owner
+    id) and then LOCK the new environment's devices — pre-fix it silently
+    skipped locking forever."""
+    client = _LockClientStub()
+    manager = _manager_lock_stub(client, devices=("new1", "new2"))
+    manager._config_service_locked_devices = ["old1", "old2"]
+    manager._config_service_locked_item_id = "env:old-uid"
+
+    await manager._sync_config_service_on_env_open()
+
+    assert client.unlock_calls == [(["old1", "old2"], "env:old-uid")]
+    assert len(client.lock_calls) == 1
+    assert sorted(client.lock_calls[0][0]) == ["new1", "new2"]
+    assert client.lock_calls[0][1] == "env:test-uid"
+    assert manager._config_service_locked_devices == client.lock_calls[0][0]
+    assert manager._config_service_locked_item_id == "env:test-uid"
+
+
+@pytest.mark.asyncio
+async def test_env_open_skips_relock_within_same_env(_stub_env_open_sync):
+    """Locks are acquired once per env: a re-sync with the env lock already
+    held under THIS environment's id must NOT lock or unlock again."""
+    client = _LockClientStub()
+    manager = _manager_lock_stub(client)
+    manager._config_service_locked_devices = ["m1", "det1"]
+    manager._config_service_locked_item_id = "env:test-uid"
+
+    await manager._sync_config_service_on_env_open()
+
+    assert client.lock_calls == []
+    assert client.unlock_calls == []
+    assert manager._config_service_locked_devices == ["m1", "det1"]
+
+
+@pytest.mark.asyncio
+async def test_env_open_reconcile_failure_fails_loudly(_stub_env_open_sync):
+    """If releasing the stale set fails, env-open must fail (no silent
+    unprotected environment) and keep the state so a retry reconciles again."""
+    client = _LockClientStub(unlock_error=ConfigServiceUnreachable("still down"))
+    manager = _manager_lock_stub(client)
+    manager._config_service_locked_devices = ["old1"]
+    manager._config_service_locked_item_id = "env:old-uid"
+
+    with pytest.raises(ConfigServiceUnreachable):
+        await manager._sync_config_service_on_env_open()
+
+    assert client.lock_calls == []
+    assert manager._config_service_locked_devices == ["old1"]
+    assert manager._config_service_locked_item_id == "env:old-uid"
