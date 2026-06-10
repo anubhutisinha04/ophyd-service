@@ -208,7 +208,7 @@ class RegistryResolution(NamedTuple):
 
 
 async def _resolve_registry_backend(
-    settings: Settings, config_http: httpx.AsyncClient
+    settings: Settings, config_http: Optional[httpx.AsyncClient]
 ) -> RegistryResolution:
     """Pick the registry backend, gating startup on config-service as needed.
 
@@ -226,6 +226,9 @@ async def _resolve_registry_backend(
     backend = settings.registry_backend
 
     if backend == "http":
+        # The Settings validator guarantees a configuration_service_url for
+        # the http/auto backends, so config_http exists on these paths.
+        assert config_http is not None
         await _probe_configuration_service(settings, config_http)
         return RegistryResolution(
             RegistryClient(settings), settings.coordination_check_enabled, "http"
@@ -240,6 +243,7 @@ async def _resolve_registry_backend(
         return RegistryResolution(FileRegistryProvider(settings.registry_file_path), False, "file")
 
     # auto
+    assert config_http is not None
     logger.info("registry_backend_auto_probing", url=settings.configuration_service_url)
     if settings.config_service_startup_probe:
         detail = await _await_config_service(settings, config_http)
@@ -296,7 +300,19 @@ async def lifespan(app: FastAPI):
     from .monitoring.websocket_manager import WebSocketManager
 
     coordination_client = CoordinationClient(settings)
-    config_http = httpx.AsyncClient(base_url=settings.configuration_service_url, timeout=10.0)
+    # No configuration_service URL is only valid in standalone (file) mode —
+    # the Settings validator enforces that. Without it there is no config
+    # HTTP client and PV-health reporting is a no-op.
+    if settings.configuration_service_url:
+        config_http = httpx.AsyncClient(
+            base_url=settings.configuration_service_url, timeout=10.0
+        )
+    else:
+        config_http = None
+        logger.info(
+            "standalone_no_configuration_service",
+            note="PV-health reporting disabled; registry served from file",
+        )
     # Resolve the registry backend. This gates startup on config-service where
     # required (http, or file+coordination), and for backend=auto probes
     # config-service and may fall back to the file registry (disabling
@@ -305,7 +321,8 @@ async def lifespan(app: FastAPI):
     try:
         resolution = await _resolve_registry_backend(settings, config_http)
     except BaseException:
-        await config_http.aclose()
+        if config_http is not None:
+            await config_http.aclose()
         raise
     registry_client = resolution.provider
     # Apply the effective coordination decision at one explicit point. The
@@ -379,7 +396,8 @@ async def lifespan(app: FastAPI):
         await device_manager.cleanup()
         await coordination_client.cleanup()
         await registry_client.cleanup()
-        await config_http.aclose()
+        if config_http is not None:
+            await config_http.aclose()
         await pv_monitor.cleanup()
         # ophyd_cache is created on startup but, unlike the resources above, was
         # the one with no shutdown teardown — drop its cached devices so their

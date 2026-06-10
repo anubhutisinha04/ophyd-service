@@ -41,9 +41,11 @@ class Settings(BaseSettings):
     # direct_control talks to: it owns the device registry, the per-PV
     # validation gate, AND the device-lock state that the coordination
     # check reads (EE/queueserver writes the locks; we read them).
-    # Required: no default so a forgotten DIRECT_CONTROL_CONFIGURATION_SERVICE_URL
-    # fails at startup instead of silently pointing at localhost:8004.
-    configuration_service_url: str
+    # Required for the http/auto registry backends — the validator below
+    # fails startup if it is unset there, instead of silently pointing at
+    # localhost:8004. Optional ONLY in standalone mode (registry_backend=
+    # file), which has no configuration_service at all.
+    configuration_service_url: Optional[str] = None
 
     # Registry backend:
     #   "http" (default) — validate PV/device existence against
@@ -167,4 +169,11 @@ class Settings(BaseSettings):
             )
         if self.registry_backend == "file" and not self.registry_file_path:
             raise ValueError("registry_backend='file' requires DIRECT_CONTROL_REGISTRY_FILE_PATH")
+        if self.registry_backend != "file" and not self.configuration_service_url:
+            raise ValueError(
+                f"registry_backend={self.registry_backend!r} requires "
+                f"DIRECT_CONTROL_CONFIGURATION_SERVICE_URL (configuration_service is "
+                f"the registry + device-lock authority). Only standalone mode "
+                f"(DIRECT_CONTROL_REGISTRY_BACKEND=file) runs without it."
+            )
         return self
