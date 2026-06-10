@@ -7,7 +7,6 @@ from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 # Shared 403/WS-error detail for read-only mode. Defined here (not in main) so
 # both the REST layer and the WebSocket managers use the identical message
 # without a circular import.
@@ -104,6 +103,11 @@ class Settings(BaseSettings):
 
     # Command timeout
     command_timeout: float = 30.0
+
+    # Connection timeout for instantiating a live device for device-level
+    # control (DeviceManager). Covers classic-ophyd wait_for_connection and
+    # ophyd-async Device.connect across all the device's signals.
+    device_connect_timeout: float = 10.0
 
     # WebSocket configuration
     ws_max_connections: int = 100

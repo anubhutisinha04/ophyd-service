@@ -24,7 +24,6 @@ from typing import Iterator
 
 import pytest
 
-
 _IOC_PORT = 5064  # default EPICS CA
 _IOC_ADDR = f"localhost:{_IOC_PORT}"
 
@@ -126,6 +125,11 @@ class _StubRegistry:
         return None
 
     async def get_owning_device(self, pv_name: str):
+        return None
+
+    async def get_instantiation_spec(self, device_name: str):
+        # No class info — device-level control paths get a clean 422; tests
+        # that exercise live device control install a spec-bearing stub.
         return None
 
     async def cleanup(self) -> None:

@@ -11,9 +11,11 @@ import structlog
 from epics import ca, caget, caput, get_pv
 from datetime import datetime
 
+from .drivers import check_method_allowed, json_safe
 from .models import (
     PVSetRequest,
     PVSetResponse,
+    CoordinationStatus,
     DeviceCommandRequest,
     DeviceCommandResponse,
     CommandMode,
@@ -21,11 +23,14 @@ from .models import (
     DeviceLockedError,
     DeviceDisabledError,
     DeviceLockStatus,
+    DeviceNotInstantiableError,
+    InstantiationSpec,
     PVNotFoundError,
 )
 from .config import Settings
 
 if TYPE_CHECKING:
+    from .device_manager import DeviceManager
     from .protocols import CoordinationService, RegistryProvider
 
 
@@ -47,6 +52,7 @@ class DeviceController:
         settings: Settings,
         coordination: "CoordinationService",
         registry_client: "RegistryProvider",
+        device_manager: "DeviceManager",
     ):
         """
         Initialize device controller.
@@ -54,14 +60,18 @@ class DeviceController:
         Args:
             settings: Service configuration
             coordination: Coordination service client (implements CoordinationService protocol)
-            registry_client: Configuration-service registry client. Used to
-                map a PV name to its owning device so the
-                disabled/locked-state gate is applied at the device level
-                even for PV-keyed writes.
+            registry_client: Registry provider (configuration_service HTTP
+                client or file registry). Maps a PV name to its owning device
+                so the disabled/locked-state gate is applied at the device
+                level even for PV-keyed writes, and supplies the
+                instantiation spec for device-level control.
+            device_manager: Live-device cache that instantiates + connects
+                ophyd / ophyd-async devices from instantiation specs.
         """
         self.settings = settings
         self.coordination = coordination
         self.registry_client = registry_client
+        self.device_manager = device_manager
 
         # Set EPICS environment if configured
         if settings.epics_ca_addr_list:
@@ -73,7 +83,7 @@ class DeviceController:
             )
 
     @staticmethod
-    def _raise_for_unavailable(target: str, kind: str, coord_status) -> None:
+    def _raise_for_unavailable(target: str, kind: str, coord_status: "CoordinationStatus") -> None:
         """If coord_status blocks commands, raise the right typed error.
 
         DISABLED -> DeviceDisabledError (operator must enable in
@@ -202,38 +212,73 @@ class DeviceController:
             message="PV set confirmed (put-completion)",
         )
 
+    async def _require_spec(self, device_name: str) -> "InstantiationSpec":
+        """Fetch the device's instantiation spec, failing with a clear,
+        actionable error when the registry has no class info for it."""
+        spec = await self.registry_client.get_instantiation_spec(device_name)
+        if spec is None:
+            raise DeviceNotInstantiableError(
+                f"Device {device_name!r} has no instantiation spec in the "
+                f"registry (class path + constructor args). Device-level "
+                f"control requires one; PV-level operations remain available."
+            )
+        return spec
+
     async def execute_device_method(self, request: DeviceCommandRequest) -> DeviceCommandResponse:
         """
-        Execute Ophyd device method with coordination check.
+        Execute an ophyd / ophyd-async device method with coordination check.
 
-        Currently unimplemented: full ophyd-device instantiation requires
-        Configuration Service integration that hasn't landed yet. Raises
-        ``NotImplementedError`` instead of silently returning ``success=False``
-        — the HTTP layer maps that to 501 so safety-relevant calls (e.g. /stop)
-        cannot look successful while doing nothing.
+        The device is instantiated from its registry instantiation spec and
+        cached live (DeviceManager); the framework-matched driver runs the
+        method and waits out any returned Status (``use_put=True`` returns
+        right after initiation instead).
 
         Raises:
-            DeviceLockedError: If device is locked by active plan
-            DeviceDisabledError: If device is administratively disabled
-            NotImplementedError: Always, until ophyd integration lands.
+            MethodNotAllowedError: Method outside the allowlist (HTTP 400)
+            DeviceLockedError: Device locked by an active plan (423)
+            DeviceDisabledError: Device administratively disabled (409)
+            DeviceNotInstantiableError: No instantiation spec in the registry (422)
+            ControlError: Instantiation/connect/invoke failure (500)
         """
         device_name = request.device_name
+        check_method_allowed(request.method)
 
         coord_status = await self.coordination.check_device_available(device_name)
         self._raise_for_unavailable(device_name, "device_name", coord_status)
 
-        mode_desc = "put() (no wait)" if request.use_put else "set() (wait for completion)"
-        logger.warning(
-            "device_method_not_implemented",
+        spec = await self._require_spec(device_name)
+        device, driver = await self.device_manager.get_or_connect(spec)
+
+        timeout = request.timeout or self.settings.command_timeout
+        logger.info(
+            "executing_device_method",
             device_name=device_name,
             method=request.method,
+            framework=driver.framework,
             use_put=request.use_put,
-            mode=mode_desc,
+            timeout=timeout,
         )
-        raise NotImplementedError(
-            f"Device method execution ({request.method} on {device_name}) "
-            f"requires Configuration Service ophyd integration; not yet "
-            f"implemented. Would use {mode_desc}."
+        result = await driver.invoke(
+            device,
+            request.method,
+            request.args,
+            request.kwargs,
+            timeout=timeout,
+            use_put=request.use_put,
+        )
+        return DeviceCommandResponse(
+            device_name=device_name,
+            method=request.method,
+            success=True,
+            result=json_safe(result),
+            timestamp=datetime.now(),
+            coordination_checked=True,
+            message=(
+                f"{request.method} initiated (not awaited) via {driver.framework}"
+                if request.use_put
+                else f"{request.method} completed via {driver.framework}"
+            ),
+            use_put=request.use_put,
         )
 
     async def _connect(self, pv_name: str, connection_timeout: float) -> Any:
@@ -369,47 +414,56 @@ class DeviceController:
         timeout: Optional[float] = None,
     ) -> Any:
         """
-        Access nested device component (ophyd-websocket compatible).
+        Access a nested device component (ophyd-websocket compatible).
 
-        Currently unimplemented for every method: full ophyd-device
-        instantiation requires Configuration Service integration that hasn't
-        landed yet. Raises ``NotImplementedError`` instead of returning a
-        placeholder dict that earlier looked like a successful read/write —
-        the HTTP layer maps that to 501. Coord-gate still fires for write
-        methods so disabled/locked targets get the precise 409/423 error
-        rather than a generic 501.
+        Instantiates the root device from its registry spec, walks the dotted
+        component path on the live object, and invokes the method via the
+        framework-matched driver. Read methods don't go through the
+        lock/disabled gate — disabled devices can still be inspected, only
+        commanding is blocked.
 
         Raises:
-            DeviceLockedError: If device is locked by active plan (writes only)
-            DeviceDisabledError: If device is disabled (writes only)
-            NotImplementedError: Always, after the coord gate, until ophyd
-                integration lands.
+            MethodNotAllowedError: Method outside the allowlist, or no value
+                supplied for set/put (HTTP 400)
+            ComponentNotFoundError: Dotted path doesn't exist on the device (404)
+            DeviceLockedError: Device locked by active plan (writes only, 423)
+            DeviceDisabledError: Device disabled (writes only, 409)
+            DeviceNotInstantiableError: No instantiation spec in the registry (422)
+            ControlError: Instantiation/connect/invoke failure (500)
         """
         parts = device_path.split(".")
         device_name = parts[0]
-        component_path = parts[1:] if len(parts) > 1 else []
+        sub_path = ".".join(parts[1:])
+
+        check_method_allowed(method)
+
+        if method in ("set", "put", "trigger", "stop"):
+            coord_status = await self.coordination.check_device_available(device_name)
+            self._raise_for_unavailable(device_name, "device_name", coord_status)
+
+        spec = await self._require_spec(device_name)
+        device, driver = await self.device_manager.get_or_connect(spec)
+        target = await driver.get_component(device, sub_path) if sub_path else device
+
+        if method in ("set", "put"):
+            if value is None:
+                raise ControlError(f"Method {method!r} on {device_path} requires a value")
+            args = [value]
+        else:
+            args = []
 
         logger.info(
             "accessing_nested_device",
             device_path=device_path,
-            device_name=device_name,
-            component_path=component_path,
             method=method,
+            framework=driver.framework,
         )
-
-        # For write operations, perform coordination check.
-        # Read methods don't go through the lock/disabled gate — disabled
-        # devices can still be monitored, only commanding is blocked.
-        if method in ("set", "put", "write", "trigger", "stop"):
-            coord_status = await self.coordination.check_device_available(device_name)
-            self._raise_for_unavailable(device_name, "device_name", coord_status)
-
-        logger.warning(
-            "nested_device_not_implemented",
-            device_path=device_path,
-            method=method,
+        result = await driver.invoke(
+            target,
+            method,
+            args,
+            {},
+            timeout=timeout or self.settings.command_timeout,
+            use_put=(method == "put"),
         )
-        raise NotImplementedError(
-            f"Nested device access ({method} on {device_path}) requires "
-            f"Configuration Service ophyd integration; not yet implemented."
-        )
+        return json_safe(result)

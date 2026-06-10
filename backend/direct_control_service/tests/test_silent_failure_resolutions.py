@@ -27,24 +27,30 @@ from direct_control.models import ServiceAvailability
 # Implemented`` with a clear "requires ophyd integration" message.
 
 
-def test_s1_stop_endpoint_returns_501_not_200_with_success_false(client):
-    """``POST /api/v1/device/{name}/stop`` must surface unimplemented as 501.
+# The device-method endpoints used to be 501 stubs (the original S1 finding:
+# they must never report 200-with-success=False while doing nothing). They
+# are implemented now; the same invariant holds in its new form — a device
+# whose registry entry has no instantiation spec fails LOUDLY with 422, it
+# never pretends the command ran. The conftest registry stub returns no spec
+# for any device, so "some_device" exercises exactly that path.
 
-    Pre-fix bug: 200 OK with ``success=False`` in the JSON body meant a
+
+def test_s1_stop_endpoint_fails_loudly_without_spec(client):
+    """``POST /api/v1/device/{name}/stop`` on a spec-less device → 422.
+
+    Original S1 bug: 200 OK with ``success=False`` in the JSON body meant a
     safety-critical /stop call looked successful while doing nothing.
     """
     r = client.post("/api/v1/device/some_device/stop")
-    assert r.status_code == 501, (
-        f"expected 501 Not Implemented, got {r.status_code} {r.text!r}. "
+    assert r.status_code == 422, (
+        f"expected 422 (no instantiation spec), got {r.status_code} {r.text!r}. "
         "If this is 200 with success=False, the silent-failure pattern is back."
     )
-    detail = r.json()["detail"].lower()
-    assert "not yet implemented" in detail
-    assert "ophyd" in detail or "configuration service" in detail
+    assert "no instantiation spec" in r.json()["detail"].lower()
 
 
-def test_s1_execute_device_method_returns_501(client):
-    """``POST /api/v1/device/execute`` must surface unimplemented as 501."""
+def test_s1_execute_device_method_fails_loudly_without_spec(client):
+    """``POST /api/v1/device/execute`` on a spec-less device → 422."""
     r = client.post(
         "/api/v1/device/execute",
         json={
@@ -54,53 +60,48 @@ def test_s1_execute_device_method_returns_501(client):
             "kwargs": {},
         },
     )
-    assert r.status_code == 501, (
-        f"expected 501, got {r.status_code} {r.text!r}"
-    )
-    assert "not yet implemented" in r.json()["detail"].lower()
+    assert r.status_code == 422, f"expected 422, got {r.status_code} {r.text!r}"
+    assert "no instantiation spec" in r.json()["detail"].lower()
 
 
-def test_s1_nested_device_set_returns_501(client):
-    """``POST /api/v1/device/{path}`` with method=set must surface unimplemented as 501."""
+def test_s1_nested_device_set_fails_loudly_without_spec(client):
+    """``POST /api/v1/device/{path}`` with method=set on a spec-less device → 422."""
     r = client.post(
         "/api/v1/device/some_device.user_setpoint",
         json={"method": "set", "value": 1.0, "timeout": None},
     )
-    assert r.status_code == 501
-    detail = r.json()["detail"].lower()
-    assert "not yet implemented" in detail
+    assert r.status_code == 422
+    assert "no instantiation spec" in r.json()["detail"].lower()
 
 
-def test_s1_nested_device_read_returns_501(client):
-    """``POST /api/v1/device/{path}`` with method=read must surface unimplemented as 501.
+def test_s1_nested_device_read_fails_loudly_without_spec(client):
+    """``POST /api/v1/device/{path}`` with method=read on a spec-less device → 422.
 
-    Pre-fix the read branch returned a placeholder dict via 200 OK; a
-    careless frontend would render that as a real value. Failing the read
-    loudly forces the integration question to surface immediately.
+    The stub era's read branch once returned a placeholder dict via 200 OK;
+    a careless frontend would render that as a real value. A spec-less read
+    must fail loudly, never fabricate.
     """
     r = client.post(
         "/api/v1/device/some_device.user_readback",
         json={"method": "read", "value": None, "timeout": None},
     )
-    assert r.status_code == 501
-    assert "not yet implemented" in r.json()["detail"].lower()
+    assert r.status_code == 422
+    assert "no instantiation spec" in r.json()["detail"].lower()
 
 
-def test_s1_get_nested_device_value_returns_501(client):
-    """``GET /api/v1/device/{path}/value`` (read-only) must also surface unimplemented as 501."""
+def test_s1_get_nested_device_value_fails_loudly_without_spec(client):
+    """``GET /api/v1/device/{path}/value`` (read-only) also fails loudly → 422."""
     r = client.get("/api/v1/device/some_device.user_readback/value")
-    assert r.status_code == 501
-    assert "not yet implemented" in r.json()["detail"].lower()
+    assert r.status_code == 422
+    assert "no instantiation spec" in r.json()["detail"].lower()
 
 
-def test_s1_stop_lock_gate_still_fires_before_not_implemented(client):
-    """The coord gate must run before the not-implemented placeholder.
+def test_s1_stop_lock_gate_still_fires_before_spec_lookup(client):
+    """The coord gate must run before the instantiation-spec lookup.
 
     A disabled or locked device should produce 409/423 (so the operator
-    knows to re-enable / wait), NOT 501. Pre-fix this worked by
-    coincidence because the placeholder was unreachable for blocked
-    devices; pin it down so a future refactor can't accidentally invert
-    the order.
+    knows to re-enable / wait), NOT 422; pin the order down so a future
+    refactor can't accidentally invert it.
     """
     from datetime import datetime
     from direct_control.models import CoordinationStatus, DeviceLockStatus
@@ -127,7 +128,7 @@ def test_s1_stop_lock_gate_still_fires_before_not_implemented(client):
 
     r = client.post("/api/v1/device/some_device/stop")
     assert r.status_code == 409, (
-        f"expected 409 (disabled gate fires before not-implemented), got "
+        f"expected 409 (disabled gate fires before spec lookup), got "
         f"{r.status_code} {r.text!r}"
     )
 
@@ -188,6 +189,7 @@ async def test_s2_set_pv_controller_raises_control_error_on_put_false():
 
     from direct_control.config import Settings
     from direct_control.device_controller import DeviceController
+    from direct_control.device_manager import DeviceManager
     from direct_control.models import (
         ControlError,
         CoordinationStatus,
@@ -215,7 +217,9 @@ async def test_s2_set_pv_controller_raises_control_error_on_put_false():
             return None
 
     settings = Settings()
-    controller = DeviceController(settings, _AvailableCoord(), _StubRegistry())  # type: ignore[arg-type]
+    controller = DeviceController(
+        settings, _AvailableCoord(), _StubRegistry(), DeviceManager(settings)  # type: ignore[arg-type]
+    )
     # Force the put to "fail" without touching EPICS at all.
     controller._execute_put = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
@@ -236,6 +240,7 @@ async def test_s2_set_pv_controller_propagates_inner_exceptions():
 
     from direct_control.config import Settings
     from direct_control.device_controller import DeviceController
+    from direct_control.device_manager import DeviceManager
     from direct_control.models import (
         CoordinationStatus,
         DeviceLockStatus,
@@ -262,7 +267,9 @@ async def test_s2_set_pv_controller_propagates_inner_exceptions():
             return None
 
     settings = Settings()
-    controller = DeviceController(settings, _AvailableCoord(), _StubRegistry())  # type: ignore[arg-type]
+    controller = DeviceController(
+        settings, _AvailableCoord(), _StubRegistry(), DeviceManager(settings)  # type: ignore[arg-type]
+    )
     controller._execute_put = AsyncMock(  # type: ignore[method-assign]
         side_effect=RuntimeError("simulated EPICS write blew up"),
     )
@@ -281,8 +288,8 @@ def test_s1_ws_pv_socket_stop_emits_error_envelope(client):
     placeholder ``DeviceCommandResponse(success=False, ...)`` and emitted
     a ``stop_complete`` event with ``success=False``. A WS client that
     only watched for ``type=="error"`` would miss the failure entirely.
-    After the fix, ``execute_device_method`` raises and the WS handler
-    routes the exception into ``send_error``.
+    ``execute_device_method`` raises (here: no instantiation spec for the
+    device) and the WS handler routes the exception into ``send_error``.
     """
     import time
 
@@ -298,8 +305,8 @@ def test_s1_ws_pv_socket_stop_emits_error_envelope(client):
                 # regression to ``message`` would silently invisibilize
                 # the error in the UI.
                 error_text = (msg.get("error") or "").lower()
-                assert "not yet implemented" in error_text, (
-                    f"error envelope missing not-implemented message: {msg!r}"
+                assert "no instantiation spec" in error_text, (
+                    f"error envelope missing the spec-less failure reason: {msg!r}"
                 )
                 return
             # Defensive: the old bug would have produced this event.
@@ -309,7 +316,7 @@ def test_s1_ws_pv_socket_stop_emits_error_envelope(client):
                     f"the silent-failure pattern is back: {msg!r}"
                 )
 
-        pytest.fail("never received an error envelope on /stop unimplemented")
+        pytest.fail("never received an error envelope on /stop for a spec-less device")
 
 
 # ─── Finch contract: error envelope, pv field, timestamp number ──────────

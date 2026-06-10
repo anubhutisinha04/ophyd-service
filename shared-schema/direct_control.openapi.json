@@ -395,7 +395,7 @@
     "/api/v1/device/execute": {
       "post": {
         "summary": "Execute Device Method",
-        "description": "Execute Ophyd device method with coordination check (High Fidelity Channel).\n\nAlways returns a confirmed result. Use when confirmation is required.\nRaises 404/423/503/500 on various failure modes.",
+        "description": "Execute an ophyd / ophyd-async device method with coordination check\n(High Fidelity Channel).\n\nThe device is instantiated live from its registry instantiation spec;\nStatus completion is awaited unless ``use_put=true``. Raises\n400 (method not allowed) / 404 (device not in registry) /\n409/423 (disabled/locked) / 422 (no instantiation spec) /\n503 (registry or coordination unavailable) / 500 (execution failure).",
         "operationId": "execute_device_method_api_v1_device_execute_post",
         "requestBody": {
           "content": {

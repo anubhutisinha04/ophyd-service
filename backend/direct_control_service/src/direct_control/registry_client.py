@@ -10,9 +10,10 @@ from typing import Dict, Optional, Tuple
 
 import httpx
 import structlog
+from pydantic import ValidationError
 
 from .config import Settings
-
+from .models import InstantiationSpec
 
 logger = structlog.get_logger(__name__)
 
@@ -53,6 +54,10 @@ class RegistryClient:
         # PV-keyed write to the device-keyed lock/disable state on
         # configuration_service without an extra round-trip.
         self._pv_owner_cache: Dict[str, Tuple[Optional[str], float]] = {}
+        # device -> instantiation spec (None = device has no spec). Specs
+        # change rarely; the TTL bounds how long a registry edit takes to
+        # reach the DeviceManager (which also rebuilds on spec change).
+        self._spec_cache: Dict[str, Tuple[Optional[InstantiationSpec], float]] = {}
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -190,9 +195,59 @@ class RegistryClient:
             # separately. Don't cache as None here: that would shadow a real
             # owner once the PV gets registered.
             return None
-        device_name = response.json().get("device_name")
+        device_name: Optional[str] = response.json().get("device_name")
         self._pv_owner_cache[pv_name] = (device_name, time.monotonic())
         return device_name
+
+    async def get_instantiation_spec(self, device_name: str) -> Optional[InstantiationSpec]:
+        """Fetch the device's instantiation spec from configuration_service.
+
+        Returns None when the spec endpoint 404s. Callers run
+        ``validate_device`` first, so a 404 here means "device exists but has
+        no instantiation spec" — device-level control is unavailable for it.
+
+        Raises:
+            RuntimeError: configuration_service unreachable, returned an
+                unexpected status, or returned a malformed spec body.
+        """
+        entry = self._spec_cache.get(device_name)
+        if entry is not None and time.monotonic() - entry[1] <= self._cache_ttl:
+            return entry[0]
+
+        client = await self._get_client()
+        try:
+            response = await client.get(f"/api/v1/devices/{device_name}/instantiation")
+        except httpx.RequestError as e:
+            logger.error("configuration_service_unavailable", error=str(e))
+            raise RuntimeError("Configuration service unavailable") from e
+
+        if response.status_code == 404:
+            self._spec_cache[device_name] = (None, time.monotonic())
+            return None
+        if response.status_code != 200:
+            # Don't cache: an unexpected status (5xx, auth proxy hiccup) must
+            # not masquerade as "no spec" for the next TTL window.
+            logger.warning(
+                "registry_spec_unexpected_status",
+                device_name=device_name,
+                status_code=response.status_code,
+            )
+            raise RuntimeError(
+                f"Instantiation-spec lookup for {device_name!r} returned "
+                f"HTTP {response.status_code}"
+            )
+
+        try:
+            spec = InstantiationSpec.model_validate(response.json())
+        except (ValidationError, ValueError) as e:
+            logger.error(
+                "registry_spec_malformed",
+                device_name=device_name,
+                error=str(e),
+            )
+            raise RuntimeError(f"Instantiation spec for {device_name!r} is malformed: {e}") from e
+        self._spec_cache[device_name] = (spec, time.monotonic())
+        return spec
 
     async def cleanup(self) -> None:
         """Cleanup HTTP client."""

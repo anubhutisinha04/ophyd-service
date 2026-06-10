@@ -27,16 +27,20 @@ from ._array_metadata import describe_array
 from .config import READ_ONLY_MESSAGE, Settings
 from .coordination_client import CoordinationClient
 from .device_controller import DeviceController
+from .device_manager import DeviceManager
 from .models import (
+    ComponentNotFoundError,
     CoordinationCheckError,
     DeviceCommandRequest,
     DeviceCommandResponse,
     DeviceDisabledError,
     DeviceLockedError,
+    DeviceNotInstantiableError,
     EnrichmentRequest,
     EnrichmentResponse,
     EnrichmentResultItem,
     HealthResponse,
+    MethodNotAllowedError,
     NestedDeviceRequest,
     NestedDeviceResponse,
     PVNotFoundError,
@@ -308,7 +312,10 @@ async def lifespan(app: FastAPI):
     # coordination client reads settings.coordination_check_enabled live, so
     # this takes effect for the gate even though the client predates this line.
     settings.coordination_check_enabled = resolution.coordination_enabled
-    device_controller = DeviceController(settings, coordination_client, registry_client)
+    device_manager = DeviceManager(settings)
+    device_controller = DeviceController(
+        settings, coordination_client, registry_client, device_manager
+    )
     pv_monitor = PVMonitorManager(settings)
     ws_manager = WebSocketManager(
         pv_monitor=pv_monitor,
@@ -334,6 +341,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.coordination_client = coordination_client
     app.state.device_controller = device_controller
+    app.state.device_manager = device_manager
     app.state.registry_client = registry_client
     app.state.config_http = config_http
     app.state.pv_monitor = pv_monitor
@@ -366,6 +374,9 @@ async def lifespan(app: FastAPI):
         await camera_ws_manager.close_all()
         await tiff_ws_manager.close_all()
         await device_ws_manager.cleanup()
+        # Destroy live control devices so classic-ophyd CA channels are
+        # released before the loop goes away.
+        await device_manager.cleanup()
         await coordination_client.cleanup()
         await registry_client.cleanup()
         await config_http.aclose()
@@ -607,19 +618,36 @@ def _raise_http_for_device_unavailable(
     raise HTTPException(status_code=423, detail=str(exc))
 
 
-def _raise_http_501_not_implemented(
-    exc: NotImplementedError,
-    event: str,
+# Device-control client errors → HTTP status. These are typed refusals from
+# the controller/driver layer, distinct from the coord-gate (409/423) and
+# from real execution failures (500).
+_DEVICE_CONTROL_CLIENT_ERRORS = (
+    MethodNotAllowedError,
+    ComponentNotFoundError,
+    DeviceNotInstantiableError,
+)
+
+
+def _raise_http_for_control_client_error(
+    exc: Exception,
+    event_prefix: str,
     **log_fields: Any,
 ) -> None:
-    """Translate a placeholder ``NotImplementedError`` into a clear 501.
+    """Map a typed device-control refusal to its HTTP status.
 
-    Per the no-silent-fallbacks audit, device-method endpoints whose
-    underlying ophyd integration isn't done must surface 501 with the
-    exception's message rather than 200 OK with ``success=False``.
+    400: method outside the allowlist / unsupported on the target object.
+    404: nested component path doesn't exist on the live device.
+    422: device has no instantiation spec (or it's inactive) — device-level
+         control isn't possible until the registry entry carries class info.
     """
-    logger.warning(event, error=str(exc), **log_fields)
-    raise HTTPException(status_code=501, detail=str(exc))
+    if isinstance(exc, MethodNotAllowedError):
+        status_code = 400
+    elif isinstance(exc, ComponentNotFoundError):
+        status_code = 404
+    else:
+        status_code = 422
+    logger.warning(f"{event_prefix}_rejected", error=str(exc), **log_fields)
+    raise HTTPException(status_code=status_code, detail=str(exc))
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -688,6 +716,11 @@ async def get_stats(
             "websocket_connections": device_stats["active_connections"],
             "subscribed_devices": device_stats["subscribed_devices"],
             "total_device_pvs": device_stats["total_device_pvs"],
+        },
+        "device_control": {
+            "instantiated_devices": (
+                app.state.device_manager.size() if hasattr(app.state, "device_manager") else 0
+            ),
         },
         "buffer_size": settings.pv_buffer_size,
         "max_connections": settings.ws_max_connections,
@@ -1190,10 +1223,14 @@ async def execute_device_method(
     registry_client: RegistryClient = Depends(get_registry_client),
 ):
     """
-    Execute Ophyd device method with coordination check (High Fidelity Channel).
+    Execute an ophyd / ophyd-async device method with coordination check
+    (High Fidelity Channel).
 
-    Always returns a confirmed result. Use when confirmation is required.
-    Raises 404/423/503/500 on various failure modes.
+    The device is instantiated live from its registry instantiation spec;
+    Status completion is awaited unless ``use_put=true``. Raises
+    400 (method not allowed) / 404 (device not in registry) /
+    409/423 (disabled/locked) / 422 (no instantiation spec) /
+    503 (registry or coordination unavailable) / 500 (execution failure).
     """
     try:
         await registry_client.validate_device(request.device_name)
@@ -1209,10 +1246,11 @@ async def execute_device_method(
     except CoordinationCheckError as e:
         logger.error("coordination_check_failed", device_name=request.device_name, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
-    except NotImplementedError as e:
-        _raise_http_501_not_implemented(
-            e, "device_method_not_implemented", device_name=request.device_name
-        )
+    except _DEVICE_CONTROL_CLIENT_ERRORS as e:
+        _raise_http_for_control_client_error(e, "device_method", device_name=request.device_name)
+    except RuntimeError as e:
+        # Registry spec lookup hit an unreachable/erroring backend.
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error(
             "device_command_error",
@@ -1250,8 +1288,10 @@ async def stop_device(
     except CoordinationCheckError as e:
         logger.error("coordination_check_failed", device_name=device_name, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
-    except NotImplementedError as e:
-        _raise_http_501_not_implemented(e, "device_stop_not_implemented", device_name=device_name)
+    except _DEVICE_CONTROL_CLIENT_ERRORS as e:
+        _raise_http_for_control_client_error(e, "device_stop", device_name=device_name)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error("device_stop_error", device_name=device_name, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1279,7 +1319,7 @@ async def access_nested_device(
 
     # Read-only gate: only the write methods are blocked; component reads stay
     # available for monitoring. (Mirrors device_controller's write-method set.)
-    if settings.global_read_only and method in ("set", "put", "write", "trigger", "stop"):
+    if settings.global_read_only and method in ("set", "put", "trigger", "stop"):
         raise HTTPException(status_code=403, detail=READ_ONLY_MESSAGE)
 
     try:
@@ -1306,8 +1346,10 @@ async def access_nested_device(
     except CoordinationCheckError as e:
         logger.error("coordination_check_failed", device_path=device_path, error=str(e))
         raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
-    except NotImplementedError as e:
-        _raise_http_501_not_implemented(e, "nested_device_not_implemented", device_path=device_path)
+    except _DEVICE_CONTROL_CLIENT_ERRORS as e:
+        _raise_http_for_control_client_error(e, "nested_device", device_path=device_path)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error("nested_device_error", device_path=device_path, error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1337,10 +1379,10 @@ async def get_nested_device_value(
             "value": value,
             "timestamp": datetime.now().isoformat(),
         }
-    except NotImplementedError as e:
-        _raise_http_501_not_implemented(
-            e, "nested_device_read_not_implemented", device_path=device_path
-        )
+    except _DEVICE_CONTROL_CLIENT_ERRORS as e:
+        _raise_http_for_control_client_error(e, "nested_device_read", device_path=device_path)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error("nested_device_read_error", device_path=device_path, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))

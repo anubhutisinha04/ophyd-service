@@ -21,9 +21,10 @@ classifiers = [
 ]
 
 dependencies = [
-    # Bluesky ecosystem
+    # Bluesky ecosystem. ophyd brings the pyepics CA transport for classic
+    # devices; ophyd-async[ca] brings aioca for async devices.
     "ophyd>=1.9.0",
-    "ophyd-async>=0.13.0",
+    "ophyd-async[ca]>=0.13.0",
 
     # EPICS integration
     "pyepics>=3.5.0",
@@ -169,6 +170,7 @@ module = [
     "epics.*",
     "p4p.*",
     "ophyd.*",
+    "aioca.*",
     "prometheus_client.*",
     "structlog.*",
 ]
@@ -184,6 +186,8 @@ module = [
     "direct_control.config",
     "direct_control.coordination_client",
     "direct_control.device_controller",
+    "direct_control.device_manager",
+    "direct_control.drivers",
     "direct_control.models",
     "direct_control.monitoring",
     "direct_control.registry_client",

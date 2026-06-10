@@ -14,14 +14,28 @@ File schema (JSON shown; YAML is the same shape)::
 
     {
       "devices": [
-        {"name": "sample_x", "pvs": ["BL01:SAMPLE:X.RBV", "BL01:SAMPLE:X.VAL"]}
+        {"name": "sample_x", "pvs": ["BL01:SAMPLE:X.RBV", "BL01:SAMPLE:X.VAL"]},
+        {
+          "name": "m1",
+          "pvs": ["BL01:M1.RBV"],
+          "device_class": "ophyd.EpicsMotor",
+          "args": ["BL01:M1"],
+          "kwargs": {},
+          "framework": "ophyd-sync"
+        }
       ],
       "standalone_pvs": ["mini:current"]
     }
 
 ``standalone_pvs`` is optional — PVs with no owning device (no device-level
-lock concept). The file is parsed eagerly at construction so a missing path,
-bad syntax, or malformed shape fails hard at startup rather than on the first
+lock concept). ``device_class``/``args``/``kwargs``/``framework`` are
+optional per device: with ``device_class`` present the device supports
+device-level control (``/api/v1/device/execute`` instantiates a live ophyd /
+ophyd-async object from it); without it the device is PV-gateway-only.
+``framework`` ("ophyd-sync" | "ophyd-async") is an advisory tag checked
+against the imported class at instantiation time — a mismatch is a hard
+error. The file is parsed eagerly at construction so a missing path, bad
+syntax, or malformed shape fails hard at startup rather than on the first
 request. There is no silent fallback to an empty registry.
 """
 
@@ -33,7 +47,10 @@ from typing import Dict, Optional
 
 import structlog
 
+from .models import InstantiationSpec
 from .registry_client import RegistryValidationError
+
+_VALID_FRAMEWORKS = ("ophyd-sync", "ophyd-async")
 
 logger = structlog.get_logger(__name__)
 
@@ -84,6 +101,8 @@ class FileRegistryProvider:
         self._devices: set[str] = set()
         # pv -> owning device name (None for standalone PVs)
         self._pv_owner: Dict[str, Optional[str]] = {}
+        # device name -> instantiation spec, for devices that carry class info
+        self._specs: Dict[str, InstantiationSpec] = {}
 
         devices = data.get("devices", [])
         if not isinstance(devices, list):
@@ -114,6 +133,10 @@ class FileRegistryProvider:
             for pv in pvs:
                 self._register_pv(path, pv, name)
 
+            spec = self._parse_spec(path, name, entry)
+            if spec is not None:
+                self._specs[name] = spec
+
         standalone = data.get("standalone_pvs", []) or []
         if not isinstance(standalone, list):
             raise RuntimeError(
@@ -128,6 +151,57 @@ class FileRegistryProvider:
             path=path,
             devices=len(self._devices),
             pvs=len(self._pv_owner),
+            instantiable_devices=len(self._specs),
+        )
+
+    @staticmethod
+    def _parse_spec(path: str, name: str, entry: dict) -> Optional[InstantiationSpec]:
+        """Parse the optional device-control fields of one device entry.
+
+        Returns None when the entry has no ``device_class`` (PV-gateway-only
+        device). Any malformed control field fails hard at load — a registry
+        that promises device control must be fully well-formed.
+        """
+        device_class = entry.get("device_class")
+        control_extras = [k for k in ("args", "kwargs", "framework") if k in entry]
+        if device_class is None:
+            if control_extras:
+                raise RuntimeError(
+                    f"Registry file {path}: device {name!r} has {control_extras} "
+                    f"but no 'device_class'; add the class path or remove them"
+                )
+            return None
+
+        if not isinstance(device_class, str) or "." not in device_class:
+            raise RuntimeError(
+                f"Registry file {path}: device {name!r} 'device_class' must be a "
+                f"fully-qualified import path (e.g. 'ophyd.EpicsMotor'), "
+                f"got {device_class!r}"
+            )
+        args = entry.get("args", [])
+        if not isinstance(args, list):
+            raise RuntimeError(
+                f"Registry file {path}: device {name!r} 'args' must be a list, "
+                f"got {type(args).__name__}"
+            )
+        kwargs = entry.get("kwargs", {})
+        if not isinstance(kwargs, dict):
+            raise RuntimeError(
+                f"Registry file {path}: device {name!r} 'kwargs' must be a "
+                f"mapping, got {type(kwargs).__name__}"
+            )
+        framework = entry.get("framework")
+        if framework is not None and framework not in _VALID_FRAMEWORKS:
+            raise RuntimeError(
+                f"Registry file {path}: device {name!r} 'framework' must be one "
+                f"of {_VALID_FRAMEWORKS}, got {framework!r}"
+            )
+        return InstantiationSpec(
+            name=name,
+            device_class=device_class,
+            args=args,
+            kwargs=kwargs,
+            framework=framework,
         )
 
     def _register_pv(self, path: str, pv: object, owner: Optional[str]) -> None:
@@ -162,6 +236,11 @@ class FileRegistryProvider:
         the separate validate_pv gate, so this never shadows a real owner.
         """
         return self._pv_owner.get(pv_name)
+
+    async def get_instantiation_spec(self, device_name: str) -> Optional[InstantiationSpec]:
+        """Return the device's spec, or None when its entry has no class info
+        (PV-gateway-only device — device-level control unavailable)."""
+        return self._specs.get(device_name)
 
     async def cleanup(self) -> None:
         return None

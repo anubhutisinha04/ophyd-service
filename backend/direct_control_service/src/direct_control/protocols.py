@@ -24,6 +24,7 @@ from .models import (
     CoordinationStatus,
     DeviceCommandRequest,
     DeviceCommandResponse,
+    InstantiationSpec,
     PVSetRequest,
     PVSetResponse,
     PVUpdate,
@@ -106,6 +107,15 @@ class RegistryProvider(Protocol):
 
     async def get_owning_device(self, pv_name: str) -> Optional[str]:
         """Return the device owning this PV, or None for standalone/unknown PVs."""
+        ...
+
+    async def get_instantiation_spec(self, device_name: str) -> Optional["InstantiationSpec"]:
+        """Return how to construct the live device, or None when the registry
+        has no class/ctor information for it (device-level control is then
+        unavailable for that device; PV-level operations still work).
+
+        Raises RuntimeError if the registry backend is unreachable.
+        """
         ...
 
     async def cleanup(self) -> None:
