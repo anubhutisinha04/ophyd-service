@@ -75,7 +75,8 @@ def _extract_ophyd_async_pvs(
 def _extract_pvs(obj: Any) -> Dict[str, str]:
     """Multi-strategy PV discovery.
 
-    Tries ophyd-v1 components, then ophyd-async children(), then a top-level
+    Tries ophyd-v1 components, then ophyd-async children(), then the object's
+    own PV (signal-style: EpicsSignal/EpicsSignalRO), then a top-level
     .prefix. Unexpected errors from a live device (e.g. IOC disconnection
     during introspection) propagate to the caller so they can be logged
     against the specific device in build_config_service_payload.
@@ -92,6 +93,18 @@ def _extract_pvs(obj: Any) -> Dict[str, str]:
 
     if not pvs:
         _extract_ophyd_async_pvs(obj, "", pvs)
+
+    if not pvs:
+        # Component-less signal: the object IS the PV. Register the read PV
+        # under the object's own name (the same shape happi seeds use for
+        # bare-signal devices) plus the setpoint PV when it differs.
+        pvname = getattr(obj, "pvname", None)
+        if pvname and isinstance(pvname, str):
+            obj_name = getattr(obj, "name", None) or "value"
+            pvs[obj_name] = pvname
+            write_pvname = getattr(obj, "setpoint_pvname", None)
+            if isinstance(write_pvname, str) and write_pvname and write_pvname != pvname:
+                pvs[f"{obj_name}_setpoint"] = write_pvname
 
     if not pvs:
         prefix = getattr(obj, "prefix", None)
@@ -145,18 +158,30 @@ def device_to_metadata_dict(name: str, device: Any) -> Dict[str, Any]:
 def device_to_instantiation_spec(name: str, device: Any) -> Dict[str, Any]:
     """Build a ``DeviceInstantiationSpec``-shaped dict from a live device object.
 
-    Constructor args are recovered best-effort from ``device.prefix``
-    (the canonical ophyd EPICS case). Devices without a ``prefix`` attribute
-    produce ``args=[]`` — the caller decides whether that's acceptable.
+    Constructor args are recovered best-effort:
+    - ``device.prefix`` — the canonical ophyd Device case;
+    - otherwise ``device.pvname`` — signal-style objects (EpicsSignal,
+      EpicsSignalRO) take their read PV as the first positional argument,
+      plus ``write_pv`` in kwargs when the setpoint PV differs.
+    Devices exposing neither produce ``args=[]`` — the caller decides
+    whether that's acceptable.
     """
     cls = type(device)
     prefix = getattr(device, "prefix", None)
-    args: List[Any] = [prefix] if (prefix and isinstance(prefix, str)) else []
+    kwargs: Dict[str, Any] = {"name": name}
+    if prefix and isinstance(prefix, str):
+        args: List[Any] = [prefix]
+    else:
+        pvname = getattr(device, "pvname", None)
+        args = [pvname] if (pvname and isinstance(pvname, str)) else []
+        write_pvname = getattr(device, "setpoint_pvname", None)
+        if args and isinstance(write_pvname, str) and write_pvname and write_pvname != pvname:
+            kwargs["write_pv"] = write_pvname
     return {
         "name": name,
         "device_class": f"{cls.__module__}.{cls.__name__}",
         "args": args,
-        "kwargs": {"name": name},
+        "kwargs": kwargs,
         "active": True,
     }
 

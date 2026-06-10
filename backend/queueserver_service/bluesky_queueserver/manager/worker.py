@@ -774,6 +774,40 @@ class RunEngineWorker(Process):
 
         logger.info("List of allowed plans and devices was successfully generated")
 
+    def _refresh_lists_from_nspace(self):
+        """Recompute the existing/allowed plan and device lists from the
+        current RE namespace (after the namespace changed: script load,
+        config-service overlay update). Returns True if the lists changed.
+
+        ``_plans_in_nspace`` / ``_devices_in_nspace`` are always refreshed —
+        object references may change even when the descriptions don't.
+        """
+        epd = existing_plans_and_devices_from_nspace(
+            nspace=self._re_namespace,
+            ignore_invalid_plans=self._config_dict["ignore_invalid_plans"],
+            max_depth=self._config_dict["device_max_depth"],
+        )
+        existing_plans, existing_devices, plans_in_nspace, devices_in_nspace = epd
+
+        changed = not compare_existing_plans_and_devices(
+            existing_plans=existing_plans,
+            existing_devices=existing_devices,
+            existing_plans_ref=self._existing_plans,
+            existing_devices_ref=self._existing_devices,
+        )
+
+        self._plans_in_nspace = plans_in_nspace
+        self._devices_in_nspace = devices_in_nspace
+
+        if changed:
+            with self._existing_items_lock:
+                self._existing_plans, self._existing_devices = existing_plans, existing_devices
+                self._config_service_device_data = build_config_service_payload(devices_in_nspace)
+            self._generate_lists_of_allowed_plans_and_devices()
+            self._update_existing_pd_file(options=("ALWAYS",))
+
+        return changed
+
     def _update_existing_pd_file(self, *, options):
         """
         Update existing plans and devices on disk. ``options`` parameter is a list (or tuple)
@@ -830,32 +864,7 @@ class RunEngineWorker(Process):
         if update_lists:
             logger.info("Updating lists of existing and available plans and devices ...")
 
-            epd = existing_plans_and_devices_from_nspace(
-                nspace=self._re_namespace,
-                ignore_invalid_plans=self._config_dict["ignore_invalid_plans"],
-                max_depth=self._config_dict["device_max_depth"],
-            )
-            existing_plans, existing_devices, plans_in_nspace, devices_in_nspace = epd
-
-            self._existing_plans_and_devices_changed = not compare_existing_plans_and_devices(
-                existing_plans=existing_plans,
-                existing_devices=existing_devices,
-                existing_plans_ref=self._existing_plans,
-                existing_devices_ref=self._existing_devices,
-            )
-
-            # Dictionaries of references to plans and devices from the namespace (may change even
-            #   if the list of existing plans and devices was not changed)
-            self._plans_in_nspace = plans_in_nspace
-            self._devices_in_nspace = devices_in_nspace
-
-            if self._existing_plans_and_devices_changed:
-                # Descriptions of existing plans and devices
-                with self._existing_items_lock:
-                    self._existing_plans, self._existing_devices = existing_plans, existing_devices
-                    self._config_service_device_data = build_config_service_payload(devices_in_nspace)
-                self._generate_lists_of_allowed_plans_and_devices()
-                self._update_existing_pd_file(options=("ALWAYS",))
+            self._existing_plans_and_devices_changed = self._refresh_lists_from_nspace()
 
             if script:
                 logger.info("The script was successfully loaded into RE environment")
@@ -1255,6 +1264,18 @@ class RunEngineWorker(Process):
             self._config_service_overlay_names = (
                 self._config_service_overlay_names | set(upserts)
             ) - set(deletes)
+
+        # The namespace changed, so the existing/allowed lists must follow —
+        # otherwise prepare_plan cannot convert the new device names in plan
+        # args/kwargs to objects and plans referencing them fail. Synchronous
+        # on purpose: the manager awaits this command right before starting
+        # a plan.
+        try:
+            if self._refresh_lists_from_nspace():
+                self._existing_plans_and_devices_changed = True
+        except Exception as ex:  # noqa: BLE001
+            logger.exception("plans/devices list refresh failed after overlay update")
+            return {"status": "rejected", "err_msg": f"list refresh failed: {ex}"}
 
         logger.info(
             "config-service overlay updated: %d upsert(s), %d explicit delete(s), "

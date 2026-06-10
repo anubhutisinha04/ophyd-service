@@ -686,10 +686,19 @@ def _call_overlay_handler(
 
     class _Stub:
         re_state = "idle"
+        list_refresh_calls = 0
+
+        def _refresh_lists_from_nspace(self):
+            # The real implementation recomputes existing/allowed lists from
+            # the namespace; here we only record that the handler asked for
+            # the refresh after mutating the namespace.
+            self.list_refresh_calls += 1
+            return True
 
     stub = _Stub()
     stub._re_namespace = dict(namespace)
     stub._config_service_overlay_names = set(overlay_names)
+    stub._existing_plans_and_devices_changed = False
 
     real_instantiate = worker_mod.instantiate_device_from_spec
     worker_mod.instantiate_device_from_spec = lambda spec: f"instance({spec['name']})"
@@ -773,6 +782,23 @@ def test_overlay_handler_incremental_respects_explicit_deletes_only():
     }
     # incremental merges: m1 stays, m2 drops.
     assert stub._config_service_overlay_names == {"m1"}
+
+
+def test_overlay_handler_refreshes_lists_and_flags_update():
+    """After mutating the namespace the handler must recompute the
+    existing/allowed lists (prepare_plan converts device-name strings
+    against them) and raise the list-updated flag so the manager
+    re-downloads its copies."""
+    result, stub = _call_overlay_handler(
+        overlay_names=set(),
+        namespace={},
+        upserts={"m1": _upsert("m1")["spec"]},
+        deletes=[],
+        replace=False,
+    )
+    assert result["status"] == "accepted"
+    assert stub.list_refresh_calls == 1
+    assert stub._existing_plans_and_devices_changed is True
 
 
 

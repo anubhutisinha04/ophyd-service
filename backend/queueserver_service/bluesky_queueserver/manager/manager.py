@@ -1236,9 +1236,13 @@ class RunEngineManager(Process):
                             "config-service locked %d device(s) under item_id=%s",
                             len(device_names), self._config_service_lock_item_id,
                         )
-            else:  # "plan" scope: no env lock; settle any leftover debt now
-                if self._config_service_locked_item_id:
-                    await self._unlock_config_service_devices()
+            else:
+                # "plan" scope: no env lock. Leftover debts are settled at the
+                # next per-plan acquisition (release-before-relock) and at
+                # env-close — NOT here: this sync re-runs whenever the worker
+                # lists update, which happens mid-queue (e.g. after an overlay
+                # refresh), and releasing here would drop a RUNNING plan's lock.
+                pass
             self._config_service_state = state
             logger.info(
                 "config-service cursor=%d epoch=%s", state.cursor, state.epoch
@@ -1293,6 +1297,15 @@ class RunEngineManager(Process):
                 f"config-service overlay update rejected by worker: {err_msg}"
             )
         self._config_service_state = plan.new_state
+        # The worker recomputed its plan/device lists as part of the overlay
+        # update; pull them now (instead of waiting for the periodic poll) so
+        # this plan's per-plan device extraction and permission filtering see
+        # the devices that just arrived from the registry.
+        if not await self._load_existing_plans_and_devices_from_worker():
+            raise RuntimeError(
+                "worker accepted the device overlay but the updated lists of "
+                "plans and devices could not be downloaded"
+            )
 
     async def _unlock_config_service_devices(self, *, suppress_errors: bool = False) -> None:
         """Release the lock this manager knows it holds in config-service
