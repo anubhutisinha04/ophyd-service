@@ -93,8 +93,8 @@ committed artifact is the bare server — deployment-specific auth-provider
 routes are intentionally excluded):
 
 ```bash
-cd backend/queueserver_service/subprojects/bluesky-httpserver
-python scripts/export_openapi.py -o ../../../../shared-schema/queueserver_service.openapi.json
+cd backend/queueserver_service
+python scripts/export_openapi.py  # writes shared-schema/queueserver_service.openapi.json
 ```
 
 The queueserver's WebSocket endpoints (`/api/status/ws`, `/api/info/ws`,

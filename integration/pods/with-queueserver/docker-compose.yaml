@@ -91,7 +91,7 @@ services:
       - --redis-addr
       - redis:6379
       - --startup-dir
-      - /app/bluesky_queueserver/profile_collection_sim
+      - /app/queueserver_service/profile_collection_sim
       - --zmq-control-addr
       - "tcp://*:60615"
       - --zmq-info-addr

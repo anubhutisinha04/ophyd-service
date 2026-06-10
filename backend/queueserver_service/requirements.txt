@@ -16,7 +16,7 @@ requests
 typing-extensions;python_version<'3.8'
 
 # bluesky-httpserver runtime deps (merged in via subprojects/bluesky-httpserver).
-# httpx is imported unconditionally by bluesky_httpserver.authorization.api_access
+# httpx is imported unconditionally by queueserver_service.http.authorization.api_access
 # but is missing from httpserver's own requirements.txt (upstream omission).
 alembic
 bluesky-queueserver-api

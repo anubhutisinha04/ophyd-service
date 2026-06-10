@@ -145,7 +145,7 @@ is created with the sole purpose of demonstrating different types of name patter
         - ":^motor\\d+$:?.*"  # Same for all numbered motors, such as 'motor2' or 'motor256'
 
 It is recommended that new projects are started using the sample file
-`user_group_permissions.yaml <https://github.com/bluesky/bluesky-queueserver/blob/main/bluesky_queueserver/profile_collection_sim/user_group_permissions.yaml>`_,
+`user_group_permissions.yaml <https://github.com/bluesky/bluesky-queueserver/blob/main/queueserver_service/profile_collection_sim/user_group_permissions.yaml>`_,
 which could be copied to the directory containing startup files and then modified according
 to the project needs.
 
@@ -161,7 +161,7 @@ parameter of ``start-re-manager``. A simple monitoring application (``qserver-co
 allows to visualize the published output. See :ref:`tutorial_remote_monitoring` for a brief
 tutorial.
 
-``bluesky_queueserver`` package provides ``ReceiveConsoleOutput`` and ``ReceiveConsoleOutputAsync``
+``queueserver_service`` package provides ``ReceiveConsoleOutput`` and ``ReceiveConsoleOutputAsync``
 class, which can be helpful in implementing remote monitoring features in client applications. See
 :ref:`subscribing_to_console_output` for more details.
 

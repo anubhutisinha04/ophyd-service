@@ -5,7 +5,7 @@ Run Engine Manager API
 ======================
 
 
-.. currentmodule:: bluesky_queueserver
+.. currentmodule:: queueserver_service
 
 Asyncio-Based API for Controlling RE Manager
 ============================================

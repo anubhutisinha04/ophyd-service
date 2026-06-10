@@ -4,7 +4,7 @@
 Validation of Queue Items
 =========================
 
-.. currentmodule:: bluesky_queueserver
+.. currentmodule:: queueserver_service
 
 All items (plans and instructions) submitted to the queue subjected to validation
 before they are inserted into the queue. If validation of an item fails,

@@ -330,7 +330,7 @@ Added
   ``status["manager_state"] == "creating_environment"``.
 
 - API functions ``generate_zmq_keys``, ``generate_zmq_public_key``, ``validate_zmq_key`` can now be imported
-  directly from ``bluesky_queueserver``
+  directly from ``queueserver_service``
 
 - Patching of IPython-style startup scripts: ``__file__`` variable now returns the path to the original unpatched script.
 

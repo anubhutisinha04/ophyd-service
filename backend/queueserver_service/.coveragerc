@@ -1,6 +1,6 @@
 [run]
 source =
-    bluesky_queueserver
+    queueserver_service
 [report]
 omit =
     */tests/*

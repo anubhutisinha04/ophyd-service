@@ -3,9 +3,13 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-=================================
-Bluesky-QueueServer Documentation
-=================================
+===================================
+queueserver-service Documentation
+===================================
+
+The queueserver-service backend of ophyd-service: the bluesky Run Engine
+queue manager together with its HTTP/WebSocket API server, maintained as a
+single package (based on bluesky-queueserver and bluesky-httpserver).
 
 .. toctree::
    :maxdepth: 1
@@ -14,7 +18,6 @@ Bluesky-QueueServer Documentation
    tutorials
    release_history
    contributing
-   Source Code on GitHub <https://github.com/bluesky/bluesky-queueserver>
 
 .. toctree::
    :maxdepth: 1
@@ -38,11 +41,16 @@ Bluesky-QueueServer Documentation
    re_manager_api
 
 .. toctree::
+   :maxdepth: 2
+   :caption: HTTP Server
+
+   http/index
+
+.. toctree::
    :maxdepth: 1
    :caption: Related Projects
 
    Bluesky Queue Server API <https://blueskyproject.io/bluesky-queueserver-api>
-   Bluesky HTTP Server <https://blueskyproject.io/bluesky-httpserver>
    Bluesky Widgets <https://blueskyproject.io/bluesky-widgets>
    Bluesky <https://blueskyproject.io/bluesky>
    Ophyd <https://blueskyproject.io/ophyd>

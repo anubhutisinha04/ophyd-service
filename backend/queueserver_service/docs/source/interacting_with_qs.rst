@@ -2,7 +2,7 @@
 Interacting with Queue Server
 =============================
 
-.. currentmodule:: bluesky_queueserver
+.. currentmodule:: queueserver_service
 
 .. _subscribing_to_console_output:
 

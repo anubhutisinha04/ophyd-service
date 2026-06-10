@@ -153,5 +153,5 @@ jobs:
       - name: Run Side-B edge tests
         run: |
           pytest -v \
-            bluesky_queueserver/manager/tests/test_config_service.py \
-            bluesky_queueserver/manager/tests/test_config_service_integration.py
+            tests/manager/test_config_service.py \
+            tests/manager/test_config_service_integration.py

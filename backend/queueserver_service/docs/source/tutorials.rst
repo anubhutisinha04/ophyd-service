@@ -65,12 +65,12 @@ Starting the Queue Server
 In the first terminal, start RE Manager as a console application::
 
   $ start-re-manager
-  [I 2022-02-17 06:54:18,077 bluesky_queueserver.manager.manager] Starting ZMQ server at 'tcp://*:60615'
-  [I 2022-02-17 06:54:18,077 bluesky_queueserver.manager.manager] ZMQ control channels: encryption disabled
-  [I 2022-02-17 06:54:18,080 bluesky_queueserver.manager.manager] Starting RE Manager process
-  [I 2022-02-17 06:54:18,096 bluesky_queueserver.manager.manager] Loading the lists of allowed plans and devices ...
-  [I 2022-02-17 06:54:18,341 bluesky_queueserver.manager.manager] Starting ZeroMQ server ...
-  [I 2022-02-17 06:54:18,343 bluesky_queueserver.manager.manager] ZeroMQ server is waiting on tcp://*:60615
+  [I 2022-02-17 06:54:18,077 queueserver_service.manager.manager] Starting ZMQ server at 'tcp://*:60615'
+  [I 2022-02-17 06:54:18,077 queueserver_service.manager.manager] ZMQ control channels: encryption disabled
+  [I 2022-02-17 06:54:18,080 queueserver_service.manager.manager] Starting RE Manager process
+  [I 2022-02-17 06:54:18,096 queueserver_service.manager.manager] Loading the lists of allowed plans and devices ...
+  [I 2022-02-17 06:54:18,341 queueserver_service.manager.manager] Starting ZeroMQ server ...
+  [I 2022-02-17 06:54:18,343 queueserver_service.manager.manager] ZeroMQ server is waiting on tcp://*:60615
 
 RE Manager functionality may be customized using CLI parameters. The default settings
 are selected specifically for running simple demonstrations, so RE Manager may be started
@@ -142,7 +142,7 @@ a new RE Worker process (for executing Bluesky plans), configures Run Engine and
 loads startup code in the RE Worker namespace. RE Manager may load startup code
 represented as a set of startup files (IPython style), Python script or module.
 ``bluesky-queueserver`` package includes
-`a set of startup files <https://github.com/bluesky/bluesky-queueserver/tree/main/bluesky_queueserver/profile_collection_sim>`_
+`a set of startup files <https://github.com/bluesky/bluesky-queueserver/tree/main/queueserver_service/profile_collection_sim>`_
 with simulated devices and plans sufficient for simple demos. RE Manager
 is loading the built-in startup code unless alternative location is specified
 (see :ref:`tutorial_running_custom_startup_code`).
@@ -775,13 +775,13 @@ was fully completed and not repeated after the plan was resumed::
   |   seq_num |       time |       det2 |       det1 |
   +-----------+------------+------------+------------+
   |         1 | 16:59:53.1 |      1.765 |      5.000 |
-  [I 2022-02-17 16:59:59,198 bluesky_queueserver.manager.manager] Pausing the queue (currently running plan) ...
-  [I 2022-02-17 16:59:59,198 bluesky_queueserver.manager.worker] Pausing Run Engine ...
+  [I 2022-02-17 16:59:59,198 queueserver_service.manager.manager] Pausing the queue (currently running plan) ...
+  [I 2022-02-17 16:59:59,198 queueserver_service.manager.worker] Pausing Run Engine ...
   Deferred pause acknowledged. Continuing to checkpoint.
   Pausing...
-  [I 2022-02-17 17:07:08,353 bluesky_queueserver.manager.manager] Resuming paused plan ...
-  [I 2022-02-17 17:07:08,353 bluesky_queueserver.manager.worker] Run Engine: resume
-  [I 2022-02-17 17:07:08,353 bluesky_queueserver.manager.worker] Continue plan execution with the option 'resume'
+  [I 2022-02-17 17:07:08,353 queueserver_service.manager.manager] Resuming paused plan ...
+  [I 2022-02-17 17:07:08,353 queueserver_service.manager.worker] Run Engine: resume
+  [I 2022-02-17 17:07:08,353 queueserver_service.manager.worker] Continue plan execution with the option 'resume'
   |         2 | 17:07:08.3 |      1.765 |      5.000 |
   |         3 | 17:07:08.3 |      1.765 |      5.000 |
   |         4 | 17:07:18.3 |      1.765 |      5.000 |
@@ -809,12 +809,12 @@ and repeated after the plan was resumed::
   +-----------+------------+------------+------------+
   |         1 | 17:15:31.7 |      1.765 |      5.000 |
   |         2 | 17:15:41.7 |      1.765 |      5.000 |
-  [I 2022-02-17 17:15:42,340 bluesky_queueserver.manager.manager] Pausing the queue (currently running plan) ...
-  [I 2022-02-17 17:15:42,341 bluesky_queueserver.manager.worker] Pausing Run Engine ...
+  [I 2022-02-17 17:15:42,340 queueserver_service.manager.manager] Pausing the queue (currently running plan) ...
+  [I 2022-02-17 17:15:42,341 queueserver_service.manager.worker] Pausing Run Engine ...
   Pausing...
-  [I 2022-02-17 17:15:52,403 bluesky_queueserver.manager.manager] Resuming paused plan ...
-  [I 2022-02-17 17:15:52,403 bluesky_queueserver.manager.worker] Run Engine: resume
-  [I 2022-02-17 17:15:52,403 bluesky_queueserver.manager.worker] Continue plan execution with the option 'resume'
+  [I 2022-02-17 17:15:52,403 queueserver_service.manager.manager] Resuming paused plan ...
+  [I 2022-02-17 17:15:52,403 queueserver_service.manager.worker] Run Engine: resume
+  [I 2022-02-17 17:15:52,403 queueserver_service.manager.worker] Continue plan execution with the option 'resume'
   |         2 | 17:15:52.4 |      1.765 |      5.000 |
   |         3 | 17:16:02.4 |      1.765 |      5.000 |
   |         4 | 17:16:12.4 |      1.765 |      5.000 |
@@ -1310,7 +1310,7 @@ Now start RE Manager (with or without setting Matplotlib backend), then open the
 
 The console output of RE Manager will contain the following::
 
-  [I 2023-04-30 17:31:45,811 bluesky_queueserver.manager.worker] Initializing IPython kernel ...
+  [I 2023-04-30 17:31:45,811 queueserver_service.manager.worker] Initializing IPython kernel ...
   NOTE: When using the `ipython kernel` entry point, Ctrl-C will not work.
 
   To exit, you will have to explicitly quit this process, by either sending
@@ -1323,7 +1323,7 @@ The console output of RE Manager will contain the following::
   Loading file '/tmp/qserver/ipython/profile_collection_sim/startup/00-ophyd.py'
   Loading file '/tmp/qserver/ipython/profile_collection_sim/startup/15-plans.py'
   Loading file '/tmp/qserver/ipython/profile_collection_sim/startup/99-custom.py'
-  [I 2023-04-30 17:31:46,817 bluesky_queueserver.manager.worker] IPython kernel connection info:
+  [I 2023-04-30 17:31:46,817 queueserver_service.manager.worker] IPython kernel connection info:
   {'transport': 'tcp',
   'ip': '127.0.0.1',
   'shell_port': 45493,
@@ -2005,7 +2005,7 @@ or replaced custom scripts.
 The directory should be readable and writable for the user running RE Manager.
 
 **Step 2.** Copy startup scripts (only .py files) and ``user_group_permissions.yaml`` from
-`the repository <https://github.com/bluesky/bluesky-queueserver/tree/main/bluesky_queueserver/profile_collection_sim>`_
+`the repository <https://github.com/bluesky/bluesky-queueserver/tree/main/queueserver_service/profile_collection_sim>`_
 to ``~/qs_startup``. The file ``existing_plans_and_devices.yaml`` will be generated by RE Manager
 as part of the tutorial, so do not copy it. The directory should contain the following files::
 
@@ -2015,14 +2015,14 @@ as part of the tutorial, so do not copy it. The directory should contain the fol
 **Step 3.** Start RE Manager by specifying the path to startup directory::
 
   $ start-re-manager --startup-dir ~/qs_startup
-  [W 2022-02-17 18:43:10,262 bluesky_queueserver.manager.start_manager] The file with the list of allowed plans and devices ('/home/dgavrilov/qs_startup/existing_plans_and_devices.yaml') does not exist. The manager will be started with empty list. The list will be populated after RE worker environment is opened the first time.
-  [I 2022-02-17 18:43:10,263 bluesky_queueserver.manager.manager] Starting ZMQ server at 'tcp://*:60615'
-  [I 2022-02-17 18:43:10,263 bluesky_queueserver.manager.manager] ZMQ control channels: encryption disabled
-  [I 2022-02-17 18:43:10,266 bluesky_queueserver.manager.manager] Starting RE Manager process
-  [I 2022-02-17 18:43:10,284 bluesky_queueserver.manager.manager] Loading the lists of allowed plans and devices ...
-  [W 2022-02-17 18:43:10,284 bluesky_queueserver.manager.profile_ops] List of plans and devices is not loaded. File 'existing_plans_and_devices.yaml' does not exist.
-  [I 2022-02-17 18:43:10,285 bluesky_queueserver.manager.manager] Starting ZeroMQ server ...
-  [I 2022-02-17 18:43:10,285 bluesky_queueserver.manager.manager] ZeroMQ server is waiting on tcp://*:60615
+  [W 2022-02-17 18:43:10,262 queueserver_service.manager.start_manager] The file with the list of allowed plans and devices ('/home/dgavrilov/qs_startup/existing_plans_and_devices.yaml') does not exist. The manager will be started with empty list. The list will be populated after RE worker environment is opened the first time.
+  [I 2022-02-17 18:43:10,263 queueserver_service.manager.manager] Starting ZMQ server at 'tcp://*:60615'
+  [I 2022-02-17 18:43:10,263 queueserver_service.manager.manager] ZMQ control channels: encryption disabled
+  [I 2022-02-17 18:43:10,266 queueserver_service.manager.manager] Starting RE Manager process
+  [I 2022-02-17 18:43:10,284 queueserver_service.manager.manager] Loading the lists of allowed plans and devices ...
+  [W 2022-02-17 18:43:10,284 queueserver_service.manager.profile_ops] List of plans and devices is not loaded. File 'existing_plans_and_devices.yaml' does not exist.
+  [I 2022-02-17 18:43:10,285 queueserver_service.manager.manager] Starting ZeroMQ server ...
+  [I 2022-02-17 18:43:10,285 queueserver_service.manager.manager] ZeroMQ server is waiting on tcp://*:60615
 
 **Step 4.** Open RE Worker environment::
 
@@ -2067,7 +2067,7 @@ Manually Generating Lists of Existing Plans and Devices
 RE Manager generates or updates the list of existing plans and devices automatically when
 RE Worker environment is opened, but in some cases it is convenient to generate
 the list manually. For example, the developers wishing to update ``existing_plans_and_devices.yaml``
-in `the 'profile_collection_sim' directory <https://github.com/bluesky/bluesky-queueserver/tree/main/bluesky_queueserver/profile_collection_sim>`_
+in `the 'profile_collection_sim' directory <https://github.com/bluesky/bluesky-queueserver/tree/main/queueserver_service/profile_collection_sim>`_
 when the respective startup files are modified only have the option to do it manually (RE Manager
 is designed not to automatically modify files in built-in ``profile_collection_sim`` directory).
 

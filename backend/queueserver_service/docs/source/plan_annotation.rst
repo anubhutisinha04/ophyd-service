@@ -4,7 +4,7 @@
 Annotating Bluesky Plans
 ========================
 
-.. currentmodule:: bluesky_queueserver
+.. currentmodule:: queueserver_service
 
 Introduction
 ------------
@@ -235,7 +235,7 @@ but only the listed names will be converted to references:
     # Assume that the detectors 'det1', 'det2', 'det3' are in the list
     #   of allowed devices for the user submitting the plan.
 
-    from bluesky_queueserver import parameter_annotation_decorator
+    from queueserver_service import parameter_annotation_decorator
 
     @parameter_annotation_decorator({
         "parameters": {
@@ -485,7 +485,7 @@ example, the description for the parameter `npts` is not overridden in the decor
 
 .. code-block::  python
 
-  from bluesky_queueserver import parameter_annotation_decorator
+  from queueserver_service import parameter_annotation_decorator
 
   @parameter_annotation_decorator({
       "description": "Plan description displayed to users.",
@@ -557,7 +557,7 @@ device names).
   from typing import List
   from ophyd import Device
   from ophyd.sim import det1, det2, det3, det4, det5
-  from bluesky_queueserver import parameter_annotation_decorator
+  from queueserver_service import parameter_annotation_decorator
 
   @parameter_annotation_decorator({
       "parameters": {
@@ -630,7 +630,7 @@ attributes are converted to references to the respective objects from the worker
 .. code-block:: python
 
   from ophyd.sim import det1, det2, det3, det4
-  from bluesky_queueserver import parameter_annotation_decorator
+  from queueserver_service import parameter_annotation_decorator
 
   @parameter_annotation_decorator({
       "parameters": {
@@ -674,7 +674,7 @@ parameter annotation defined in plan header and ``parameter_annotation_decorator
 .. code-block:: python
 
   from ophyd.sim import det1, det2, det3, det4
-  from bluesky_queueserver import parameter_annotation_decorator
+  from queueserver_service import parameter_annotation_decorator
 
   @parameter_annotation_decorator({
       "parameters": {
@@ -734,7 +734,7 @@ the name of one of the supported devices.
 .. code-block:: python
 
   from ophyd.sim import det1, det2, det3
-  from bluesky_queueserver import parameter_annotation_decorator
+  from queueserver_service import parameter_annotation_decorator
 
   @parameter_annotation_decorator({
       "parameters": {

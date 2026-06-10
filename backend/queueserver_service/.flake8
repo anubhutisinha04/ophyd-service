@@ -5,7 +5,7 @@ exclude =
     build,
     dist,
     versioneer.py,
-    bluesky_queueserver/_version.py,
+    queueserver_service/_version.py,
     docs/source/conf.py
 # There are some errors produced by 'black', therefore unavoidable
 # E114 - there is some glitch in flake8 that shows the error for correctly formatted code.

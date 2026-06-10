@@ -4,7 +4,7 @@
 Organizing Bluesky Startup Code
 ===============================
 
-.. currentmodule:: bluesky_queueserver
+.. currentmodule:: queueserver_service
 
 .. _detecting_if_code_executed_by_re_worker:
 
@@ -20,7 +20,7 @@ with the user) when experiments are controlled remotely:
 
 .. code-block:: python
 
-    from bluesky_queueserver import is_re_worker_active
+    from queueserver_service import is_re_worker_active
 
     ...
 

@@ -7,9 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpam0g \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml setup.cfg setup.py versioneer.py README.rst MANIFEST.in requirements.txt ./
-COPY bluesky_queueserver ./bluesky_queueserver/
-COPY subprojects ./subprojects/
+COPY pyproject.toml README.md requirements.txt ./
+COPY queueserver_service ./queueserver_service/
 
 # Extra deps the editable install doesn't pull but the service needs at runtime:
 #   pandas     -- imported unconditionally by manager/conversions.py (spreadsheet->plan)
@@ -30,7 +29,7 @@ EXPOSE 60610
 # (http_server + config_service sections) and --redis-addr; this CMD is the
 # standalone default.
 CMD ["start-re-manager", \
-     "--startup-dir", "/app/bluesky_queueserver/profile_collection_sim", \
+     "--startup-dir", "/app/queueserver_service/profile_collection_sim", \
      "--zmq-control-addr", "tcp://*:60615", \
      "--zmq-info-addr", "tcp://*:60625", \
      "--http-port", "60610"]
