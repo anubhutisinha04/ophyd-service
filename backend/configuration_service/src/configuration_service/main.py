@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from .models import (
+    LockPolicy,
     DeviceMetadata,
     DeviceInstantiationSpec,
     DeviceRegistry,
@@ -331,9 +332,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 database_url=settings.database_url,
             )
 
-        # Initialize device lock manager (in-memory, ephemeral)
-        lock_manager_container["manager"] = DeviceLockManager()
-        logger.info("device_lock_manager_initialized")
+        # Initialize device lock manager (in-memory, ephemeral). lock_all is
+        # the boot default for the availability policy; runtime-changeable
+        # via PUT /api/v1/devices/lock/policy.
+        lock_manager_container["manager"] = DeviceLockManager(lock_all=settings.lock_all)
+        logger.info("device_lock_manager_initialized", lock_all=settings.lock_all)
 
         # Initialize PV health manager (in-memory, ephemeral).
         pv_health_container["manager"] = PVHealthManager()
@@ -902,6 +905,39 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             registry_version=lock_manager.version,
         )
 
+    # ===== Lock Policy =====
+    # Like the lock routes above, must precede the {device_name} wildcard.
+
+    @app.get(
+        "/api/v1/devices/lock/policy",
+        response_model=LockPolicy,
+        summary="Get Lock Policy",
+        tags=["Device Locking"],
+    )
+    async def get_lock_policy(lock_manager: LockManagerDep) -> LockPolicy:
+        """Current lock_all availability policy (boot default: CONFIG_LOCK_ALL)."""
+        return LockPolicy(lock_all=lock_manager.lock_all_enabled)
+
+    @app.put(
+        "/api/v1/devices/lock/policy",
+        response_model=LockPolicy,
+        summary="Set Lock Policy",
+        tags=["Device Locking"],
+    )
+    async def set_lock_policy(
+        policy: LockPolicy, lock_manager: LockManagerDep
+    ) -> LockPolicy:
+        """
+        Set the lock_all availability policy at runtime.
+
+        Takes effect immediately for every subsequent availability read
+        (device status, PV status). In-memory like the locks themselves —
+        a restart returns to the CONFIG_LOCK_ALL boot default.
+        """
+        lock_manager.set_lock_all(policy.lock_all)
+        logger.info("lock_policy_set", lock_all=policy.lock_all)
+        return LockPolicy(lock_all=lock_manager.lock_all_enabled)
+
     # ===== Device Status Endpoint =====
     # Must be defined before the {device_name} wildcard GET route.
 
@@ -939,7 +975,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 detail=f"Registry inconsistency: device '{device_name}' has no instantiation spec",
             )
         enabled = spec.active
-        lock_state = lock_manager.get_device_lock(device_name)
+        lock_state = lock_manager.effective_lock(device_name)
         locked = lock_state is not None
 
         # Roll up health for this device's PVs. ``device.pvs`` maps
@@ -2004,7 +2040,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 ),
             )
         enabled = spec.active
-        lock_state = lock_manager.get_device_lock(device_name)
+        lock_state = lock_manager.effective_lock(device_name)
         locked = lock_state is not None
 
         return PVStatusResponse(

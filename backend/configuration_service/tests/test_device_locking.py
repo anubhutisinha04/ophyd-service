@@ -528,3 +528,97 @@ class TestSpecMissingFailsHard:
         # det1 must remain unlocked — atomicity preserved
         det_status = client.get("/api/v1/devices/det1/status").json()
         assert det_status["lock_status"] == "unlocked"
+
+
+class TestLockAllPolicy:
+    """lock_all availability policy: while ANY lock is held, every registered
+    device reports locked — not just the devices the plan named. Acquisition
+    and release semantics stay untouched."""
+
+    def _lock_sample_x(self, client, plan="count", item="item-001"):
+        resp = client.post(
+            "/api/v1/devices/lock",
+            json={"device_names": ["sample_x"], "item_id": item, "plan_name": plan},
+        )
+        assert resp.status_code == 200
+
+    def test_policy_defaults_off_and_locking_stays_scoped(self, client):
+        assert client.get("/api/v1/devices/lock/policy").json() == {"lock_all": False}
+
+        self._lock_sample_x(client)
+        status = client.get("/api/v1/devices/det1/status").json()
+        assert status["available"] is True
+        assert status["lock_status"] == "unlocked"
+
+    def test_lock_all_locks_unnamed_devices(self, client):
+        resp = client.put("/api/v1/devices/lock/policy", json={"lock_all": True})
+        assert resp.status_code == 200
+        assert resp.json() == {"lock_all": True}
+
+        self._lock_sample_x(client)
+
+        # det1 was never named in the lock request, yet reports locked,
+        # attributed to the plan that holds the (global) lock.
+        status = client.get("/api/v1/devices/det1/status").json()
+        assert status["available"] is False
+        assert status["lock_status"] == "locked"
+        assert status["locked_by_plan"] == "count"
+
+        # PV-keyed availability derives identically (det1's own PV).
+        pvs = client.get("/api/v1/devices/det1").json()["pvs"]
+        pv_name = list(pvs.values())[0]
+        pv = client.get("/api/v1/pvs/status", params={"pv_name": pv_name}).json()
+        assert pv["available"] is False
+        assert pv["device_lock_status"] == "locked"
+        assert pv["locked_by_plan"] == "count"
+
+    def test_lock_all_releases_with_last_lock(self, client):
+        client.put("/api/v1/devices/lock/policy", json={"lock_all": True})
+        self._lock_sample_x(client)
+        assert client.get("/api/v1/devices/det1/status").json()["available"] is False
+
+        resp = client.post(
+            "/api/v1/devices/unlock",
+            json={"device_names": ["sample_x"], "item_id": "item-001"},
+        )
+        assert resp.status_code == 200
+
+        status = client.get("/api/v1/devices/det1/status").json()
+        assert status["available"] is True
+        assert status["lock_status"] == "unlocked"
+
+    def test_lock_all_does_not_change_acquisition(self, client):
+        """The policy only widens AVAILABILITY derivation; a second plan can
+        still acquire a lock on an un-locked device (acquisition conflicts
+        remain per-device, all-or-nothing)."""
+        client.put("/api/v1/devices/lock/policy", json={"lock_all": True})
+        self._lock_sample_x(client)
+
+        resp = client.post(
+            "/api/v1/devices/lock",
+            json={"device_names": ["det1"], "item_id": "item-002", "plan_name": "scan"},
+        )
+        assert resp.status_code == 200
+
+        # det1 now carries its OWN lock and is attributed to its own plan.
+        status = client.get("/api/v1/devices/det1/status").json()
+        assert status["locked_by_plan"] == "scan"
+
+    def test_policy_can_be_turned_off_again(self, client):
+        client.put("/api/v1/devices/lock/policy", json={"lock_all": True})
+        self._lock_sample_x(client)
+        assert client.get("/api/v1/devices/det1/status").json()["available"] is False
+
+        client.put("/api/v1/devices/lock/policy", json={"lock_all": False})
+        assert client.get("/api/v1/devices/det1/status").json()["available"] is True
+
+    def test_lock_all_boot_default_from_settings(self, db_url):
+        settings = Settings(
+            use_mock_data=True,
+            database_url=db_url,
+            device_change_history_enabled=True,
+            lock_all=True,
+        )
+        app = create_app(settings)
+        with TestClient(app) as c:
+            assert c.get("/api/v1/devices/lock/policy").json() == {"lock_all": True}

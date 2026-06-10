@@ -178,6 +178,26 @@ async def test_lock_status_available_then_locked(side_a):
     assert post.locked_by == "count"
 
 
+async def test_lock_all_policy_locks_unnamed_devices(side_a):
+    """With the lock_all policy on, ANY held lock makes every registered
+    device report LOCKED through the coordination edge — det1 was never
+    named in the lock request. Pins the PUT /devices/lock/policy +
+    derived-status contract end to end."""
+    resp = await side_a.raw.put("/api/v1/devices/lock/policy", json={"lock_all": True})
+    assert resp.status_code == 200
+
+    resp = await side_a.raw.post(
+        "/api/v1/devices/lock",
+        json={"device_names": [_DEVICE], "item_id": "item-002", "plan_name": "scan"},
+    )
+    assert resp.status_code == 200
+
+    status = await side_a.coord.check_device_available("det1")
+    assert status.status is DeviceLockStatus.LOCKED
+    assert status.device_available is False
+    assert status.locked_by == "scan"
+
+
 async def test_unregistered_name_maps_to_available(side_a):
     """An unregistered name 404s on /status and maps to AVAILABLE.
 

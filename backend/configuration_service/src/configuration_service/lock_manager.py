@@ -119,10 +119,15 @@ class DeviceLockManager:
     Lock state is ephemeral — cleared on service restart.
     """
 
-    def __init__(self):
+    def __init__(self, lock_all: bool = False):
         self._locks: Dict[str, DeviceLockState] = {}
         self._lock = asyncio.Lock()
         self._version: int = 0
+        # "lock_all" availability policy: when True and any lock is held,
+        # effective_lock() reports every device as locked. Boot default comes
+        # from settings (CONFIG_LOCK_ALL); mutable at runtime via the
+        # lock-policy endpoint.
+        self.lock_all_enabled = lock_all
 
     @property
     def version(self) -> int:
@@ -323,6 +328,41 @@ class DeviceLockManager:
     def get_all_locks(self) -> Dict[str, DeviceLockState]:
         """Return a copy of all active locks."""
         return {name: state for name, state in self._locks.items() if state.locked}
+
+    def set_lock_all(self, enabled: bool) -> None:
+        """Flip the lock_all availability policy at runtime."""
+        if enabled != self.lock_all_enabled:
+            self.lock_all_enabled = enabled
+            self._version += 1
+            logger.info("lock_all policy set to %s", enabled)
+
+    def global_lock_holder(self) -> Optional[DeviceLockState]:
+        """The lock representing "a plan is running" under lock_all.
+
+        The earliest-acquired active lock — stable for as long as that plan
+        holds it, so locked_by_plan in status responses doesn't flap when
+        additional locks come and go.
+        """
+        active = [state for state in self._locks.values() if state.locked]
+        if not active:
+            return None
+        return min(active, key=lambda state: state.locked_at)
+
+    def effective_lock(self, device_name: str) -> Optional[DeviceLockState]:
+        """The lock state governing this device's AVAILABILITY.
+
+        The device's own lock when present; otherwise, when the lock_all
+        policy is on and any lock is held anywhere, the global holder's
+        lock — every registered device is unavailable while a plan runs.
+        Lock acquisition/release is not affected by the policy; use
+        get_device_lock() for the device's literal lock state.
+        """
+        own = self.get_device_lock(device_name)
+        if own is not None:
+            return own
+        if self.lock_all_enabled:
+            return self.global_lock_holder()
+        return None
 
     def _get_device_pvs(
         self,

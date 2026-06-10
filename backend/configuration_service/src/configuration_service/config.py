@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     # the registry is loaded from the profile on every startup with no DB.
     device_change_history_enabled: bool = True
 
+    # "lock_all" availability policy. When True, the moment ANY device lock is
+    # held (i.e. a plan is running), EVERY registered device reports
+    # locked/unavailable to direct-control — not just the devices the plan
+    # named. Lock acquisition/release semantics are unchanged; only how
+    # availability is derived from lock state changes. This setting is the
+    # boot default; the policy is runtime-changeable via
+    # GET/PUT /api/v1/devices/lock/policy. Standalone PVs (no owning device)
+    # have no device-level lock concept and are not affected.
+    lock_all: bool = False
+
     # Live-enrichment fallback for the path resolver.
     # When the resolver returns ``needs_enrichment`` (typically a classic
     # ophyd FormattedComponent with a {placeholder}), configuration_service

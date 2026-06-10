@@ -738,6 +738,19 @@ class DeviceLockConflict(BaseModel):
     locked_at: Optional[str] = Field(default=None, description="ISO timestamp of lock acquisition")
 
 
+class LockPolicy(BaseModel):
+    """Global device-lock availability policy.
+
+    ``lock_all=True``: while ANY device lock is held (a plan is running),
+    every registered device reports locked/unavailable — not just the
+    devices the plan named. Lock acquisition/release semantics are
+    unchanged. Boot default comes from CONFIG_LOCK_ALL; runtime value is
+    read/changed via GET/PUT /api/v1/devices/lock/policy.
+    """
+
+    lock_all: bool
+
+
 class DeviceLockResponse(BaseModel):
     """Response model for successful lock acquisition."""
 
