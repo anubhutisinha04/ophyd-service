@@ -16,7 +16,7 @@ import structlog
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict
 
-from ..config import Settings
+from ..config import READ_ONLY_MESSAGE, Settings
 from ..models import (
     DeviceCommandRequest,
     DeviceInfo,
@@ -61,6 +61,8 @@ class SubscribeOutcome(BaseModel):
     ok: bool
     reason: Optional[SubscribeReason] = None
     failed_pvs: List[FailedPV] = []
+
+
 from ._envelopes import (
     LockedWS,
     close_connections,
@@ -162,9 +164,7 @@ class DeviceWebSocketManager:
             client = await self._get_http_client()
             response = await client.get(f"{config_url}/api/v1/devices/{device_name}")
         except httpx.RequestError as exc:
-            logger.error(
-                "device_info_unreachable", device_name=device_name, error=str(exc)
-            )
+            logger.error("device_info_unreachable", device_name=device_name, error=str(exc))
             return None, "upstream_unreachable"
 
         if response.status_code == 200:
@@ -668,8 +668,7 @@ class DeviceWebSocketManager:
                 f"'{device_name}'; cannot subscribe."
             ),
             "upstream_unreachable": (
-                f"Configuration service is unreachable; cannot resolve device "
-                f"'{device_name}'."
+                f"Configuration service is unreachable; cannot resolve device '{device_name}'."
             ),
             "not_connected": f"Device {device_name} PVs are not connected",
         }
@@ -714,9 +713,7 @@ class DeviceWebSocketManager:
         outcome = await self.subscribe_device(client_id, device_name)
         if outcome.ok:
             if outcome.failed_pvs:
-                await self._emit_failed_pv_envelopes(
-                    websocket, device_name, outcome.failed_pvs
-                )
+                await self._emit_failed_pv_envelopes(websocket, device_name, outcome.failed_pvs)
             await send_event(
                 websocket,
                 "subscribed",
@@ -746,9 +743,7 @@ class DeviceWebSocketManager:
             await send_error(websocket, "device field required")
             return
 
-        outcome = await self.subscribe_device(
-            client_id, device_name, require_connection=True
-        )
+        outcome = await self.subscribe_device(client_id, device_name, require_connection=True)
         # require_connection rolls back on any PV failure, so failed_pvs
         # is always empty here.
         if outcome.ok:
@@ -765,9 +760,7 @@ class DeviceWebSocketManager:
         outcome = await self.subscribe_device(client_id, device_name)
         if outcome.ok:
             if outcome.failed_pvs:
-                await self._emit_failed_pv_envelopes(
-                    websocket, device_name, outcome.failed_pvs
-                )
+                await self._emit_failed_pv_envelopes(websocket, device_name, outcome.failed_pvs)
             await send_event(websocket, "subscribed", device=device_name, read_only=True)
         else:
             await self._send_subscribe_error(websocket, device_name, outcome.reason)
@@ -790,6 +783,10 @@ class DeviceWebSocketManager:
 
     async def _handle_set(self, client_id: str, websocket: WebSocket, data: dict):
         """Set device component via DeviceControl (inherits coordination check)."""
+        if self.settings.global_read_only:
+            await send_error(websocket, READ_ONLY_MESSAGE)
+            return
+
         device_name = data.get("device")
         value = data.get("value")
         component = data.get("component")
@@ -833,6 +830,10 @@ class DeviceWebSocketManager:
 
     async def _handle_stop(self, client_id: str, websocket: WebSocket, data: dict):
         """Stop a device via DeviceControl (inherits coordination check)."""
+        if self.settings.global_read_only:
+            await send_error(websocket, READ_ONLY_MESSAGE)
+            return
+
         device_name = data.get("device")
 
         if not device_name:

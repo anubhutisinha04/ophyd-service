@@ -33,7 +33,9 @@ class DeviceLockStatus(str, Enum):
     """
 
     AVAILABLE = "available"
-    LOCKED = "locked"      # held by an active plan (lock written by queueserver to configuration_service)
+    LOCKED = (
+        "locked"  # held by an active plan (lock written by queueserver to configuration_service)
+    )
     DISABLED = "disabled"  # administratively disabled in configuration_service
     UNKNOWN = "unknown"
 
@@ -663,6 +665,9 @@ class HealthResponse(BaseModel):
     timestamp: datetime
     coordination_service_available: bool
     coordination_service_detail: Optional[str] = None
+    # Running mode, so a file-backed / read-only deployment is always visible.
+    registry_backend: str = "http"  # http | file (auto resolves to one of these)
+    read_only: bool = False
     active_subscriptions: int = 0
     connected_pvs: int = 0
     websocket_connections: int = 0

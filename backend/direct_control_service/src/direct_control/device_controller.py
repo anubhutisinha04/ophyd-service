@@ -6,7 +6,7 @@ coordination checks (A4 requirement).
 """
 
 import asyncio
-from typing import Any, Optional, Dict, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 import structlog
 from epics import ca, caget, caput, get_pv
 from datetime import datetime
@@ -26,8 +26,7 @@ from .models import (
 from .config import Settings
 
 if TYPE_CHECKING:
-    from .protocols import CoordinationService
-    from .registry_client import RegistryClient
+    from .protocols import CoordinationService, RegistryProvider
 
 
 logger = structlog.get_logger(__name__)
@@ -47,7 +46,7 @@ class DeviceController:
         self,
         settings: Settings,
         coordination: "CoordinationService",
-        registry_client: "RegistryClient",
+        registry_client: "RegistryProvider",
     ):
         """
         Initialize device controller.
@@ -94,9 +93,7 @@ class DeviceController:
                 f"configuration_service. Re-enable before commanding."
             )
         if coord_status.status == DeviceLockStatus.LOCKED:
-            logger.warning(
-                "device_locked", locked_by=coord_status.locked_by, **{kind: target}
-            )
+            logger.warning("device_locked", locked_by=coord_status.locked_by, **{kind: target})
             raise DeviceLockedError(
                 f"{kind.replace('_', ' ').capitalize()} {target} is locked by "
                 f"plan {coord_status.locked_by}"
@@ -140,9 +137,7 @@ class DeviceController:
         # without a device owner (standalone) fall back to the PV name —
         # configuration_service will return 404 for those, and the
         # coordination check treats that as "no lock concept, available".
-        coord_target = (
-            await self.registry_client.get_owning_device(pv_name)
-        ) or pv_name
+        coord_target = (await self.registry_client.get_owning_device(pv_name)) or pv_name
         coord_status = await self.coordination.check_device_available(coord_target)
         self._raise_for_unavailable(coord_target, "device_name", coord_status)
 

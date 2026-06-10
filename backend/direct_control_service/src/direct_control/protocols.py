@@ -85,6 +85,35 @@ class CoordinationService(Protocol):
 
 
 @runtime_checkable
+class RegistryProvider(Protocol):
+    """Protocol for the device/PV existence registry.
+
+    Confirms a PV/device exists before an operation reaches EPICS, and maps a
+    PV to its owning device for the coordination gate. Implementations:
+    - RegistryClient: HTTP client to configuration_service (the authoritative
+      shared registry used in full beamline deployments)
+    - FileRegistryProvider: a static JSON/YAML file (standalone / monitoring-
+      only deployments with no configuration_service)
+    """
+
+    async def validate_pv(self, pv_name: str) -> None:
+        """Raise RegistryValidationError if the PV is not registered."""
+        ...
+
+    async def validate_device(self, device_name: str) -> None:
+        """Raise RegistryValidationError if the device is not registered."""
+        ...
+
+    async def get_owning_device(self, pv_name: str) -> Optional[str]:
+        """Return the device owning this PV, or None for standalone/unknown PVs."""
+        ...
+
+    async def cleanup(self) -> None:
+        """Cleanup resources (HTTP client, etc.)."""
+        ...
+
+
+@runtime_checkable
 class DeviceControl(Protocol):
     """
     Protocol for device control operations.

@@ -136,6 +136,9 @@ services:
     environment:
       DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
       DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
+      # Enable control: read-only defaults to true (monitor-only); the
+      # exerciser does PV writes, so this integration pod allows them.
+      DIRECT_CONTROL_GLOBAL_READ_ONLY: "false"
       # pyepics: list every IOC service so CA search reaches them all on the
       # compose network. Disable broadcast — explicit list keeps stray
       # search requests from leaving the docker net.

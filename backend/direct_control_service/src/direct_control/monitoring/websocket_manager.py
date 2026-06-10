@@ -14,7 +14,7 @@ from typing import Callable, Dict, Optional, Set, TYPE_CHECKING
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
 
-from ..config import Settings
+from ..config import READ_ONLY_MESSAGE, Settings
 from ..models import (
     DeviceCommandRequest,
     DeviceLockedError,
@@ -22,7 +22,7 @@ from ..models import (
     PVUpdate,
     WebSocketAction,
 )
-from ..registry_client import RegistryClient, RegistryValidationError
+from ..registry_client import RegistryValidationError
 from ._envelopes import (
     LockedWS,
     close_connections,
@@ -41,12 +41,10 @@ SUB_TYPE_META = "meta"
 # Hoisted out of `_make_pv_callback` so the EPICS-callback hot path doesn't
 # allocate a new closure per fired update.
 _PV_BROADCAST_DONE_CB = partial(log_threadsafe_future_exceptions, where="pv_broadcast_update")
-_PV_CALLBACK_ERROR_DONE_CB = partial(
-    log_threadsafe_future_exceptions, where="pv_callback_error"
-)
+_PV_CALLBACK_ERROR_DONE_CB = partial(log_threadsafe_future_exceptions, where="pv_callback_error")
 
 if TYPE_CHECKING:
-    from ..protocols import DeviceControl, PVMonitor
+    from ..protocols import DeviceControl, PVMonitor, RegistryProvider
 
 
 logger = structlog.get_logger(__name__)
@@ -65,7 +63,7 @@ class WebSocketManager:
         pv_monitor: "PVMonitor",
         device_controller: "DeviceControl",
         settings: Settings,
-        registry_client: Optional[RegistryClient] = None,
+        registry_client: "Optional[RegistryProvider]" = None,
     ):
         self.pv_monitor = pv_monitor
         self.device_controller = device_controller
@@ -141,7 +139,9 @@ class WebSocketManager:
                 logger.warning("subscribe_unknown_client", client_id=client_id)
                 return
 
-            new_pvs: list[tuple[str, Callable[[PVUpdate], None], Callable[[BaseException], None]]] = []
+            new_pvs: list[
+                tuple[str, Callable[[PVUpdate], None], Callable[[BaseException], None]]
+            ] = []
             for pv_name in pv_names:
                 self._subscriptions[client_id].add(pv_name)
                 if pv_name not in self._pv_clients:
@@ -465,6 +465,10 @@ class WebSocketManager:
 
     async def _handle_set(self, client_id: str, websocket: WebSocket, data: dict):
         """Set PV value via DeviceControl (inherits coordination check)."""
+        if self.settings.global_read_only:
+            await send_error(websocket, READ_ONLY_MESSAGE)
+            return
+
         pv = data.get("pv")
         value = data.get("value")
         timeout = data.get("timeout")
@@ -498,6 +502,10 @@ class WebSocketManager:
 
     async def _handle_stop(self, websocket: WebSocket, data: dict):
         """Stop a device via DeviceControl (inherits coordination check)."""
+        if self.settings.global_read_only:
+            await send_error(websocket, READ_ONLY_MESSAGE)
+            return
+
         device = data.get("device")
 
         if not device:

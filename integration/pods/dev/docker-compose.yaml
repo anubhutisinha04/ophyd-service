@@ -128,6 +128,8 @@ services:
     environment:
       DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
       DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
+      # Read-only defaults to true (monitor-only); allow control in the pod.
+      DIRECT_CONTROL_GLOBAL_READ_ONLY: "false"
       EPICS_CA_ADDR_LIST: "ioc ioc_motor"
       EPICS_CA_AUTO_ADDR_LIST: "NO"
     volumes:

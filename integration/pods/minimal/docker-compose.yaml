@@ -74,6 +74,8 @@ services:
       DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
       # No EE service in the pod; coordination check would 502 every call.
       DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
+      # Read-only defaults to true (monitor-only); allow control in the pod.
+      DIRECT_CONTROL_GLOBAL_READ_ONLY: "false"
       # pyepics: point CA search at the compose-network IOC only.
       EPICS_CA_ADDR_LIST: ioc
       EPICS_CA_AUTO_ADDR_LIST: "NO"

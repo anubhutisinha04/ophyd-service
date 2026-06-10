@@ -46,7 +46,8 @@ from ophyd import EpicsSignalRO
 from PIL import Image
 
 from ..config import Settings
-from ..registry_client import RegistryClient, RegistryValidationError
+from ..protocols import RegistryProvider
+from ..registry_client import RegistryValidationError
 from ._envelopes import (
     LockedWS,
     close_connections,
@@ -117,7 +118,7 @@ class ImageStreamManager:
         self,
         settings: Settings,
         kind: str,
-        registry_client: Optional[RegistryClient] = None,
+        registry_client: Optional[RegistryProvider] = None,
     ) -> None:
         if kind not in ("camera", "tiff"):
             raise ValueError(f"ImageStreamManager kind must be camera|tiff, got {kind!r}")
@@ -239,16 +240,14 @@ class ImageStreamManager:
             initial_frame = await asyncio.to_thread(array_signal.get)
             _enqueue(queue, (_FRAME, initial_frame))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("image_prime_failed", client_id=client_id, kind=self.kind, error=str(exc))
+            logger.warning(
+                "image_prime_failed", client_id=client_id, kind=self.kind, error=str(exc)
+            )
 
         recv_task = asyncio.create_task(self._receive_loop(ws, state))
-        stream_task = asyncio.create_task(
-            self._stream_loop(ws, queue, state, setting_signals)
-        )
+        stream_task = asyncio.create_task(self._stream_loop(ws, queue, state, setting_signals))
         try:
-            await asyncio.wait(
-                {recv_task, stream_task}, return_when=asyncio.FIRST_COMPLETED
-            )
+            await asyncio.wait({recv_task, stream_task}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             # Quiesce CA callbacks before signals are destroyed in _teardown.
             state.closing = True
@@ -304,9 +303,7 @@ class ImageStreamManager:
                     dims = await asyncio.to_thread(_compute_dimensions, setting_signals)
                 except Exception as exc:  # noqa: BLE001
                     if not state.closing:
-                        logger.warning(
-                            "image_dims_compute_failed", kind=self.kind, error=str(exc)
-                        )
+                        logger.warning("image_dims_compute_failed", kind=self.kind, error=str(exc))
                     continue
                 state.dimensions = dims
                 # finch reads only x/y; extra keys (colorMode/dataType) are
@@ -373,9 +370,7 @@ class ImageStreamManager:
             try:
                 await asyncio.to_thread(signal.destroy)
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "image_signal_destroy_failed", client_id=client_id, error=str(exc)
-                )
+                logger.warning("image_signal_destroy_failed", client_id=client_id, error=str(exc))
         try:
             await ws.close()
         except Exception:  # noqa: BLE001
@@ -537,7 +532,11 @@ def _reshape(array: np.ndarray, height: int, width: int, color_mode: str) -> tup
         return array.reshape((height, width, 3)), "RGB"
     if color_mode == "RGB2":
         array = array.reshape((height, width * 3))
-        red, green, blue = array[:, 0:width], array[:, width : 2 * width], array[:, 2 * width : 3 * width]
+        red, green, blue = (
+            array[:, 0:width],
+            array[:, width : 2 * width],
+            array[:, 2 * width : 3 * width],
+        )
         return np.stack((red, green, blue), axis=-1), "RGB"
     if color_mode == "RGB3":
         plane = height * width
