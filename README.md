@@ -63,6 +63,7 @@ a running backend.
 ```bash
 cat shared-schema/configuration_service.openapi.json
 cat shared-schema/direct_control.openapi.json
+cat shared-schema/queueserver_service.openapi.json
 ```
 
 Generate types:
@@ -72,6 +73,8 @@ npx openapi-typescript shared-schema/configuration_service.openapi.json \
     -o frontend/src/api/configuration_service.d.ts
 npx openapi-typescript shared-schema/direct_control.openapi.json \
     -o frontend/src/api/direct_control.d.ts
+npx openapi-typescript shared-schema/queueserver_service.openapi.json \
+    -o frontend/src/api/queueserver_service.d.ts
 ```
 
 The committed JSON updates whenever a backend route changes and someone
@@ -84,6 +87,19 @@ re-exports. If you suspect it's stale, regenerate from a live backend
 curl http://localhost:8004/openapi.json > shared-schema/configuration_service.openapi.json
 curl http://localhost:8003/openapi.json > shared-schema/direct_control.openapi.json
 ```
+
+The queueserver schema is regenerated with its export script instead (the
+committed artifact is the bare server — deployment-specific auth-provider
+routes are intentionally excluded):
+
+```bash
+cd backend/queueserver_service/subprojects/bluesky-httpserver
+python scripts/export_openapi.py -o ../../../../shared-schema/queueserver_service.openapi.json
+```
+
+The queueserver's WebSocket endpoints (`/api/status/ws`, `/api/info/ws`,
+`/api/console_output/ws`) don't appear in OpenAPI (FastAPI limitation) — see
+the API description header and `backend/queueserver_service/README.md`.
 
 Or mount `./shared-schema` into your own frontend container; the backends
 will overwrite the files on every `docker compose up` via their startup
