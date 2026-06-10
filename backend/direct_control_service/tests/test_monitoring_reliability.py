@@ -1,15 +1,15 @@
-"""Monitoring-subsystem reliability regressions (review P2.2 / P2.5 / P2.6 / P2.7).
+"""Monitoring-subsystem reliability regressions.
 
 Each test pins one confirmed failure mode in the monitoring layer:
 
-- P2.2  pv_monitor: a failed signal.subscribe() left the destroyed signal in
+- pv_monitor: a failed signal.subscribe() left the destroyed signal in
         the caches, permanently breaking the PV until restart.
-- P2.5  device-socket: per-PV (not per-device) callback bookkeeping made one
+- device-socket: per-PV (not per-device) callback bookkeeping made one
         device's teardown unsubscribe a shared PV's OTHER device callback.
-- P2.6  pv-socket: a failed EPICS subscribe rolled back the whole PV client
+- pv-socket: a failed EPICS subscribe rolled back the whole PV client
         set, leaving a concurrently-joined second client with a phantom
         subscription.
-- P2.7  image sockets: task.exception() on a freshly-cancelled task raised
+- image sockets: task.exception() on a freshly-cancelled task raised
         InvalidStateError on every normal disconnect (logged as
         image_socket_error), masking real loop crashes.
 """
@@ -26,7 +26,7 @@ from direct_control.models import PVNotFoundError, PVValue
 from direct_control.protocols import MockPVMonitor
 
 
-# ===== P2.2: failed subscribe must not poison the PV cache ===================
+# ===== Failed subscribe must not poison the PV cache =========================
 
 
 class _StubSignalBase:
@@ -84,7 +84,7 @@ def test_pv_monitor_failed_subscribe_cleans_cache_and_retry_works(monkeypatch):
     assert isinstance(monitor._signals["X:PV"], _WorkingSignal)
 
 
-# ===== P2.5: shared PV across two devices survives one device's teardown =====
+# ===== Shared PV across two devices survives one device's teardown ===========
 
 
 async def test_device_teardown_keeps_shared_pv_callback_of_other_device():
@@ -122,7 +122,7 @@ async def test_device_teardown_keeps_shared_pv_callback_of_other_device():
     assert ("dev_a", shared_pv) not in manager._pv_callbacks
 
 
-# ===== P2.6: failed subscribe rolls back every raced-in client ===============
+# ===== Failed subscribe rolls back every raced-in client =====================
 
 
 class _StubWS:
@@ -170,7 +170,7 @@ async def test_pv_socket_failed_subscribe_rolls_back_raced_second_client():
     assert pv not in manager._subscriptions["client-b"]
 
 
-# ===== P2.7: image-socket disconnect must not log a loop failure =============
+# ===== Image-socket disconnect must not log a loop failure ===================
 
 
 def test_camera_socket_disconnect_logs_no_loop_error(client, test_ioc, monkeypatch):

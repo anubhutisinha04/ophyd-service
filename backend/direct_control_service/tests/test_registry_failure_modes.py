@@ -1,15 +1,15 @@
 """Registry-outage failure modes must fail CLOSED and truthfully.
 
-Review findings P0.3 + P2.3: a configuration_service 5xx during registry
+A configuration_service 5xx during registry
 lookups used to be misreported or, worse, silently bypassed the device-lock
 gate:
 
 - ``get_owning_device`` returned None on ANY non-200, which ``set_pv`` read
   as "standalone PV, no lock concept" — a write to a plan-LOCKED device's PV
-  could proceed during a transient registry outage (P0.3).
+  could proceed during a transient registry outage.
 - ``validate_pv``/``validate_device`` raised RegistryValidationError on
   unexpected statuses, which the HTTP layer maps to 404 "not found" — a
-  registry outage masqueraded as a missing PV/device (P2.3).
+  registry outage masqueraded as a missing PV/device.
 
 Now: 404 means not-found; everything else raises RuntimeError (503 at the
 endpoints), and the owner-lookup failure surfaces as a coordination-gate
@@ -156,7 +156,7 @@ class _OutageRegistry:
 
 
 async def test_set_pv_fails_closed_when_owner_lookup_errors():
-    """P0.3 regression: the EPICS write must NOT be issued when the owning
+    """The EPICS write must NOT be issued when the owning
     device can't be determined — pre-fix the None fallback skipped the
     device-lock gate and wrote to a possibly plan-locked device."""
     from direct_control.device_controller import DeviceController

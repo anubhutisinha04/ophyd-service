@@ -1,14 +1,14 @@
-"""Regressions for review findings P2.8–P2.12 (config-service misc cluster).
+"""Regressions for a cluster of config-service correctness fixes.
 
-- P2.8  path_resolver: an address ending on a DynamicDeviceComponent resolved
+- path_resolver: an address ending on a DynamicDeviceComponent resolved
         to the bare parent prefix (a caller would caput a nonexistent PV).
-- P2.9  BITS loader: a class-path module key without an explicit creator
+- BITS loader: a class-path module key without an explicit creator
         produced an unimportable device_class ("ophyd.EpicsMotor.m1").
-- P2.10 SQLite: ping()'s busy_timeout PRAGMA leaked into the pooled
+- SQLite: ping()'s busy_timeout PRAGMA leaked into the pooled
         connection, permanently dropping its write-lock wait from 30s to 2s.
-- P2.11 direct_control_client: a 200 enrich response whose rows lack "ok"
+- direct_control_client: a 200 enrich response whose rows lack "ok"
         escaped as KeyError instead of degrading to DirectControlUnavailable.
-- P2.12 /devices/history: a NUL byte in the device_name filter reached the
+- /devices/history: a NUL byte in the device_name filter reached the
         SQL driver (500 on PostgreSQL); now rejected with 422.
 """
 
@@ -36,7 +36,7 @@ def client(db_url):
         yield c
 
 
-# ===== P2.8: trailing DynamicDeviceComponent is not a resolvable leaf ========
+# ===== Trailing DynamicDeviceComponent is not a resolvable leaf ==============
 
 
 def test_walk_class_rejects_trailing_ddc():
@@ -55,7 +55,7 @@ def test_walk_class_still_resolves_real_leaves():
     assert pv == "BL:M1.RBV"
 
 
-# ===== P2.9: BITS class-path keys produce importable specs ===================
+# ===== BITS class-path keys produce importable specs =========================
 
 
 def _bits_process(module_path: str, entry: dict, name: str = "m1"):
@@ -77,7 +77,7 @@ def test_bits_module_key_still_appends_creator():
     assert spec.device_class == "ophyd.sim.motor"
 
 
-# ===== P2.10: ping() must not leak the short busy_timeout into the pool ======
+# ===== ping() must not leak the short busy_timeout into the pool =============
 
 
 def test_sqlite_ping_restores_pooled_busy_timeout(tmp_path):
@@ -104,7 +104,7 @@ def test_sqlite_ping_restores_pooled_busy_timeout(tmp_path):
         engine.dispose()
 
 
-# ===== P2.11: malformed enrich rows degrade, never KeyError ==================
+# ===== Malformed enrich rows degrade, never KeyError =========================
 
 
 async def test_enrich_row_missing_ok_degrades_to_unavailable():
@@ -130,7 +130,7 @@ async def test_enrich_row_missing_ok_degrades_to_unavailable():
         await client.aclose()
 
 
-# ===== P2.12: NUL bytes in history filter are rejected, not 500 ==============
+# ===== NUL bytes in history filter are rejected, not 500 =====================
 
 
 def test_history_rejects_nul_in_device_name(client):

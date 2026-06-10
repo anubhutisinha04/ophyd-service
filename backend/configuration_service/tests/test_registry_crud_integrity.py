@@ -1,12 +1,12 @@
-"""Registry CRUD integrity (review findings P1.1 + P1.2).
+"""Registry CRUD integrity regressions.
 
-P1.1 — shared-PV ownership: ``add_device`` reassigns an already-owned PV and
+Shared-PV ownership: ``add_device`` reassigns an already-owned PV and
 ``remove_device`` used to DELETE every PV the removed device owned, even when
 another device (or a standalone registration) still claimed it — the
 survivor's registry entry 404'd until restart. Now removal re-homes shared
 PVs and restores standalone status instead of deleting.
 
-P1.2 — persistence ordering: CRUD endpoints used to mutate the in-memory
+Persistence ordering: CRUD endpoints used to mutate the in-memory
 registry BEFORE the DB write, so a store failure left a phantom device that
 served reads, 409'd the retry, and vanished on restart. Now persistence runs
 first; on failure the registry is unchanged and the retry succeeds.
@@ -58,7 +58,7 @@ def _pv_status(client, pv: str):
     return client.get("/api/v1/pvs/status", params={"pv_name": pv})
 
 
-# ===== P1.1: shared-PV ownership survives device removal =====================
+# ===== Shared-PV ownership survives device removal ===========================
 
 
 class TestSharedPVOwnership:
@@ -114,7 +114,7 @@ class TestSharedPVOwnership:
         assert _pv_status(client, pv).status_code == 404
 
 
-# ===== P1.2: persist-before-mutate ===========================================
+# ===== Persist-before-mutate =================================================
 
 
 class TestPersistBeforeMutate:

@@ -627,7 +627,7 @@ class TestLockAllPolicy:
 class TestLockLoggingAtInfoLevel:
     """The lock manager logs through the stdlib logger; INFO-level deployments
     used to hit TypeError from structlog-style kwargs AFTER the lock state was
-    mutated — the endpoint 500'd while the devices stayed locked (review P2.1).
+    mutated — the endpoint 500'd while the devices stayed locked.
     Latent under the default WARNING level, so the cycle is exercised with the
     lock_manager logger explicitly raised to INFO."""
 
