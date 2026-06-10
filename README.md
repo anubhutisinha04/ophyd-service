@@ -1,5 +1,12 @@
 # ophyd-service
 
+> [!WARNING]
+> **Active development — not ready for use.** This project is in its
+> development stage: APIs, schemas, configuration, and service boundaries
+> change rapidly and without notice, justification, or migration paths.
+> Nothing here should be relied on yet — if you experiment with it anyway,
+> pin a specific commit and expect breakage on every update.
+
 Monorepo for the Bluesky ophyd-service. Three backend services + a caproto
 simulated IOC, wired together for a local backend inner loop via
 `docker compose`. The React/Vite frontend lives here too but is run
