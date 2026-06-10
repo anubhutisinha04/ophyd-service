@@ -392,7 +392,7 @@ class RunEngineManager(Process):
         # successful lock, cleared together only after successful unlock.
         # NEVER used as a precondition to skip locking — only as a debt to
         # settle (release-before-relock), so an unlock failure cannot latch
-        # locking off (INTEGRATION P0.1).
+        # locking off.
         self._config_service_locked_devices: list = []
         self._config_service_locked_item_id: str = ""
         # Registry snapshot (``{name: spec}``) fetched at the start of env-open.
@@ -720,8 +720,8 @@ class RunEngineManager(Process):
                     # Await the first list-download + config-service sync
                     # (bootstrap-if-empty, env lock, version cursor) so env-open
                     # reports failure when the sync fails, instead of the sync
-                    # dying silently in the periodic poll's orphaned task
-                    # (INTEGRATION P0.2). Exceptions propagate to the handler
+                    # dying silently in the periodic poll's orphaned task.
+                    # Exceptions propagate to the handler
                     # below: the environment stays up (worker is running) but
                     # env-open reports the error loudly.
                     loaded = await self._load_existing_plans_and_devices_from_worker()
@@ -1316,8 +1316,7 @@ class RunEngineManager(Process):
         the manager's knowledge of an outstanding server-side lock, and the
         next lock attempt (env-open sync or per-plan acquisition) settles the
         debt by retrying the release first. It is never consulted as a reason
-        to skip locking, so a failed unlock cannot latch locking off
-        (INTEGRATION P0.1).
+        to skip locking, so a failed unlock cannot latch locking off.
 
         With ``suppress_errors=True`` (recovery paths: env-destroy, post-plan
         cleanup where the queue is already stopping), failures are logged at

@@ -802,7 +802,7 @@ def test_overlay_handler_refreshes_lists_and_flags_update():
 
 
 
-# ===== P0.2 regression: env-open sync failures must surface =====
+# ===== Regression: env-open sync failures must surface =====
 
 
 @pytest.mark.asyncio
@@ -810,7 +810,7 @@ async def test_load_lists_returns_false_when_worker_download_fails():
     """``_load_existing_plans_and_devices_from_worker`` must report the
     failure (return False) so the awaited env-open path can fail loudly
     when config-service is enabled, instead of the sync silently never
-    running (INTEGRATION P0.2)."""
+    running."""
     from bluesky_queueserver.manager.manager import RunEngineManager
 
     class _Stub:
@@ -878,7 +878,7 @@ async def test_load_lists_returns_true_on_success():
     assert loaded is True
 
 
-# ===== Manager lock-state reconciliation (P0.1 regression) ==================
+# ===== Manager lock-state reconciliation regressions ========================
 #
 # A failed unlock at env-close used to leave _config_service_locked_devices
 # populated, which made the env-open guard skip lock_devices for every later
@@ -1001,7 +1001,7 @@ async def test_unlock_success_clears_bookkeeping():
 
 @pytest.mark.asyncio
 async def test_env_open_reconciles_stale_locks(_stub_env_open_sync):
-    """THE P0.1 regression: after a failed unlock in a previous environment,
+    """THE core regression: after a failed unlock in a previous environment,
     the next env-open must release the stale set (under its ORIGINAL owner
     id) and then LOCK the new environment's devices — pre-fix it silently
     skipped locking forever."""
