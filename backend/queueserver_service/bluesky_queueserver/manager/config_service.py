@@ -33,6 +33,8 @@ DEFAULT_SERVICE_NAME = "bluesky-queueserver"
 
 _RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
 
+_VALID_LOCK_SCOPES = frozenset({"environment", "plan"})
+
 
 class ConfigServiceError(Exception):
     """Base class for configuration-service client errors."""
@@ -87,6 +89,11 @@ class ConfigServiceSettings:
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     backoff_ms: Tuple[int, ...] = DEFAULT_BACKOFF_MS
     service_name: str = DEFAULT_SERVICE_NAME
+    # "environment": one lock over every registry device for the lifetime of
+    # the worker environment (legacy behavior). "plan": no environment lock;
+    # before each plan starts, lock exactly the registered devices referenced
+    # by the plan's args/kwargs, release when the plan reaches a terminal state.
+    lock_scope: str = "environment"
 
     @classmethod
     def from_config_dict(cls, section: Optional[Dict[str, Any]]) -> "ConfigServiceSettings":
@@ -120,6 +127,13 @@ class ConfigServiceSettings:
 
         service_name = str(section.get("service_name", DEFAULT_SERVICE_NAME))
 
+        lock_scope = str(section.get("lock_scope", "environment"))
+        if lock_scope not in _VALID_LOCK_SCOPES:
+            raise ValueError(
+                f"config_service.lock_scope must be one of "
+                f"{sorted(_VALID_LOCK_SCOPES)} (got {lock_scope!r})"
+            )
+
         return cls(
             enabled=True,
             url=url,
@@ -127,6 +141,7 @@ class ConfigServiceSettings:
             max_attempts=max_attempts,
             backoff_ms=backoff_ms,
             service_name=service_name,
+            lock_scope=lock_scope,
         )
 
 

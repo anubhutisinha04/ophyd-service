@@ -135,6 +135,37 @@ def test_disabled_settings_reject_client_construction():
         ConfigServiceClient(ConfigServiceSettings(enabled=False))
 
 
+def test_settings_lock_scope_defaults_to_environment():
+    s = ConfigServiceSettings.from_config_dict(
+        {"enabled": True, "url": "http://cs.test"}
+    )
+    assert s.lock_scope == "environment"
+
+
+def test_settings_lock_scope_plan():
+    s = ConfigServiceSettings.from_config_dict(
+        {"enabled": True, "url": "http://cs.test", "lock_scope": "plan"}
+    )
+    assert s.lock_scope == "plan"
+
+
+def test_settings_lock_scope_invalid_raises():
+    with pytest.raises(ValueError, match="lock_scope"):
+        ConfigServiceSettings.from_config_dict(
+            {"enabled": True, "url": "http://cs.test", "lock_scope": "device"}
+        )
+
+
+def test_settings_lock_scope_ignored_when_disabled():
+    # Disabled sections return defaults without validating tuning keys —
+    # lock_scope only matters when the integration is on.
+    s = ConfigServiceSettings.from_config_dict(
+        {"enabled": False, "lock_scope": "device"}
+    )
+    assert s.enabled is False
+    assert s.lock_scope == "environment"
+
+
 # ===== Happy-path wrappers =====
 
 
@@ -743,3 +774,79 @@ def test_overlay_handler_incremental_respects_explicit_deletes_only():
     # incremental merges: m1 stays, m2 drops.
     assert stub._config_service_overlay_names == {"m1"}
 
+
+
+# ===== P0.2 regression: env-open sync failures must surface =====
+
+
+@pytest.mark.asyncio
+async def test_load_lists_returns_false_when_worker_download_fails():
+    """``_load_existing_plans_and_devices_from_worker`` must report the
+    failure (return False) so the awaited env-open path can fail loudly
+    when config-service is enabled, instead of the sync silently never
+    running (INTEGRATION P0.2)."""
+    from bluesky_queueserver.manager.manager import RunEngineManager
+
+    class _Stub:
+        async def _worker_request_plans_and_devices_list(self):
+            return None, "0MQ communication error"
+
+    loaded = await RunEngineManager._load_existing_plans_and_devices_from_worker(_Stub())
+    assert loaded is False
+
+
+@pytest.mark.asyncio
+async def test_load_lists_propagates_sync_exception():
+    """When the config-service sync raises during the awaited env-open
+    list load, the exception must propagate (env-open reports failure) —
+    not be swallowed."""
+    from bluesky_queueserver.manager.manager import RunEngineManager
+
+    class _Stub:
+        _config_service_settings = _settings()  # enabled=True
+
+        async def _worker_request_plans_and_devices_list(self):
+            return {
+                "existing_plans": {},
+                "existing_devices": {},
+                "config_service_device_data": {},
+            }, ""
+
+        def _set_existing_plans_and_devices(self, *, existing_plans, existing_devices):
+            self._existing_plans = existing_plans
+            self._existing_devices = existing_devices
+
+        def _generate_lists_of_allowed_plans_and_devices(self):
+            pass
+
+        async def _sync_config_service_on_env_open(self):
+            raise ConfigServiceUnreachable("config-service is down")
+
+        def _status_update(self):
+            pass
+
+    with pytest.raises(ConfigServiceUnreachable, match="down"):
+        await RunEngineManager._load_existing_plans_and_devices_from_worker(_Stub())
+
+
+@pytest.mark.asyncio
+async def test_load_lists_returns_true_on_success():
+    from bluesky_queueserver.manager.manager import RunEngineManager
+
+    class _Stub:
+        _config_service_settings = ConfigServiceSettings()  # disabled
+
+        async def _worker_request_plans_and_devices_list(self):
+            return {"existing_plans": {}, "existing_devices": {}}, ""
+
+        def _set_existing_plans_and_devices(self, *, existing_plans, existing_devices):
+            pass
+
+        def _generate_lists_of_allowed_plans_and_devices(self):
+            pass
+
+        def _status_update(self):
+            pass
+
+    loaded = await RunEngineManager._load_existing_plans_and_devices_from_worker(_Stub())
+    assert loaded is True
