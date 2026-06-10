@@ -163,10 +163,23 @@ jobs:
         # without it they would silently skip.
         run: |
           python -m pip install --upgrade pip
-          pip install -e . -e ../configuration_service asgi-lifespan pytest pytest-asyncio
+          # pandas: imported unconditionally by manager/conversions.py but
+          # absent from requirements.txt (same workaround as the service
+          # Dockerfile). pytest-xprocess: required by the httpserver tests'
+          # conftest, which the OpenAPI drift test lives under.
+          pip install -e . -e ../configuration_service asgi-lifespan pytest pytest-asyncio pytest-xprocess pandas
 
       - name: Run Side-B edge tests
         run: |
           pytest -v \
             bluesky_queueserver/manager/tests/test_config_service.py \
             bluesky_queueserver/manager/tests/test_config_service_integration.py
+
+      - name: Check shared-schema OpenAPI drift
+        # Guards shared-schema/queueserver_service.openapi.json (and the
+        # subproject's openapi.json) against the live routers — the same
+        # protection config-service and direct-control get from their
+        # test_openapi_drift.py in the jobs above.
+        run: |
+          pytest -v \
+            subprojects/bluesky-httpserver/bluesky_httpserver/tests/test_openapi_drift.py

@@ -3,7 +3,7 @@
   "info": {
     "title": "Bluesky HTTP Server",
     "description": "REST + WebSocket surface of the Bluesky Queue Server. Drives an experiment from\nthree angles: **queue** (plans and instructions waiting to run), **Run Engine**\n(control over the currently-running plan), and **worker environment** (startup\nscripts, plans, devices, and tasks inside the worker process).\n\nAll endpoints live under `/api`. Clients authenticate with a bearer token\n(access or API key); anonymous access, when enabled, is scoped to `read:status`\nonly. Most endpoints return `{\"success\": bool, \"msg\": str, ...}` envelopes \u2014\ninspect `success` on each response.\n\n### WebSocket endpoints (not listed below)\n\nThree push streams are available; they do not render in Swagger UI because\nOpenAPI has no WebSocket concept:\n\n- `GET /api/status/ws` \u2014 pushes the `/api/status` payload as it changes\n  (scope `read:monitor`).\n- `GET /api/info/ws` \u2014 pushes system-info snapshots (scope `read:monitor`).\n- `GET /api/console_output/ws` \u2014 pushes captured worker stdout/stderr\n  (scope `read:console`).\n\nClients authenticate WebSockets by passing the bearer token via a cookie or\nthe `Authorization` header on the upgrade request.\n",
-    "version": "0.post207+g8b718d1"
+    "version": "0.post214.dev0+gde3dd3a"
   },
   "paths": {
     "/api/ping": {

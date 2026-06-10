@@ -3,7 +3,7 @@
   "info": {
     "title": "Bluesky HTTP Server",
     "description": "REST + WebSocket surface of the Bluesky Queue Server. Drives an experiment from\nthree angles: **queue** (plans and instructions waiting to run), **Run Engine**\n(control over the currently-running plan), and **worker environment** (startup\nscripts, plans, devices, and tasks inside the worker process).\n\nAll endpoints live under `/api`. Clients authenticate with a bearer token\n(access or API key); anonymous access, when enabled, is scoped to `read:status`\nonly. Most endpoints return `{\"success\": bool, \"msg\": str, ...}` envelopes \u2014\ninspect `success` on each response.\n\n### WebSocket endpoints (not listed below)\n\nThree push streams are available; they do not render in Swagger UI because\nOpenAPI has no WebSocket concept:\n\n- `GET /api/status/ws` \u2014 pushes the `/api/status` payload as it changes\n  (scope `read:monitor`).\n- `GET /api/info/ws` \u2014 pushes system-info snapshots (scope `read:monitor`).\n- `GET /api/console_output/ws` \u2014 pushes captured worker stdout/stderr\n  (scope `read:console`).\n\nClients authenticate WebSockets by passing the bearer token via a cookie or\nthe `Authorization` header on the upgrade request.\n",
-    "version": "0.0.24.post437.dev0+gcb146c3"
+    "version": "0.post214+gde3dd3a"
   },
   "paths": {
     "/api/ping": {
@@ -18,6 +18,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -54,13 +55,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:status"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:status"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:status"
+            ]
           }
         ]
       }
@@ -77,6 +84,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -113,13 +121,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:status"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:status"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:status"
+            ]
           }
         ]
       }
@@ -136,6 +150,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -172,13 +187,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:status"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:status"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:status"
+            ]
           }
         ]
       }
@@ -195,6 +216,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -231,13 +253,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:config"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:config"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:config"
+            ]
           }
         ]
       }
@@ -254,6 +282,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -290,13 +319,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:control"
+            ]
           }
         ]
       }
@@ -313,6 +348,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -349,13 +385,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:control"
+            ]
           }
         ]
       }
@@ -372,6 +414,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -408,13 +451,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:queue"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:queue"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:queue"
+            ]
           }
         ]
       }
@@ -431,6 +480,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -467,13 +517,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:edit"
+            ]
           }
         ]
       }
@@ -490,6 +546,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -526,13 +583,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:control"
+            ]
           }
         ]
       }
@@ -549,6 +612,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -585,13 +649,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:control"
+            ]
           }
         ]
       }
@@ -608,6 +678,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -644,13 +715,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:control"
+            ]
           }
         ]
       }
@@ -667,6 +744,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -703,13 +781,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:edit"
+            ]
           }
         ]
       }
@@ -726,6 +810,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -762,13 +847,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:execute"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:execute"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:execute"
+            ]
           }
         ]
       }
@@ -785,6 +876,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -821,13 +913,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:edit"
+            ]
           }
         ]
       }
@@ -879,13 +977,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:edit"
+            ]
           }
         ]
       }
@@ -902,6 +1006,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -938,13 +1043,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:edit"
+            ]
           }
         ]
       }
@@ -961,6 +1072,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -997,13 +1109,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:edit"
+            ]
           }
         ]
       }
@@ -1020,6 +1138,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -1056,13 +1175,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:edit"
+            ]
           }
         ]
       }
@@ -1079,6 +1204,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -1115,13 +1241,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:edit"
+            ]
           }
         ]
       }
@@ -1138,6 +1270,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -1174,13 +1307,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:edit"
+            ]
           }
         ]
       }
@@ -1197,6 +1336,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1233,13 +1373,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:queue"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:queue"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:queue"
+            ]
           }
         ]
       }
@@ -1256,6 +1402,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1292,13 +1439,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:history"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:history"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:history"
+            ]
           }
         ]
       }
@@ -1315,6 +1468,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1351,13 +1505,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:history:edit"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:history:edit"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:history:edit"
+            ]
           }
         ]
       }
@@ -1374,6 +1534,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1410,13 +1571,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:manager:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:manager:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:manager:control"
+            ]
           }
         ]
       }
@@ -1433,6 +1600,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1469,13 +1637,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:manager:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:manager:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:manager:control"
+            ]
           }
         ]
       }
@@ -1492,6 +1666,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1528,13 +1703,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:manager:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:manager:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:manager:control"
+            ]
           }
         ]
       }
@@ -1551,6 +1732,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1587,13 +1769,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:control"
+            ]
           }
         ]
       }
@@ -1610,6 +1798,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1646,13 +1835,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:plan:control"
+            ]
           }
         ]
       }
@@ -1669,6 +1864,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1705,13 +1901,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:plan:control"
+            ]
           }
         ]
       }
@@ -1728,6 +1930,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1764,13 +1967,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:plan:control"
+            ]
           }
         ]
       }
@@ -1787,6 +1996,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1823,13 +2033,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:plan:control"
+            ]
           }
         ]
       }
@@ -1846,6 +2062,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1882,13 +2099,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:plan:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:plan:control"
+            ]
           }
         ]
       }
@@ -1905,6 +2128,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -1941,13 +2165,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:monitor"
+            ]
           }
         ]
       }
@@ -1979,13 +2209,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:monitor"
+            ]
           }
         ]
       }
@@ -2017,13 +2253,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:monitor"
+            ]
           }
         ]
       }
@@ -2055,13 +2297,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:monitor"
+            ]
           }
         ]
       }
@@ -2078,6 +2326,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -2114,13 +2363,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:monitor"
+            ]
           }
         ]
       }
@@ -2137,6 +2392,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -2173,13 +2429,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:resources"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:resources"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:resources"
+            ]
           }
         ]
       }
@@ -2196,6 +2458,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -2232,13 +2495,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:resources"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:resources"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:resources"
+            ]
           }
         ]
       }
@@ -2255,6 +2524,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -2298,6 +2568,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -2334,13 +2605,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:resources"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:resources"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:resources"
+            ]
           }
         ]
       }
@@ -2357,6 +2634,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -2393,13 +2671,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:config"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:config"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:config"
+            ]
           }
         ]
       }
@@ -2431,13 +2715,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:config"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:config"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:config"
+            ]
           }
         ]
       }
@@ -2454,6 +2744,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -2486,18 +2777,23 @@
         "security": [
           {
             "OAuth2PasswordBearer": [
-              "write:permissions",
               "write:permissions"
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:permissions"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:permissions"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:permissions"
+            ]
           }
         ]
       }
@@ -2514,6 +2810,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -2550,13 +2847,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:execute"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:execute"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:execute"
+            ]
           }
         ]
       }
@@ -2573,6 +2876,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -2609,13 +2913,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:scripts"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:scripts"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:scripts"
+            ]
           }
         ]
       }
@@ -2632,6 +2942,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -2668,13 +2979,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:monitor"
+            ]
           }
         ]
       }
@@ -2691,6 +3008,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -2727,13 +3045,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:monitor"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:monitor"
+            ]
           }
         ]
       }
@@ -2750,6 +3074,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -2786,13 +3111,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:queue:control"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:queue:control"
+            ]
           }
         ]
       }
@@ -2809,6 +3140,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -2845,13 +3177,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:lock"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:lock"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:lock"
+            ]
           }
         ]
       }
@@ -2868,6 +3206,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -2904,13 +3243,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:lock"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:lock"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:lock"
+            ]
           }
         ]
       }
@@ -2927,6 +3272,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -2963,13 +3309,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:lock"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:lock"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:lock"
+            ]
           }
         ]
       }
@@ -2986,6 +3338,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -3022,13 +3375,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:manager:stop"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:manager:stop"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:manager:stop"
+            ]
           }
         ]
       }
@@ -3060,13 +3419,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "write:testing"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "write:testing"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "write:testing"
+            ]
           }
         ]
       }
@@ -3083,6 +3448,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -3119,13 +3485,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:testing"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:testing"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:testing"
+            ]
           }
         ]
       }
@@ -3155,13 +3527,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:console"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:console"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:console"
+            ]
           }
         ]
       }
@@ -3178,6 +3556,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload",
                 "default": {}
@@ -3214,13 +3593,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:console"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:console"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:console"
+            ]
           }
         ]
       }
@@ -3252,13 +3637,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:console"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:console"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:console"
+            ]
           }
         ]
       }
@@ -3275,6 +3666,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "type": "object",
                 "title": "Payload"
               }
@@ -3311,13 +3703,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "read:console"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "read:console"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "read:console"
+            ]
           }
         ]
       }
@@ -3349,13 +3747,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "admin:read:principals"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "admin:read:principals"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "admin:read:principals"
+            ]
           }
         ]
       }
@@ -3375,13 +3779,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "admin:read:principals"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "admin:read:principals"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "admin:read:principals"
+            ]
           }
         ],
         "parameters": [
@@ -3435,13 +3845,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "admin:apikeys"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "admin:apikeys"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "admin:apikeys"
+            ]
           }
         ],
         "parameters": [
@@ -3602,13 +4018,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "user:apikeys"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "user:apikeys"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "user:apikeys"
+            ]
           }
         ],
         "requestBody": {
@@ -3689,13 +4111,19 @@
             ]
           },
           {
-            "APIKeyQuery": []
+            "APIKeyQuery": [
+              "user:apikeys"
+            ]
           },
           {
-            "APIKeyAuthorizationHeader": []
+            "APIKeyAuthorizationHeader": [
+              "user:apikeys"
+            ]
           },
           {
-            "APIKeyCookie": []
+            "APIKeyCookie": [
+              "user:apikeys"
+            ]
           }
         ],
         "parameters": [
@@ -4052,7 +4480,7 @@
         "properties": {
           "spreadsheet": {
             "type": "string",
-            "format": "binary",
+            "contentMediaType": "application/octet-stream",
             "title": "Spreadsheet"
           },
           "data_type": {
@@ -4086,6 +4514,7 @@
           "config": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4186,6 +4615,7 @@
           },
           "console_output_msgs": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "type": "array",
@@ -4214,6 +4644,7 @@
           "devices_allowed": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4255,6 +4686,7 @@
           "devices_existing": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4296,6 +4728,7 @@
           "item": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4419,6 +4852,7 @@
           "kwargs": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4430,6 +4864,7 @@
           "meta": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4463,6 +4898,7 @@
           "properties": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4474,6 +4910,7 @@
           "result": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4801,6 +5238,7 @@
           "user_group_permissions": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4850,6 +5288,7 @@
           "plans_allowed": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4891,6 +5330,7 @@
           "plans_existing": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5118,6 +5558,7 @@
           "kwargs": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5129,6 +5570,7 @@
           "meta": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5162,6 +5604,7 @@
           "properties": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5189,6 +5632,7 @@
           "re_metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5231,6 +5675,7 @@
           },
           "run_list": {
             "items": {
+              "additionalProperties": true,
               "type": "object"
             },
             "type": "array",
@@ -5506,6 +5951,7 @@
           "result": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5631,6 +6077,13 @@
           "type": {
             "type": "string",
             "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
           }
         },
         "type": "object",
