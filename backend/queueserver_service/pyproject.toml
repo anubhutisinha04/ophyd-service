@@ -3,7 +3,14 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "queueserver-service"
+# The DISTRIBUTION is named bluesky-queueserver (the import package is
+# queueserver_service): the PyPI bluesky-queueserver-api client we depend on
+# declares Requires-Dist: bluesky-queueserver (it imports nothing from it).
+# Keeping the dist name makes this package satisfy that requirement, so
+# installers never pull the upstream bluesky-queueserver dist — which would
+# silently shadow the qserver/start-re-manager console scripts with the
+# upstream implementation.
+name = "bluesky-queueserver"
 version = "1.0.0"
 description = "Plan queueing and HTTP API backend for ophyd-service (based on bluesky-queueserver and bluesky-httpserver)"
 readme = "README.md"
@@ -31,7 +38,9 @@ start-bluesky-httpserver = "queueserver_service.http.server:start_server"
 dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools.packages.find]
-include = ["queueserver_service*"]
+# bluesky_queueserver is the one-module legacy import surface needed by the
+# bluesky-queueserver-api client; see its docstring.
+include = ["queueserver_service*", "bluesky_queueserver"]
 
 [tool.setuptools.package-data]
 queueserver_service = ["profile_collection_sim/*"]
