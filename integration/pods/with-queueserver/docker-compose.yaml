@@ -110,6 +110,11 @@ services:
       - ../../localdevs:/localdevs:ro
     ports:
       - "60610:60610"
+      # 0MQ CONTROL + INFO published so the bluesky-queueserver-api compat
+      # exerciser (integration/exercise/queueserver_api_compat.py) can drive
+      # the manager over both transports from the host.
+      - "60615:60615"
+      - "60625:60625"
     depends_on:
       redis:
         condition: service_healthy

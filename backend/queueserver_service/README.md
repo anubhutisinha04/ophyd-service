@@ -18,6 +18,10 @@ breaking the api package breaks the service too.) Internal divergence — new en
 new config sections, manager internals — is fine; changing or removing what
 bluesky-queueserver-api consumes is not.
 
+Enforced in CI: the `with-queueserver` integration job installs
+`bluesky-queueserver-api` from PyPI and drives the running service over both
+transports (`integration/exercise/queueserver_api_compat.py`).
+
 ## How the image is built
 
 The `Dockerfile` builds from the **in-tree source** in this directory. The service is based
