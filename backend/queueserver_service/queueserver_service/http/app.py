@@ -443,7 +443,7 @@ def build_app(authentication=None, api_access=None, resource_access=None, server
         if authentication.get("providers"):
             # If we support authentication providers, we need a database, so if one is
             # not set, use a SQLite database in the current working directory.
-            settings.database_uri = settings.database_uri or "sqlite:///./queueserver_service.http.sqlite"
+            settings.database_uri = settings.database_uri or "sqlite:///./bluesky_httpserver.sqlite"
         return settings
 
     @app.middleware("http")

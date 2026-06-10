@@ -48,7 +48,7 @@ Environment variables for controlling token and session lifetimes:
 
 Environment variables for database configuration:
 
-- ``QSERVER_HTTP_SERVER_DATABASE_URI`` - database URI. The default URI is *'sqlite:///queueserver_service.http.sqlite'*.
+- ``QSERVER_HTTP_SERVER_DATABASE_URI`` - database URI. The default URI is *'sqlite:///bluesky_httpserver.sqlite'*.
 
 - ``QSERVER_HTTP_SERVER_DATABASE_POOL_SIZE`` - connection pool size. Default is 5.
 
