@@ -1,0 +1,33 @@
+{
+  "devices": [
+    {
+      "name": "beam_current",
+      "pvs": ["mini:current"],
+      "device_class": "ophyd.signal.EpicsSignal",
+      "args": ["mini:current"],
+      "kwargs": {},
+      "framework": "ophyd-sync"
+    },
+    {
+      "name": "motor_spotx",
+      "pvs": ["mini:dot:mtrx"],
+      "device_class": "ophyd.signal.EpicsSignal",
+      "args": ["mini:dot:mtrx"],
+      "kwargs": {},
+      "framework": "ophyd-sync"
+    },
+    {
+      "name": "pinhole",
+      "pvs": ["mini:ph:det", "mini:ph:exp"],
+      "device_class": "localdevs.Det",
+      "args": ["mini:ph"],
+      "kwargs": {},
+      "framework": "ophyd-sync"
+    },
+    {
+      "name": "slit_det",
+      "pvs": ["mini:slit:det"]
+    }
+  ],
+  "standalone_pvs": ["mini:dot:exp"]
+}

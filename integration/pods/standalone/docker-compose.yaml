@@ -1,0 +1,56 @@
+# Standalone integration pod for direct_control_service.
+#
+# Demonstrates (and CI-checks) FILE-REGISTRY STANDALONE MODE: the full
+# service — PV control, device-level control, WebSocket monitoring — with
+# NO configuration_service and NO database. registry.json in this directory
+# is the registry of record; a commented schema walk-through lives at
+# backend/direct_control_service/examples/standalone_registry.example.yaml.
+#
+#   ioc                     — caproto.ioc_examples.mini_beamline (mini:*)
+#   direct_control_service  — registry_backend=file, registry.json mounted
+#
+# Usage:
+#   docker compose up --build
+#   ./../../exercise/direct_control_standalone.sh
+#   docker compose down
+
+x-ioc-base: &ioc-base
+  build:
+    context: ../../ioc
+
+services:
+  ioc:
+    <<: *ioc-base
+    command: ["python", "-m", "caproto.ioc_examples.mini_beamline", "--list-pvs", "--interfaces", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f caproto.ioc_examples.mini_beamline > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  direct_control_service:
+    build:
+      context: ../../../backend/direct_control_service
+    environment:
+      # Standalone: the file IS the registry; no configuration_service at
+      # all (DIRECT_CONTROL_CONFIGURATION_SERVICE_URL intentionally unset —
+      # only valid with registry_backend=file). The device-lock coordination
+      # check is automatically off in this mode.
+      DIRECT_CONTROL_REGISTRY_BACKEND: file
+      DIRECT_CONTROL_REGISTRY_FILE_PATH: /registry/registry.json
+      # Read-only defaults to true (monitor-only); this pod exercises control.
+      DIRECT_CONTROL_GLOBAL_READ_ONLY: "false"
+      # pyepics: point CA search at the compose-network IOC only.
+      EPICS_CA_ADDR_LIST: ioc
+      EPICS_CA_AUTO_ADDR_LIST: "NO"
+      # Device-level control instantiates the registry's device classes in
+      # THIS container; registry.json references localdevs.Det.
+      PYTHONPATH: "/localdevs"
+    volumes:
+      - ./registry.json:/registry/registry.json:ro
+      - ../../localdevs:/localdevs:ro
+    ports:
+      - "8003:8003"
+    depends_on:
+      ioc:
+        condition: service_healthy

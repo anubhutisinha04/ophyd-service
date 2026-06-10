@@ -89,18 +89,25 @@ class PVHealthReporter:
     is called from the lifespan shutdown to flush anything still pending.
     """
 
-    def __init__(self, client: httpx.AsyncClient) -> None:
+    def __init__(self, client: Optional[httpx.AsyncClient]) -> None:
+        # ``client=None`` means there is no configuration_service to report
+        # to (standalone / file-registry mode). Reporting becomes a no-op —
+        # an explicit deployment shape, not a swallowed failure; the
+        # lifespan logs it once at startup.
         self._client = client
         self._inflight: set[asyncio.Task] = set()
 
     def report(
         self, pv_name: str, success: bool, message: Optional[str] = None
-    ) -> asyncio.Task:
+    ) -> Optional[asyncio.Task]:
         """Schedule a background POST and return the task.
 
         Production callers ignore the return value; tests use it to
-        ``await`` deterministically.
+        ``await`` deterministically. Returns ``None`` in standalone mode
+        (no configuration_service configured).
         """
+        if self._client is None:
+            return None
         task = asyncio.create_task(
             _post_outcome(self._client, pv_name, success, message)
         )

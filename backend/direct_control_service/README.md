@@ -203,8 +203,13 @@ device class · `404` device not in registry / unknown nested component ·
 control unavailable; PV-level operations still work) · `423` locked by a
 plan · `503` registry unreachable.
 
-In standalone (`file`) registry mode, a device entry opts into device-level
-control by carrying class info:
+In standalone (`file`) registry mode — the full service with NO
+configuration_service (`DIRECT_CONTROL_CONFIGURATION_SERVICE_URL` may be
+left unset) — a device entry opts into device-level control by carrying
+class info. A fully-commented example registry lives at
+[`examples/standalone_registry.example.yaml`](examples/standalone_registry.example.yaml),
+and a working containerized deployment (with CI coverage) at
+`integration/pods/standalone/`:
 
 ```json
 {

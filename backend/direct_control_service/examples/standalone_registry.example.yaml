@@ -1,0 +1,54 @@
+# Example file registry for direct-control STANDALONE mode.
+#
+# Standalone mode runs the full service (control + monitoring) with no
+# configuration_service: this file IS the registry. Enable it with:
+#
+#   DIRECT_CONTROL_REGISTRY_BACKEND=file
+#   DIRECT_CONTROL_REGISTRY_FILE_PATH=/path/to/registry.yaml   (.yaml or .json)
+#   DIRECT_CONTROL_GLOBAL_READ_ONLY=false       # default true = monitor-only
+#
+# Notes:
+# - There is no configuration_service in this mode, so the device-lock
+#   coordination check is automatically off; access is governed by
+#   DIRECT_CONTROL_GLOBAL_READ_ONLY.
+# - Every PV may appear only once across the whole file (under one device
+#   or in standalone_pvs). Malformed entries fail startup loudly.
+# - A working containerized deployment of exactly this shape lives at
+#   integration/pods/standalone/ in the repo.
+
+devices:
+  # Minimal device: a name plus the PVs it owns. Supports PV-level
+  # operations (read / write / subscribe) only — device-level control
+  # (/api/v1/device/execute) returns 422 because there is no class info.
+  - name: slit_det
+    pvs:
+      - "BL01:SLIT:DET"
+
+  # Fully-featured device: device_class/args/kwargs let direct-control
+  # instantiate a live ophyd object, enabling device-level control
+  # (set/read/describe/trigger/stop with Status completion awaited).
+  # The class path must be importable inside the service's environment.
+  - name: m1
+    pvs:
+      - "BL01:M1.RBV"
+      - "BL01:M1.VAL"
+    device_class: "ophyd.EpicsMotor"     # classic-ophyd class
+    args: ["BL01:M1"]
+    kwargs: {}
+    # Optional advisory tag, validated against the imported class at
+    # instantiation time ("ophyd-sync" | "ophyd-async"); a mismatch is a
+    # hard error. Omit it to rely on auto-detection alone.
+    framework: "ophyd-sync"
+
+  # ophyd-async devices work the same way — the framework is detected from
+  # the class, and the right driver (aioca) is used automatically.
+  - name: m2
+    pvs: []
+    device_class: "ophyd_async.epics.motor.Motor"
+    args: ["BL01:M2"]
+    framework: "ophyd-async"
+
+# PVs with no owning device. Readable/writable/subscribable like any other
+# registered PV; there is no device-level lock or control concept for them.
+standalone_pvs:
+  - "BL01:RING:CURRENT"
