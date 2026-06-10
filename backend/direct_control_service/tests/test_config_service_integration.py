@@ -122,6 +122,28 @@ async def test_get_owning_device_resolves_real_owner(side_a):
     assert await side_a.registry.get_owning_device(_PV) == _DEVICE
 
 
+async def test_get_instantiation_spec_known_and_unknown(side_a):
+    """get_instantiation_spec speaks GET /api/v1/devices/{name}/instantiation.
+
+    This is the edge device-level control rides on (execute_device_method
+    instantiates from this spec). Pins the real response field shapes —
+    device_class / args / kwargs / active — against the live app, and the
+    404 → None mapping for an unregistered device. (The device-exists-but-
+    spec-missing 404 arm can't be seeded over HTTP — the CRUD create
+    endpoint requires a spec — and is pinned by the MockTransport unit
+    test instead.)
+    """
+    spec = await side_a.registry.get_instantiation_spec(_DEVICE)
+    assert spec is not None
+    assert spec.name == _DEVICE
+    assert spec.device_class == "ophyd.EpicsMotor"
+    assert spec.args == ["BL01:SAMPLE:X"]
+    assert spec.kwargs == {"name": _DEVICE}
+    assert spec.active is True
+
+    assert await side_a.registry.get_instantiation_spec("no_such_device") is None
+
+
 async def test_validate_pv_caches_positive_result(side_a):
     """A positive validate_pv result is cached so the repeat needs no round-trip."""
     assert _PV not in side_a.registry._pv_cache
