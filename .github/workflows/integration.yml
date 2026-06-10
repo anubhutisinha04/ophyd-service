@@ -1,9 +1,13 @@
 # End-to-end integration test for the ophyd-service backends.
 #
-# Brings up the `full` pod (5 caproto IOCs + configuration_service +
-# direct_control_service) and runs every exerciser under
-# integration/exercise/ against it. Each exerciser exits non-zero on any
-# assertion miss, so the workflow fails fast on contract drift.
+# Two pods, one job each:
+#   - `full`: 5 caproto IOCs + configuration_service + direct_control_service,
+#     driven by every exerciser under integration/exercise/.
+#   - `with-queueserver`: IOC + redis + all three backends; its smoke.sh covers
+#     the Side-B edge (queueserver <-> config-service env-open sync, consume-mode
+#     device injection, websocket streaming).
+# Each script exits non-zero on any assertion miss, so the workflow fails
+# fast on contract drift.
 #
 # Triggers:
 #   - every PR (catches breakage before merge)
@@ -92,41 +96,40 @@ jobs:
         working-directory: integration/pods/full
         run: docker compose down --volumes
 
-  standalone-pod:
-    name: standalone pod (file registry, no config-service)
+  with-queueserver-pod:
+    name: with-queueserver pod Side-B end-to-end
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     defaults:
       run:
         shell: bash
+        working-directory: integration/pods/with-queueserver
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Bring up the standalone pod
-        working-directory: integration/pods/standalone
+      - name: Bring up the with-queueserver pod
         run: docker compose up --build -d
 
-      - name: Wait for direct_control to be healthy
+      - name: Wait for the unified queueserver to answer
         run: |
           for i in $(seq 1 60); do
-            if curl -sf http://localhost:8003/health >/dev/null; then
-              echo "direct_control healthy after ${i} attempts"
+            if curl -sf -H "Authorization: ApiKey mad" http://localhost:60610/api/status >/dev/null; then
+              echo "queueserver answering after ${i} attempts"
               exit 0
             fi
             sleep 2
           done
-          echo "direct_control did not become healthy within 120s" >&2
+          echo "queueserver did not answer within 120s" >&2
           exit 1
 
-      - name: Exercise standalone mode (file registry gate, PV + device control)
-        run: ./integration/exercise/direct_control_standalone.sh
+      - name: Run Side-B smoke (env-open sync, consume-mode injection, websockets)
+        run: ./smoke.sh
 
       - name: Dump container logs on failure
         if: failure()
-        working-directory: integration/pods/standalone
         run: |
           echo "::group::compose ps"
           docker compose ps
@@ -137,5 +140,4 @@ jobs:
 
       - name: Tear down the pod
         if: always()
-        working-directory: integration/pods/standalone
         run: docker compose down --volumes
