@@ -8,10 +8,33 @@ import time as ttime
 import pytest
 
 from queueserver_service.manager.plan_queue_ops import PlanQueueOperations
+from queueserver_service.manager.queue_store import SqlQueueStore
 
 from .common import _test_redis_name_prefix
 
 errmsg_wrong_plan_type = "Parameter 'item' should be a dictionary"
+
+
+@pytest.fixture(params=["redis", "sqlite"], autouse=True)
+def queue_store_backend(request, monkeypatch, tmp_path):
+    """Run every test in this module against BOTH storage backends.
+
+    The redis case leaves ``PlanQueueOperations`` untouched (its default).
+    The sqlite case redirects the default store to a SQLAlchemy backend on a
+    per-test database file; instances created inside one test share the file,
+    matching how separate instances share one redis server.
+    """
+    if request.param == "sqlite":
+        uri = f"sqlite+aiosqlite:///{tmp_path}/plan_queue.db"
+        orig_init = PlanQueueOperations.__init__
+
+        def patched_init(self, redis_host="localhost", name_prefix="qs_default", *, store=None):
+            if store is None:
+                store = SqlQueueStore(uri)
+            orig_init(self, redis_host=redis_host, name_prefix=name_prefix, store=store)
+
+        monkeypatch.setattr(PlanQueueOperations, "__init__", patched_init)
+    return request.param
 
 
 class PQ:
@@ -57,14 +80,14 @@ def test_pq_start_stop():
     async def testing():
         pq = PlanQueueOperations(name_prefix=_test_redis_name_prefix)
         await pq.start()
-        await pq._r_pool.ping()
+        assert pq._store_opened is True
         await pq.stop()
-        assert pq._r_pool is None
+        assert pq._store_opened is False
 
         await pq.start()
-        await pq._r_pool.ping()
+        assert pq._store_opened is True
         await pq.stop()
-        assert pq._r_pool is None
+        assert pq._store_opened is False
 
     asyncio.run(testing())
 
@@ -157,7 +180,7 @@ def test_queue_clean(plan_running, plans, result_running, result_plans):
         async with PQ() as pq:
             await pq._set_running_item_info(plan_running)
             for plan in plans:
-                await pq._r_pool.rpush(pq._name_plan_queue, json.dumps(plan))
+                await pq._store.list_push_back(pq._name_plan_queue, json.dumps(plan))
 
             assert pq.get_running_item_info() == plan_running
             plan_queue, _ = await pq.get_queue()
@@ -547,7 +570,7 @@ def test_remove_item():
 
             # Add a copy of a plan (queue is not supposed to have copies in real life)
             plan_to_add = plans[0]
-            await pq._r_pool.lpush(pq._name_plan_queue, json.dumps(plan_to_add))
+            await pq._store.list_push_front(pq._name_plan_queue, json.dumps(plan_to_add))
             # Now remove both plans
             await pq._remove_item(plan_to_add, single=False)  # Allow deleting multiple or no plans
             assert pq.get_queue_size() == 1
@@ -561,8 +584,8 @@ def test_remove_item():
             assert pq.get_queue_size() == 1
 
             # Now add 'plan_to_add' twice (create two copies)
-            await pq._r_pool.lpush(pq._name_plan_queue, json.dumps(plan_to_add))
-            await pq._r_pool.lpush(pq._name_plan_queue, json.dumps(plan_to_add))
+            await pq._store.list_push_front(pq._name_plan_queue, json.dumps(plan_to_add))
+            await pq._store.list_push_front(pq._name_plan_queue, json.dumps(plan_to_add))
             assert await pq._get_queue_size() == 3  # Read directly from Redis (not cached size)
             # Attempt to delete two copies
             with pytest.raises(RuntimeError, match="One item is expected"):
@@ -859,6 +882,9 @@ def test_add_batch_to_queue_1(batch_params, queue_seq, batch_seq, expected_seq):
     """
     Basic test for the function ``PlanQueueOperations.add_batch_to_queue()``
     """
+    # Copy before mutating: parametrize args are shared between the
+    # storage-backend runs of this test.
+    batch_params = copy.deepcopy(batch_params)
 
     async def testing():
         async with PQ() as pq:
@@ -1390,6 +1416,10 @@ def test_move_item_2():
 ])
 # fmt: on
 def test_move_batch_1(batch_params, queue_seq, selection_seq, batch_seq, expected_seq, success, msg):
+    # Copy before mutating: parametrize args are shared between the
+    # storage-backend runs of this test.
+    batch_params = copy.deepcopy(batch_params)
+
     async def testing():
         async with PQ() as pq:
 

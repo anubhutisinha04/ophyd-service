@@ -478,6 +478,20 @@ def start_manager():
     )
 
     parser.add_argument(
+        "--queue-store-uri",
+        dest="queue_store_uri",
+        type=str,
+        default=None,
+        help="Storage backend for the plan queue. By default the queue is stored in Redis "
+        "(see --redis-addr). Set a SQLAlchemy async URI, e.g. "
+        "'sqlite+aiosqlite:////var/lib/qserver/queue.db' or "
+        "'postgresql+psycopg://user:pass@host:5432/qserver', to store the queue in a SQL "
+        "database instead; 'redis://host[:port]' selects Redis explicitly. May also be set "
+        "with the QSERVER_QUEUE_STORE_URI environment variable or the "
+        "'network/queue_store_uri' config-file key.",
+    )
+
+    parser.add_argument(
         "--keep-re",
         dest="keep_re",
         action="store_true",
@@ -898,6 +912,7 @@ def start_manager():
 
     config_manager["redis_addr"] = settings.redis_addr
     config_manager["redis_name_prefix"] = settings.redis_name_prefix
+    config_manager["queue_store_uri"] = settings.queue_store_uri
 
     config_manager["use_ipython_kernel"] = settings.use_ipython_kernel
 

@@ -5,26 +5,32 @@ import logging
 import time as ttime
 import uuid
 
-import redis.asyncio
+from .queue_store import RedisQueueStore
 
 logger = logging.getLogger(__name__)
 
 
 class PlanQueueOperations:
     """
-    The class supports operations with plan queue based on Redis. The public methods
-    of the class are protected with ``asyncio.Lock``.
+    The class supports operations with the plan queue. The public methods
+    of the class are protected with ``asyncio.Lock``. Storage is pluggable
+    (see ``queue_store.QueueStore``); the default is the historical redis
+    backend.
 
     Parameters
     ----------
     redis_host: str
-        Address of Redis host.
+        Address of Redis host. Ignored if ``store`` is provided.
 
     name_prefix: str
-        Prefix for the names of the keys used in Redis. The prefix is used to avoid conflicts
-        with the keys used by other instances of Queue Server. For example, the prefix used
-        for unit tests should be different from the prefix used in production. If the prefix
-        is an empty string, then no prefix will be added (not recommended).
+        Prefix for the names of the keys used in the store. The prefix is used to avoid
+        conflicts with the keys used by other instances of Queue Server. For example, the
+        prefix used for unit tests should be different from the prefix used in production.
+        If the prefix is an empty string, then no prefix will be added (not recommended).
+
+    store: QueueStore, optional
+        Storage backend. When omitted, a redis backend is constructed from
+        ``redis_host`` (the historical behavior).
 
     Examples
     --------
@@ -70,10 +76,10 @@ class PlanQueueOperations:
         await pq.stop()
     """
 
-    def __init__(self, redis_host="localhost", name_prefix="qs_default"):
-        self._redis_host = redis_host
+    def __init__(self, redis_host="localhost", name_prefix="qs_default", *, store=None):
+        self._store = store if store is not None else RedisQueueStore(redis_host=redis_host)
         self._uid_dict = dict()
-        self._r_pool = None
+        self._store_opened = False
 
         if not isinstance(name_prefix, str):
             raise TypeError(f"Parameter 'name_prefix' should be a string: {name_prefix}")
@@ -207,7 +213,7 @@ class PlanQueueOperations:
         """
         Load plan queue mode from Redis.
         """
-        queue_mode = await self._r_pool.get(self._name_plan_queue_mode)
+        queue_mode = await self._store.get(self._name_plan_queue_mode)
         self._plan_queue_mode = json.loads(queue_mode) if queue_mode else self.plan_queue_mode_default
         try:
             self._validate_plan_queue_mode(self._plan_queue_mode)
@@ -253,29 +259,21 @@ class PlanQueueOperations:
         # Prevent changes of the queue mode in the middle of queue operations.
         async with self._lock:
             self._plan_queue_mode = plan_queue_mode.copy()
-            await self._r_pool.set(self._name_plan_queue_mode, json.dumps(self._plan_queue_mode))
+            await self._store.set(self._name_plan_queue_mode, json.dumps(self._plan_queue_mode))
 
     async def start(self):
         """
-        Create the pool and initialize the set of UIDs from the queue if it exists in the pool.
+        Open the storage backend and initialize the set of UIDs from the queue if it exists.
         """
-        if not self._r_pool:  # Initialize only once
+        if not self._store_opened:  # Initialize only once
             self._lock = asyncio.Lock()
             async with self._lock:
                 try:
-                    if "://" not in self._redis_host:
-                        host = f"redis://{self._redis_host}"
-                    logger.debug("Connecting to Redis host at'%s'", host)
-                    self._r_pool = redis.asyncio.from_url(host, encoding="utf-8", decode_responses=True)
-                    await self._r_pool.ping()
+                    await self._store.open()
                 except Exception as ex:
-                    error_msg = (
-                        f"Failed to create the Redis pool: "
-                        f"Redis server may not be available at '{self._redis_host}'. "
-                        f"Exception: {ex}"
-                    )
-                    logger.error(error_msg)
-                    raise OSError(error_msg) from ex
+                    logger.error("%s", ex)
+                    raise
+                self._store_opened = True
 
                 await self._queue_clean()
                 await self._uid_dict_initialize()
@@ -290,11 +288,11 @@ class PlanQueueOperations:
 
     async def stop(self):
         """
-        Close all connections in the pool.
+        Close the storage backend.
         """
-        if self._r_pool:
-            await self._r_pool.aclose()
-            self._r_pool = None
+        if self._store_opened:
+            await self._store.close()
+            self._store_opened = False
 
     async def _queue_clean(self):
         """
@@ -326,10 +324,10 @@ class PlanQueueOperations:
         """
         See ``self.delete_pool_entries()`` method.
         """
-        await self._r_pool.delete(self._name_running_plan)
-        await self._r_pool.delete(self._name_plan_queue)
-        await self._r_pool.delete(self._name_plan_history)
-        await self._r_pool.delete(self._name_plan_queue_mode)
+        await self._store.delete(self._name_running_plan)
+        await self._store.delete(self._name_plan_queue)
+        await self._store.delete(self._name_plan_history)
+        await self._store.delete(self._name_plan_queue_mode)
         self._uid_dict_clear()
 
         self._plan_queue_uid = self.new_item_uid()
@@ -545,7 +543,7 @@ class PlanQueueOperations:
         """
         Read info on the currently running item (plan) loaded from Redis.
         """
-        plan = await self._r_pool.get(self._name_running_plan)
+        plan = await self._store.get(self._name_running_plan)
         return json.loads(plan) if plan else {}
 
     def get_running_item_info(self):
@@ -569,7 +567,7 @@ class PlanQueueOperations:
         plan: dict
             dictionary that contains plan parameters
         """
-        await self._r_pool.set(self._name_running_plan, json.dumps(plan))
+        await self._store.set(self._name_running_plan, json.dumps(plan))
         self._running_item_info = await self._get_running_item_info()
 
     async def _clear_running_item_info(self):
@@ -586,7 +584,7 @@ class PlanQueueOperations:
         """
         Read the queue size from Redis.
         """
-        return await self._r_pool.llen(self._name_plan_queue)
+        return await self._store.list_len(self._name_plan_queue)
 
     def get_queue_size(self):
         """
@@ -603,7 +601,7 @@ class PlanQueueOperations:
         """
         See ``self.get_queue()`` method.
         """
-        all_plans_json = await self._r_pool.lrange(self._name_plan_queue, 0, -1)
+        all_plans_json = await self._store.list_range(self._name_plan_queue, 0, -1)
         return [json.loads(_) for _ in all_plans_json], self._plan_queue_uid
 
     async def get_queue(self):
@@ -675,7 +673,7 @@ class PlanQueueOperations:
             else:
                 raise TypeError(f"Parameter 'pos' has incorrect type: pos={str(pos)} (type={type(pos)})")
 
-            item_json = await self._r_pool.lindex(self._name_plan_queue, index)
+            item_json = await self._store.list_index(self._name_plan_queue, index)
             if item_json is None:
                 raise IndexError(f"Index '{index}' is out of range (parameter pos = '{pos}')")
 
@@ -733,7 +731,7 @@ class PlanQueueOperations:
         RuntimeError
             No or multiple matching plans are removed and ``single=True``.
         """
-        n_rem_items = await self._r_pool.lrem(self._name_plan_queue, 0, json.dumps(item))
+        n_rem_items = await self._store.list_remove(self._name_plan_queue, json.dumps(item))
         self._queue_size = await self._get_queue_size()
         if (n_rem_items != 1) and single:
             raise RuntimeError(f"The number of removed items is {n_rem_items}. One item is expected.")
@@ -757,12 +755,12 @@ class PlanQueueOperations:
             item = self._uid_dict_get_item(uid)
             await self._remove_item(item)
         elif pos == "back":
-            item_json = await self._r_pool.rpop(self._name_plan_queue)
+            item_json = await self._store.list_pop_back(self._name_plan_queue)
             if item_json is None:
                 raise IndexError("Queue is empty")
             item = json.loads(item_json) if item_json else {}
         elif pos == "front":
-            item_json = await self._r_pool.lpop(self._name_plan_queue)
+            item_json = await self._store.list_pop_front(self._name_plan_queue)
             if item_json is None:
                 raise IndexError("Queue is empty")
             item = json.loads(item_json) if item_json else {}
@@ -938,24 +936,24 @@ class PlanQueueOperations:
                     raise IndexError("Can not insert a plan in the queue before a currently running plan.")
                 else:
                     # Push to the plan front of the queue (after the running plan).
-                    qsize = await self._r_pool.lpush(self._name_plan_queue, json.dumps(item))
+                    qsize = await self._store.list_push_front(self._name_plan_queue, json.dumps(item))
             else:
                 item_to_displace = self._uid_dict_get_item(uid)
                 where = "BEFORE" if (uid == before_uid) else "AFTER"
-                qsize = await self._r_pool.linsert(
+                qsize = await self._store.list_insert(
                     self._name_plan_queue, where, json.dumps(item_to_displace), json.dumps(item)
                 )
 
         elif pos == "back":
-            qsize = await self._r_pool.rpush(self._name_plan_queue, json.dumps(item))
+            qsize = await self._store.list_push_back(self._name_plan_queue, json.dumps(item))
         elif pos == "front":
-            qsize = await self._r_pool.lpush(self._name_plan_queue, json.dumps(item))
+            qsize = await self._store.list_push_front(self._name_plan_queue, json.dumps(item))
         elif isinstance(pos, int):
             pos_reference = pos if (pos > 0) else (pos + 1)
 
             item_to_displace = await self._get_item(pos=pos_reference)
             if item_to_displace:
-                qsize = await self._r_pool.linsert(
+                qsize = await self._store.list_insert(
                     self._name_plan_queue, "BEFORE", json.dumps(item_to_displace), json.dumps(item)
                 )
             else:
@@ -1154,7 +1152,7 @@ class PlanQueueOperations:
 
         # Insert the new item after the old one and remove the old one. At this point it is guaranteed
         #   that they are not equal.
-        await self._r_pool.linsert(self._name_plan_queue, "AFTER", json.dumps(item_to_replace), json.dumps(item))
+        await self._store.list_insert(self._name_plan_queue, "AFTER", json.dumps(item_to_replace), json.dumps(item))
 
         await self._remove_item(item_to_replace)
 
@@ -1440,7 +1438,7 @@ class PlanQueueOperations:
         See ``self.clear_queue()`` method.
         """
         self._plan_queue_uid = self.new_item_uid()
-        await self._r_pool.delete(self._name_plan_queue)
+        await self._store.delete(self._name_plan_queue)
 
         # Remove all entries from 'self._uid_dict' except the running item.
         running_item = await self._get_running_item_info()
@@ -1481,14 +1479,14 @@ class PlanQueueOperations:
             The new size of the history.
         """
         self._plan_history_uid = self.new_item_uid()
-        self._history_size = await self._r_pool.rpush(self._name_plan_history, json.dumps(item))
+        self._history_size = await self._store.list_push_back(self._name_plan_history, json.dumps(item))
         return self._history_size
 
     async def _get_history_size(self):
         """
         Read the number of items in the plan history from Redis.
         """
-        return await self._r_pool.llen(self._name_plan_history)
+        return await self._store.list_len(self._name_plan_history)
 
     def get_history_size(self):
         """
@@ -1505,7 +1503,7 @@ class PlanQueueOperations:
         """
         See ``self.get_history()`` method.
         """
-        all_plans_json = await self._r_pool.lrange(self._name_plan_history, 0, -1)
+        all_plans_json = await self._store.list_range(self._name_plan_history, 0, -1)
         return [json.loads(_) for _ in all_plans_json], self._plan_history_uid
 
     async def get_history(self):
@@ -1529,7 +1527,7 @@ class PlanQueueOperations:
         See ``self.clear_history()`` method.
         """
         self._plan_history_uid = self.new_item_uid()
-        await self._r_pool.delete(self._name_plan_history)
+        await self._store.delete(self._name_plan_history)
         self._history_size = await self._get_history_size()
 
     async def clear_history(self):
@@ -1556,7 +1554,7 @@ class PlanQueueOperations:
                 new_size = max(min(new_size, history_size), 0)
                 n_delete = history_size - new_size
                 update_uid = True
-                await self._r_pool.ltrim(self._name_plan_history, n_delete, -1)
+                await self._store.list_trim(self._name_plan_history, n_delete, -1)
         else:  # item_uid is not None
             # The following code is not efficient if the history is huge, but it should work fine for now.
             history, _ = await self._get_history()
@@ -1569,7 +1567,7 @@ class PlanQueueOperations:
 
             if n_delete is not None:
                 update_uid = True
-                await self._r_pool.ltrim(self._name_plan_history, n_delete + 1, -1)
+                await self._store.list_trim(self._name_plan_history, n_delete + 1, -1)
 
         if update_uid:
             self._plan_history_uid = self.new_item_uid()
@@ -1692,7 +1690,7 @@ class PlanQueueOperations:
 
             if not immediate_execution:
                 # Pop plan from the front of the queue (it is the same plan as currently loaded)
-                await self._r_pool.lpop(self._name_plan_queue)
+                await self._store.list_pop_front(self._name_plan_queue)
 
             # Record start time for the plan
             plan.setdefault("properties", {})["time_start"] = ttime.time()
@@ -1763,7 +1761,7 @@ class PlanQueueOperations:
             if loop_mode and not immediate_execution:
                 item_to_add = item_cleaned.copy()
                 item_to_add = self.set_new_item_uuid(item_to_add)
-                await self._r_pool.rpush(self._name_plan_queue, json.dumps(item_to_add))
+                await self._store.list_push_back(self._name_plan_queue, json.dumps(item_to_add))
                 self._uid_dict_add(item_to_add)
             item_cleaned.setdefault("result", {})
             item_cleaned["result"]["exit_status"] = exit_status
@@ -1908,7 +1906,7 @@ class PlanQueueOperations:
         """
         Clear user group permissions saved in Redis.
         """
-        await self._r_pool.delete(self._name_user_group_permissions)
+        await self._store.delete(self._name_user_group_permissions)
 
     async def user_group_permissions_save(self, user_group_permissions):
         """
@@ -1919,7 +1917,7 @@ class PlanQueueOperations:
         user_group_permissions: dict
             A dictionary containing user group permissions.
         """
-        await self._r_pool.set(self._name_user_group_permissions, json.dumps(user_group_permissions))
+        await self._store.set(self._name_user_group_permissions, json.dumps(user_group_permissions))
 
     async def user_group_permissions_retrieve(self):
         """
@@ -1930,7 +1928,7 @@ class PlanQueueOperations:
         dict or None
             Returns dictionary with saved user group permissions or ``None`` if no permissions are saved.
         """
-        ugp_json = await self._r_pool.get(self._name_user_group_permissions)
+        ugp_json = await self._store.get(self._name_user_group_permissions)
         return json.loads(ugp_json) if ugp_json else None
 
     # =============================================================================================
@@ -1940,7 +1938,7 @@ class PlanQueueOperations:
         """
         Clear lock info saved in Redis.
         """
-        await self._r_pool.delete(self._name_lock_info)
+        await self._store.delete(self._name_lock_info)
 
     async def lock_info_save(self, lock_info):
         """
@@ -1951,7 +1949,7 @@ class PlanQueueOperations:
         lock_info: dict
             A dictionary containing lock info.
         """
-        await self._r_pool.set(self._name_lock_info, json.dumps(lock_info))
+        await self._store.set(self._name_lock_info, json.dumps(lock_info))
 
     async def lock_info_retrieve(self):
         """
@@ -1962,7 +1960,7 @@ class PlanQueueOperations:
         dict or None
             Returns dictionary with saved lock info or ``None`` if no lock info is saved.
         """
-        lock_info_json = await self._r_pool.get(self._name_lock_info)
+        lock_info_json = await self._store.get(self._name_lock_info)
         return json.loads(lock_info_json) if lock_info_json else None
 
     # =============================================================================================
@@ -1972,7 +1970,7 @@ class PlanQueueOperations:
         """
         Clear 'stop_pending' mode info info saved in Redis.
         """
-        await self._r_pool.delete(self._name_stop_pending_info)
+        await self._store.delete(self._name_stop_pending_info)
 
     async def stop_pending_save(self, stop_pending):
         """
@@ -1983,7 +1981,7 @@ class PlanQueueOperations:
         lock_info: dict
             A dictionary containing lock info.
         """
-        await self._r_pool.set(self._name_stop_pending_info, json.dumps(stop_pending))
+        await self._store.set(self._name_stop_pending_info, json.dumps(stop_pending))
 
     async def stop_pending_retrieve(self):
         """
@@ -1994,7 +1992,7 @@ class PlanQueueOperations:
         dict or None
             Returns dictionary with saved 'stop_pending' or ``None`` if no 'stop_pending' is saved.
         """
-        stop_pending_json = await self._r_pool.get(self._name_stop_pending_info)
+        stop_pending_json = await self._store.get(self._name_stop_pending_info)
         return json.loads(stop_pending_json) if stop_pending_json else None
 
     # =============================================================================================
@@ -2004,7 +2002,7 @@ class PlanQueueOperations:
         """
         Clear 'autostart' mode info info saved in Redis.
         """
-        await self._r_pool.delete(self._name_autostart_mode_info)
+        await self._store.delete(self._name_autostart_mode_info)
 
     async def autostart_mode_save(self, lock_info):
         """
@@ -2015,7 +2013,7 @@ class PlanQueueOperations:
         lock_info: dict
             A dictionary containing lock info.
         """
-        await self._r_pool.set(self._name_autostart_mode_info, json.dumps(lock_info))
+        await self._store.set(self._name_autostart_mode_info, json.dumps(lock_info))
 
     async def autostart_mode_retrieve(self):
         """
@@ -2026,5 +2024,5 @@ class PlanQueueOperations:
         dict or None
             Returns dictionary with saved lock info or ``None`` if no lock info is saved.
         """
-        lock_info_json = await self._r_pool.get(self._name_autostart_mode_info)
+        lock_info_json = await self._store.get(self._name_autostart_mode_info)
         return json.loads(lock_info_json) if lock_info_json else None

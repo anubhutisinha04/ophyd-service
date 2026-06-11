@@ -49,3 +49,6 @@ asgi-lifespan
 #   codecov  -- coverage upload helper used by the httpserver CI
 requests
 codecov
+
+# Queue-store SQL backend tests (sqlite via SQLAlchemy async)
+aiosqlite

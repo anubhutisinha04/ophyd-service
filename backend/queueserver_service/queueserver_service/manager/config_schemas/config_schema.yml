@@ -25,6 +25,8 @@ properties:
         type: string
       redis_name_prefix:
         type: string
+      queue_store_uri:
+        type: string
   worker:
     type: object
     additionalProperties: false

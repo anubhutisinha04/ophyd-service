@@ -207,6 +207,7 @@ _key_mapping = {
     "zmq_publish_console": "network/zmq_publish_console",
     "redis_addr": "network/redis_addr",
     "redis_name_prefix": "network/redis_name_prefix",
+    "queue_store_uri": "network/queue_store_uri",
     "keep_re": "startup/keep_re",
     "ignore_invalid_plans": "startup/ignore_invalid_plans",
     "existing_plans_and_devices_path": "startup/existing_plans_and_devices_path",
@@ -397,6 +398,16 @@ class Settings:
         if not isinstance(redis_name_prefix, str):
             raise ConfigError(f"Redis name prefix must be a string: {redis_name_prefix!r}")
         self._settings["redis_name_prefix"] = redis_name_prefix
+
+        queue_store_uri = self._get_param(
+            value_default=self._args.queue_store_uri,
+            value_ev=os.environ.get("QSERVER_QUEUE_STORE_URI", None),
+            value_config=self._get_value_from_config("queue_store_uri"),
+            value_cli=self._args_existing("queue_store_uri"),
+        )
+        if (queue_store_uri is not None) and not isinstance(queue_store_uri, str):
+            raise ConfigError(f"Queue store URI must be a string: {queue_store_uri!r}")
+        self._settings["queue_store_uri"] = queue_store_uri
 
         # Print warnings if deprecated parameter is used
         if self._args_existing("keep_re"):

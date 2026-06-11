@@ -20,6 +20,7 @@ from ..common.logging_setup import PPrintForLogging as ppfl
 from ..common.logging_setup import setup_loggers
 from .output_streaming import push_info_to_msg_queue, setup_console_output_redirection
 from .plan_queue_ops import PlanQueueOperations
+from .queue_store import create_queue_store
 from .profile_ops import (
     check_if_function_allowed,
     extract_device_names_from_plan,
@@ -349,6 +350,11 @@ class RunEngineManager(Process):
         self._redis_name_prefix = "qs_default"
         if config and ("redis_name_prefix" in config):
             self._redis_name_prefix = config["redis_name_prefix"]
+
+        # Optional non-default queue storage (see queue_store.create_queue_store).
+        self._queue_store_uri = None
+        if config and config.get("queue_store_uri"):
+            self._queue_store_uri = config["queue_store_uri"]
 
         self._plan_queue = None  # Object of class plan_queue_ops.PlanQueueOperations
 
@@ -4306,9 +4312,14 @@ class RunEngineManager(Process):
         )
         self._worker_status_task = asyncio.ensure_future(self._periodic_worker_state_request(), loop=self._loop)
 
-        self._plan_queue = PlanQueueOperations(
-            redis_host=self._ip_redis_server, name_prefix=self._redis_name_prefix
-        )
+        if self._queue_store_uri:
+            logger.info("Using plan queue storage at '%s'", self._queue_store_uri)
+            store = create_queue_store(self._queue_store_uri)
+            self._plan_queue = PlanQueueOperations(name_prefix=self._redis_name_prefix, store=store)
+        else:
+            self._plan_queue = PlanQueueOperations(
+                redis_host=self._ip_redis_server, name_prefix=self._redis_name_prefix
+            )
         await self._plan_queue.start()
 
         # Delete Redis entries (for testing and debugging)
