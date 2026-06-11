@@ -50,6 +50,7 @@ from queueserver_service.manager.profile_ops import (
     construct_parameters,
     devices_from_nspace,
     existing_plans_and_devices_from_nspace,
+    extract_device_names_from_plan,
     extract_script_root_path,
     format_text_descriptions,
     get_default_startup_dir,
@@ -3974,6 +3975,44 @@ def test_is_object_name_in_list_1(device_name, in_list):
     """
     res = _is_object_name_in_list(device_name, allowed_objects=_allowed_devices_dict_1)
     assert res == in_list
+
+
+# fmt: off
+@pytest.mark.parametrize("plan, expected", [
+    # Top-level device name in args
+    ({"name": "count", "args": [["da1_det"]], "kwargs": {}}, ["da1_det"]),
+    # Multiple devices, deduplicated + sorted
+    ({"name": "scan", "args": [["da1_det"], "da0_motor", -1, 1, 10], "kwargs": {}},
+     ["da0_motor", "da1_det"]),
+    # Dotted subcomponent (present in the tree) maps to its root
+    ({"name": "count", "args": [["da0_motor.db0_motor"]], "kwargs": {}}, ["da0_motor"]),
+    # Dotted ref whose component is absent from the depth-limited tree:
+    # the root is a known device -> root locked
+    ({"name": "count", "args": [["da0_motor.not_in_tree"]], "kwargs": {}}, ["da0_motor"]),
+    # Device name in a kwarg value, including nested containers
+    ({"name": "mv", "args": [], "kwargs": {"detectors": ["da1_det"]}}, ["da1_det"]),
+    ({"name": "p", "args": [{"inner": {"d": "da1_det"}}], "kwargs": {}}, ["da1_det"]),
+    # Non-device strings, numbers, and unknown names are ignored
+    ({"name": "count", "args": [["da1_det"], "primary", 5], "kwargs": {"md": {"a": 1}}},
+     ["da1_det"]),
+    ({"name": "count", "args": [["not_exist"]], "kwargs": {}}, []),
+    # Excluded devices are not locked (top-level and via dotted fallback)
+    ({"name": "count", "args": [["da2_det"]], "kwargs": {}}, []),
+    ({"name": "count", "args": [["da2_det.db0_det"]], "kwargs": {}}, []),
+    # Strings that are not plain dotted identifiers are ignored
+    ({"name": "count", "args": [["da0_motor.db0_motor + 1", "1.5", "a.b c"]], "kwargs": {}}, []),
+    # Missing/empty args and kwargs
+    ({"name": "count"}, []),
+    ({"name": "count", "args": None, "kwargs": None}, []),
+])
+# fmt: on
+def test_extract_device_names_from_plan_1(plan, expected):
+    """
+    ``extract_device_names_from_plan``: device-name extraction over plan args/kwargs
+    against the device-description tree (per-plan config-service locking).
+    """
+    result = extract_device_names_from_plan(plan, existing_devices=_allowed_devices_dict_1)
+    assert result == expected
 
 
 # fmt: off

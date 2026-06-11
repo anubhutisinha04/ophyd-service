@@ -1371,6 +1371,59 @@ def _is_object_name_in_list(object_name, *, allowed_objects):
     return object_in_list
 
 
+_DOTTED_NAME_RE = re.compile(r"[_A-Za-z]\w*(\.[_A-Za-z]\w*)+")
+
+
+def extract_device_names_from_plan(plan, *, existing_devices):
+    """
+    Return a sorted list of ROOT device names referenced (as name strings) in
+    ``plan['args']`` / ``plan['kwargs']``, matched against a tree of device
+    descriptions of the same structure as produced by ``_prepare_devices``
+    (``{name: {..., "components": {...}}}``). A dotted component reference
+    such as ``"motor1.velocity"`` maps to its root device ``"motor1"``.
+    Strings that do not name a known device are ignored.
+
+    Pure name-tree function — it never touches the worker namespace, so the
+    manager process can call it before a plan is sent to the worker (used for
+    per-plan config-service device locking).
+
+    Matching is intentionally broader than the worker-side ``prepare_plan``
+    conversion: every string anywhere in args/kwargs is checked against the
+    full device tree, regardless of parameter annotations, so a kwarg value
+    that happens to equal a device name is also collected. Over-locking is the
+    safe direction. Known under-match: parameters whose values are evaluated
+    as complex expressions (e.g. ``"det1.val + 1"``) are not parsed; plain
+    (dotted) names are covered.
+    """
+    found = set()
+
+    def _match(s):
+        if _is_object_name_in_list(s, allowed_objects=existing_devices):
+            found.add(s.split(".")[0])
+            return
+        # Dotted reference whose component is missing from the (depth-limited)
+        # device tree: lock the root if the root itself is a known device.
+        if "." in s and _DOTTED_NAME_RE.fullmatch(s):
+            root_name = s.split(".")[0]
+            root = existing_devices.get(root_name)
+            if root is not None and not root.get("excluded", False):
+                found.add(root_name)
+
+    def _visit(value):
+        if isinstance(value, str):
+            _match(value)
+        elif isinstance(value, Mapping):
+            for v in value.values():
+                _visit(v)
+        elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
+            for v in value:
+                _visit(v)
+
+    _visit(plan.get("args", []) or [])
+    _visit(plan.get("kwargs", {}) or {})
+    return sorted(found)
+
+
 def _get_device_type_condition(device_type):
     """
     Generator function that returns reference to a function that verifies if device

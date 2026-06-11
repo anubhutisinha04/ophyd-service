@@ -224,12 +224,14 @@ class DeviceLockManager:
             locked_pvs = self._get_device_pvs(device_names, registry)
 
             self._version += 1
+            # stdlib logger: %-style only. structlog-style kwargs raise
+            # TypeError at INFO level — after the lock state was mutated.
             logger.info(
-                "locks_acquired",
-                devices=device_names,
-                plan=plan_name,
-                item_id=item_id,
-                lock_id=lock_id,
+                "locks_acquired devices=%s plan=%s item_id=%s lock_id=%s",
+                device_names,
+                plan_name,
+                item_id,
+                lock_id,
             )
 
             return LockResult(
@@ -273,9 +275,7 @@ class DeviceLockManager:
             if unlocked:
                 self._version += 1
                 logger.info(
-                    "locks_released",
-                    devices=unlocked,
-                    item_id=item_id,
+                    "locks_released devices=%s item_id=%s", unlocked, item_id
                 )
 
             return True, unlocked, None
@@ -309,7 +309,7 @@ class DeviceLockManager:
 
             if unlocked:
                 self._version += 1
-                logger.info("locks_force_cleared", devices=unlocked)
+                logger.info("locks_force_cleared devices=%s", unlocked)
 
             return unlocked, not_found
 

@@ -1,0 +1,134 @@
+# Integration pod: profile-collection-seeded registry + per-plan device locking.
+#
+# Sibling to integration/pods/with-queueserver/, covering the OPPOSITE
+# bootstrap direction: there the registry is seeded from happi_db.json and the
+# queueserver consumes it; here the configuration_service starts EMPTY and the
+# queueserver populates it from a realistic profile collection on env-open
+# (the "no happi registry to import" story). It is also the first pod that
+# runs direct_control with the coordination check ENABLED, so device locks
+# written by the queueserver are enforced end-to-end:
+#
+#   ioc                    — caproto mini_beamline on EPICS CA
+#   ioc_fake_motor         — caproto fake_motor_record (sim:mtr1/2, motor records)
+#   redis                  — required by the queueserver plan queue
+#   configuration_service  — starts with an EMPTY registry (no happi seed)
+#   direct_control_service — coordination check ON: locked devices answer 423
+#   queueserver            — startup dir = integration/profile_collections/
+#                            test_collection; config_service.lock_scope: plan
+#
+# Exercised by exercise.py (same directory): registry bootstrap from the
+# profile, registry-as-source-of-truth, per-plan locking + lock_all policy
+# enforced through direct-control while a plan is executing.
+#
+# Usage:
+#   docker compose up --build
+#   ./exercise.py
+#   docker compose down
+
+services:
+  ioc:
+    build:
+      context: ../../ioc
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f caproto.ioc_examples.mini_beamline > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  ioc_fake_motor:
+    build:
+      context: ../../ioc
+    command: ["python", "-m", "caproto.ioc_examples.fake_motor_record", "--list-pvs", "--interfaces", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f caproto.ioc_examples.fake_motor_record > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  redis:
+    image: docker.io/redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  configuration_service:
+    build:
+      context: ../../../backend/configuration_service
+    environment:
+      # The whole point of this pod: no happi profile, registry starts empty
+      # and is bootstrapped by the queueserver on env-open.
+      CONFIG_LOAD_STRATEGY: "empty"
+      CONFIG_DATABASE_URL: "sqlite+pysqlite:////tmp/config_service.db"
+      # Compound device classes named in the bootstrapped specs
+      # (localdevs.Det, localdevs.Spot) must be importable for PV walking.
+      PYTHONPATH: "/localdevs"
+    volumes:
+      - ../../localdevs:/localdevs:ro
+    ports:
+      - "8004:8004"
+
+  direct_control_service:
+    build:
+      context: ../../../backend/direct_control_service
+    environment:
+      DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
+      # Locks written by the queueserver must be enforced here — this pod
+      # exists to test that edge, so the check stays ON (unlike the other
+      # pods, which predate a lock writer in the pod).
+      DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "true"
+      # Write access is exercised deliberately (and then blocked by locks).
+      DIRECT_CONTROL_GLOBAL_READ_ONLY: "false"
+      EPICS_CA_ADDR_LIST: "ioc ioc_fake_motor"
+      EPICS_CA_AUTO_ADDR_LIST: "NO"
+    ports:
+      - "8003:8003"
+    depends_on:
+      configuration_service:
+        condition: service_healthy
+      ioc:
+        condition: service_healthy
+      ioc_fake_motor:
+        condition: service_healthy
+
+  queueserver:
+    build:
+      context: ../../../backend/queueserver_service
+    command:
+      - start-re-manager
+      - --config
+      - /config/qs_config.yml
+      - --redis-addr
+      - redis:6379
+      - --startup-dir
+      - /profile
+      - --zmq-control-addr
+      - "tcp://*:60615"
+      - --zmq-info-addr
+      - "tcp://*:60625"
+    environment:
+      # Single-user API key -> call /api/* with `Authorization: ApiKey mad`.
+      QSERVER_HTTP_SERVER_SINGLE_USER_API_KEY: "mad"
+      # The profile collection imports compound classes from localdevs and
+      # instantiates EpicsSignal/EpicsMotor devices against both IOCs.
+      PYTHONPATH: "/localdevs"
+      EPICS_CA_ADDR_LIST: "ioc ioc_fake_motor"
+      EPICS_CA_AUTO_ADDR_LIST: "NO"
+    volumes:
+      - ./qs_config.yml:/config/qs_config.yml:ro
+      - ../../profile_collections/test_collection:/profile:ro
+      - ../../localdevs:/localdevs:ro
+    ports:
+      - "60610:60610"
+      - "60615:60615"
+      - "60625:60625"
+    depends_on:
+      redis:
+        condition: service_healthy
+      configuration_service:
+        condition: service_healthy
+      ioc:
+        condition: service_healthy
+      ioc_fake_motor:
+        condition: service_healthy

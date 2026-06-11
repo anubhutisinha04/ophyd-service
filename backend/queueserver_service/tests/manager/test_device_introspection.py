@@ -203,6 +203,46 @@ def test_instantiation_spec_has_empty_args_when_no_prefix():
     assert spec["kwargs"] == {"name": "z"}
 
 
+class FakeEpicsSignal:
+    """Signal-style object: no ``prefix``, read PV in ``pvname`` and the
+    setpoint PV in ``setpoint_pvname`` (ophyd EpicsSignal shape)."""
+
+    def __init__(self, read_pv, write_pv=None, *, name):
+        self.pvname = read_pv
+        self.setpoint_pvname = write_pv or read_pv
+        self.name = name
+
+
+def test_instantiation_spec_uses_pvname_for_signals():
+    s = FakeEpicsSignal("mini:ph:mtr", name="ph_motor")
+    spec = device_to_instantiation_spec("ph_motor", s)
+    assert spec["args"] == ["mini:ph:mtr"]
+    assert spec["kwargs"] == {"name": "ph_motor"}
+
+
+def test_instantiation_spec_adds_write_pv_when_setpoint_differs():
+    s = FakeEpicsSignal("mini:ph:mtr.RBV", "mini:ph:mtr.VAL", name="ph_motor")
+    spec = device_to_instantiation_spec("ph_motor", s)
+    assert spec["args"] == ["mini:ph:mtr.RBV"]
+    assert spec["kwargs"] == {"name": "ph_motor", "write_pv": "mini:ph:mtr.VAL"}
+
+
+def test_metadata_pvs_for_bare_signal():
+    """A component-less signal must register its own PV — otherwise the
+    registry has no PV→device mapping and direct-control's PV-level lock
+    gate cannot protect it."""
+    s = FakeEpicsSignal("mini:ph:mtr", name="ph_motor")
+    md = device_to_metadata_dict("ph_motor", s)
+    assert md["pvs"] == {"ph_motor": "mini:ph:mtr"}
+
+    s2 = FakeEpicsSignal("mini:ph:mtr.RBV", "mini:ph:mtr.VAL", name="ph_motor")
+    md2 = device_to_metadata_dict("ph_motor", s2)
+    assert md2["pvs"] == {
+        "ph_motor": "mini:ph:mtr.RBV",
+        "ph_motor_setpoint": "mini:ph:mtr.VAL",
+    }
+
+
 # ===== build_config_service_payload =====
 
 
