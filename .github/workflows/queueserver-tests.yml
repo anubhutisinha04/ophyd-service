@@ -1,0 +1,160 @@
+# Full unit-test suite for backend/queueserver_service (manager + http server).
+#
+# queueserver_service is a hard fork maintained in-tree — its upstream CI was
+# stripped at import (commit 22da9b3), so this workflow is the ONLY place the
+# ~2900-test suite runs. A single pytest run collects both suites from the
+# top-level tests/ tree (tests/manager + tests/http).
+#
+# Path-filtered: the suite is heavy, so it runs only when queueserver files
+# (or this workflow) change. Use workflow_dispatch for a manual full run.
+#
+# Service containers:
+#   - redis: the RE manager's queue store; most manager tests need it.
+#   - openldap: the http-server LDAPAuthenticator tests connect to
+#     localhost:1389 with the users below. Bitnami removed the public
+#     `bitnami/openldap` images from Docker Hub in 2025; `bitnamilegacy/` is
+#     the same image (same env vars / user bootstrap), proven green against
+#     test_authenticators.py.
+#
+# The suite is wall-clock-bound (many tests boot real RE manager processes),
+# so it is split into 3 parallel groups via pytest-split using the committed
+# .test_durations file. Regenerate via store_test_durations.sh when the
+# groups drift uneven.
+#
+# The ipykernel job covers the IPython-kernel worker dimension: those tests
+# skip unless USE_IPYKERNEL=true (they are most of the skip count in a
+# default run), so without this job that dimension runs nowhere.
+
+name: queueserver-tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/queueserver_service/**"
+      - "backend/configuration_service/**"
+      - ".github/workflows/queueserver-tests.yml"
+  pull_request:
+    paths:
+      - "backend/queueserver_service/**"
+      - "backend/configuration_service/**"
+      - ".github/workflows/queueserver-tests.yml"
+  workflow_dispatch:
+
+# Cancel superseded runs of the same PR branch; never cancel main/dispatch runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  queueserver-full-suite:
+    name: queueserver_service full pytest (group ${{ matrix.group }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      openldap:
+        image: bitnamilegacy/openldap:latest
+        ports:
+          - 1389:1389
+          - 1636:1636
+        env:
+          LDAP_ADMIN_USERNAME: admin
+          LDAP_ADMIN_PASSWORD: adminpassword
+          LDAP_USERS: user01,user02
+          LDAP_PASSWORDS: password1,password2
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: backend/queueserver_service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/queueserver_service/requirements.txt
+            backend/queueserver_service/requirements-dev.txt
+            backend/configuration_service/pyproject.toml
+
+      - name: Install queueserver + dev deps + sibling configuration_service
+        # Single pip invocation so the resolver reconciles shared deps in one
+        # pass (same rationale as the unit-tests jobs). requirements-dev.txt
+        # names bluesky-configuration-service, which is NOT on PyPI — the
+        # sibling editable install is what satisfies it; dropping it from this
+        # command makes the whole install fail (loudly, by design).
+        # numpy is NOT pre-upgraded here: requirements-dev.txt pins it (and
+        # bluesky / ophyd-async) to keep the suite's committed expectations
+        # stable — see the comment block at the top of that file.
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e . -e ../configuration_service -r requirements-dev.txt
+
+      - name: Run pytest (group ${{ matrix.group }}/3)
+        run: pytest -v --splits 3 --group ${{ matrix.group }}
+
+  queueserver-ipykernel:
+    name: queueserver_service ipykernel-worker pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: backend/queueserver_service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/queueserver_service/requirements.txt
+            backend/queueserver_service/requirements-dev.txt
+            backend/configuration_service/pyproject.toml
+
+      - name: Install queueserver + dev deps + sibling configuration_service
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e . -e ../configuration_service -r requirements-dev.txt
+
+      - name: Run the IPython-kernel worker tests
+        # The dedicated kernel-function file; the rest of the suite runs the
+        # plain-Python worker in the jobs above. Running the WHOLE suite in
+        # both modes is a possible future expansion (doubles CI cost).
+        run: USE_IPYKERNEL=true pytest -v tests/manager/test_ip_kernel_func.py

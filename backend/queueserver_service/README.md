@@ -70,3 +70,29 @@ a manager-config YAML pointing `config_service.url` at the configuration_service
 
 See `integration/pods/with-queueserver/` for the full pod (redis + the three backends + an IOC)
 and the manager-config YAML.
+
+## Running the tests
+
+One `pytest` run from this directory collects both suites (needs a local redis;
+the LDAP authenticator tests also want `docker compose -f
+docker-configs/ldap-docker-compose.yml up -d`).
+
+The full suite boots real manager/worker/server processes and takes ~1.5 h, so
+tests with a recorded duration ≥ 2 s are auto-marked `slow` from the committed
+`.test_durations` (see `tests/conftest.py`):
+
+```bash
+pytest -m "not slow"     # development loop: ~2/3 of the tests in ~15 min
+pytest                   # everything
+USE_IPYKERNEL=true pytest   # run the worker in IPython-kernel mode; required
+                            # by the tests that skip otherwise
+```
+
+The IPython-kernel mode is a second test dimension: without `USE_IPYKERNEL`
+the kernel-only tests skip (they are most of the skip count in a default run).
+
+Refresh the durations data after the suite's shape changes significantly:
+
+```bash
+USE_IPYKERNEL=true pytest --store-durations
+```

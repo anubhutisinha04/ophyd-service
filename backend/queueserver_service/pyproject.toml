@@ -56,6 +56,9 @@ queueserver_service = ["profile_collection_sim/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [".git", "build", "dist", "*.egg-info"]
+markers = [
+    "slow: recorded duration >= the QS_SLOW_TEST_THRESHOLD (default 2s); applied automatically from .test_durations in tests/conftest.py",
+]
 
 [tool.black]
 line-length = 115
