@@ -359,6 +359,54 @@ async def test_backoff_schedule_uses_last_entry_for_extra_attempts():
     assert len(responder.calls) == 5
 
 
+@pytest.mark.asyncio
+async def test_retries_on_connect_timeout_then_succeeds():
+    # ConnectTimeout is a TCP-handshake timeout. It is a sibling of
+    # ReadTimeout under the common base httpx.TimeoutException, not a
+    # subclass of ReadTimeout. The retry tuple must therefore catch it
+    # via TimeoutException; otherwise a slow upstream during connection
+    # setup escapes as a raw httpx.ConnectTimeout, bypassing every typed
+    # handler downstream in the manager.
+    handlers = [
+        _raise(httpx.ConnectTimeout("handshake stalled")),
+        _json_response(200, {"ok": True}),
+    ]
+    client, responder = await _aclient(handlers)
+    async with client:
+        body = await client.get_devices_info()
+    assert body == {"ok": True}
+    assert len(responder.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_exhaustion_raises_unreachable():
+    # Connect-timeout exhaustion must surface as ConfigServiceUnreachable,
+    # not as a raw httpx.ConnectTimeout — the manager's typed `except
+    # (ConfigServiceError, CommTimeoutError, RuntimeError)` does not include
+    # any httpx type.
+    handlers = [_raise(httpx.ConnectTimeout("nope")) for _ in range(3)]
+    client, responder = await _aclient(handlers)
+    async with client:
+        with pytest.raises(ConfigServiceUnreachable):
+            await client.get_devices_info()
+    assert len(responder.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_unexpected_httpx_error_wraps_to_unreachable_no_retry():
+    # Belt-and-braces: any other httpx transport-layer error (here:
+    # ProxyError) is not in the retryable tuple but must still be wrapped
+    # into ConfigServiceUnreachable at the boundary so a raw httpx type
+    # never reaches the manager's typed handlers. Not retried — only the
+    # explicitly retryable kinds are.
+    handlers = [_raise(httpx.ProxyError("bad proxy"))]
+    client, responder = await _aclient(handlers)
+    async with client:
+        with pytest.raises(ConfigServiceUnreachable):
+            await client.get_devices_info()
+    assert len(responder.calls) == 1
+
+
 # ===== sync_devices_on_env_open =====
 
 

@@ -283,11 +283,13 @@ class ConfigServiceClient:
         expected_status: Tuple[int, ...] = (200, 201, 204),
     ) -> Any:
         httpx = self._httpx
+        # httpx.TimeoutException is the common base of ConnectTimeout,
+        # ReadTimeout, WriteTimeout, and PoolTimeout — using the base
+        # ensures TCP-handshake timeouts (ConnectTimeout) are retried
+        # alongside the other timeout flavors instead of escaping raw.
         retryable_exc = (
             httpx.ConnectError,
-            httpx.ReadTimeout,
-            httpx.WriteTimeout,
-            httpx.PoolTimeout,
+            httpx.TimeoutException,
         )
         attempts = self._settings.max_attempts
         last_exc: Optional[BaseException] = None
@@ -313,6 +315,25 @@ class ConfigServiceClient:
                 )
                 raise ConfigServiceUnreachable(
                     f"{method} {path} failed after {attempts} attempts: {exc}"
+                ) from exc
+            except httpx.TransportError as exc:
+                # Belt-and-braces: any other transport-layer httpx exception
+                # (e.g. ProxyError, UnsupportedProtocol, NetworkError variants
+                # not already covered above) is wrapped so a raw httpx type
+                # never escapes this boundary into manager's typed handlers.
+                # Narrower than httpx.HTTPError on purpose: HTTPStatusError
+                # only fires via response.raise_for_status() which this
+                # client never calls (status codes are inspected manually
+                # below), so it cannot reach here today; and DecodingError /
+                # TooManyRedirects are not transport faults and would be
+                # better surfaced as ProtocolError-style failures than
+                # silently masked as "unreachable".
+                logger.error(
+                    "config-service %s %s failed with unexpected httpx transport error: %s",
+                    method, path, exc,
+                )
+                raise ConfigServiceUnreachable(
+                    f"{method} {path} failed with unexpected httpx transport error: {exc}"
                 ) from exc
 
             if response.status_code in _RETRYABLE_HTTP_STATUS:
