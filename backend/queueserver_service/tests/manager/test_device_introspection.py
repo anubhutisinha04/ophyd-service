@@ -156,9 +156,9 @@ def test_metadata_captures_class_and_module():
     meta = device_to_metadata_dict("m1", m)
     assert meta["name"] == "m1"
     assert meta["ophyd_class"] == "FakeOphydMotor"
-    assert meta["module"].startswith("test_device_introspection") or meta["module"].startswith(
-        "queueserver_service"
-    )
+    # FakeOphydMotor is defined in this module; its dotted path depends on how
+    # the test was invoked (plain module vs collected as tests.manager.*).
+    assert meta["module"].endswith("test_device_introspection")
     assert meta["is_movable"] is True
     assert meta["is_readable"] is True
     assert meta["is_stoppable"] is True

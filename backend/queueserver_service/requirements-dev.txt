@@ -15,7 +15,11 @@ sphinx
 # These are dependencies of various sphinx extensions for documentation.
 ipython
 matplotlib
-numpy
+# Pinned: committed test expectations (profile_collection_sim YAML, profile_ops
+# tables, device introspection) are generated artifacts sensitive to these three.
+# numpy 2.4 also breaks repeated in-process startup-script loads.
+numpy==2.3.5
+bluesky==1.14.6
 intake
 numpydoc
 scikit-image
@@ -31,7 +35,7 @@ scikit-image # Needed for BEC/other stuff to run, factor out
 # Dependencies of ophyd-async
 h5py
 aioca
-ophyd-async
+ophyd-async==0.17
 # Required by the Layer 2.8 config-service integration tests
 # (tests/manager/test_config_service_integration.py).
 # The test module boots configuration_service.main.create_app in-process

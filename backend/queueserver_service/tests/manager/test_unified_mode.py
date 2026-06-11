@@ -79,9 +79,11 @@ def test_http_port_activates_unified_mode_with_inprocess_dispatch(monkeypatch, t
     monkeypatch.setenv("QSERVER_HTTP_SERVER_ALLOW_ANONYMOUS_ACCESS", "1")
     http_port = _free_tcp_port()
 
-    stderr_path = tmp_path / "manager_stderr.log"
-    with open(stderr_path, "w") as stderr_fp:
-        re = ReManager(params=["--http-port", str(http_port)], stderr=stderr_fp)
+    # The http app's loggers live under the queueserver_service tree, so its
+    # startup lines follow the manager's stdout handler; capture both streams.
+    log_path = tmp_path / "manager_output.log"
+    with open(log_path, "w") as log_fp:
+        re = ReManager(params=["--http-port", str(http_port)], stdout=log_fp, stderr=log_fp)
         failed_to_start = False
         try:
             if not wait_for_condition(time=10, condition=condition_manager_idle):
@@ -104,14 +106,14 @@ def test_http_port_activates_unified_mode_with_inprocess_dispatch(monkeypatch, t
             else:
                 re.kill_manager()
 
-    stderr = stderr_path.read_text()
-    assert "Using injected REManagerAPI client" in stderr, (
-        "unified mode did not wire the in-process client; stderr tail:\n"
-        + "\n".join(stderr.splitlines()[-40:])
+    output = log_path.read_text()
+    assert "Using injected REManagerAPI client" in output, (
+        "unified mode did not wire the in-process client; output tail:\n"
+        + "\n".join(output.splitlines()[-40:])
     )
     # The ZMQ-fallback log must NOT have fired — its presence would mean
     # httpserver ignored the injected RM and built a fresh client.
-    assert "Connecting to RE Manager" not in stderr, (
+    assert "Connecting to RE Manager" not in output, (
         "in-process client was injected but httpserver still built a ZMQ client"
     )
 
