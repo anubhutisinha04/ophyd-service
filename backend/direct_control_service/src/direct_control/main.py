@@ -618,6 +618,50 @@ def _build_value_response(
     return JSONResponse(payload)
 
 
+def _registry_error_status(exc: Exception) -> int:
+    """HTTP status that a registry-validation exception should map to.
+
+    Single source of truth shared by:
+    - ``_map_registry_errors_to_http`` (used by every endpoint that ``raise``s)
+    - the ``/pv/set/batch`` endpoint (which builds rows instead of raising)
+
+    By routing both paths through this one helper, batch and single endpoints
+    can't drift on registry-error statuses — they map identically by
+    construction, which is the documented contract of the batch endpoint.
+
+    - ``RegistryValidationError`` → 404 (PV/device truly not registered)
+    - ``RuntimeError``            → 503 (config-service outage; per
+      ``registry_client``, 404 is the only "not found" signal — every other
+      non-2xx becomes RuntimeError, see ``test_registry_failure_modes``)
+    - anything else               → 500 (kept as a defensive default; the
+      caller should not normally reach this branch because callers only
+      catch the two types above)
+    """
+    if isinstance(exc, RegistryValidationError):
+        return 404
+    if isinstance(exc, RuntimeError):
+        return 503
+    return 500
+
+
+@asynccontextmanager
+async def _map_registry_errors_to_http():
+    """Async context manager that maps registry-validation exceptions to HTTPException.
+
+    Replaces the four-line try/except chain that was previously copy-pasted
+    around every ``await registry_client.validate_pv(...)`` and
+    ``validate_device(...)`` call. Status codes come from
+    ``_registry_error_status`` so the batch endpoint, which can't ``raise``
+    mid-loop and inspects the status code directly, stays in lock-step.
+    """
+    try:
+        yield
+    except (RegistryValidationError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=_registry_error_status(exc), detail=str(exc)
+        ) from exc
+
+
 def _raise_http_for_device_unavailable(
     exc: "DeviceDisabledError | DeviceLockedError",
     event_prefix: str,
@@ -634,6 +678,25 @@ def _raise_http_for_device_unavailable(
         raise HTTPException(status_code=409, detail=str(exc))
     logger.warning(f"{event_prefix}_locked", error=str(exc), **log_fields)
     raise HTTPException(status_code=423, detail=str(exc))
+
+
+def _raise_http_for_coordination_failure(
+    exc: CoordinationCheckError,
+    **log_fields: Any,
+) -> None:
+    """Translate a coordination-service outage into 503 + structured log.
+
+    Mirrors the layout of ``_raise_http_for_device_unavailable``: caller
+    supplies whichever identifier fields make sense for the endpoint
+    (``pv_name=``, ``device_name=``, ``device_path=``). The detail prefix
+    ``"Coordination check failed: "`` and the ``coordination_check_failed``
+    log event are preserved so existing log queries and the frontend's
+    error-message parser don't have to change.
+    """
+    logger.error("coordination_check_failed", error=str(exc), **log_fields)
+    raise HTTPException(
+        status_code=503, detail=f"Coordination check failed: {exc}"
+    )
 
 
 # Device-control client errors → HTTP status. These are typed refusals from
@@ -773,12 +836,8 @@ async def set_pv(
     Gate failures (locked / disabled / coordination) are NOT reported —
     those reflect orchestration policy, not PV health.
     """
-    try:
+    async with _map_registry_errors_to_http():
         await registry_client.validate_pv(request.pv_name)
-    except RegistryValidationError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
 
     try:
         resp = await device_controller.set_pv(request)
@@ -787,8 +846,7 @@ async def set_pv(
         _raise_http_for_device_unavailable(e, "pv", pv_name=request.pv_name)
     except CoordinationCheckError as e:
         # Coordination unavailability — not a PV-health event.
-        logger.error("coordination_check_failed", pv_name=request.pv_name, error=str(e))
-        raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
+        _raise_http_for_coordination_failure(e, pv_name=request.pv_name)
     except Exception as e:
         # An unexpected error after we got past the gates almost always
         # means a pyepics CA failure (timeout, put-rejected, etc.) —
@@ -867,7 +925,11 @@ async def set_pv_batch(
         try:
             await registry_client.validate_pv(item.pv_name)
         except RegistryValidationError as e:
-            results.append(_batch_failure_result(item.pv_name, e, 404, coordination_checked=False))
+            results.append(
+                _batch_failure_result(
+                    item.pv_name, e, _registry_error_status(e), coordination_checked=False
+                )
+            )
             logger.warning(
                 "pv_set_batch_registry_invalid",
                 pv_name=item.pv_name,
@@ -875,7 +937,11 @@ async def set_pv_batch(
             )
             break
         except RuntimeError as e:
-            results.append(_batch_failure_result(item.pv_name, e, 503, coordination_checked=False))
+            results.append(
+                _batch_failure_result(
+                    item.pv_name, e, _registry_error_status(e), coordination_checked=False
+                )
+            )
             logger.warning(
                 "pv_set_batch_registry_unavailable",
                 pv_name=item.pv_name,
@@ -1125,12 +1191,8 @@ async def get_pv_value_from_controller(
     `?format=binary`) returns raw bytes with the same metadata in
     `X-PV-*` headers.
     """
-    try:
+    async with _map_registry_errors_to_http():
         await registry_client.validate_pv(pv_name)
-    except RegistryValidationError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
 
     try:
         value = await device_controller.get_pv_value(
@@ -1176,12 +1238,8 @@ async def get_monitored_pv_value(
     tiled-style envelope as the one-shot endpoint plus the monitor's
     full metadata (connected, alarm, limits, units, access flags).
     """
-    try:
+    async with _map_registry_errors_to_http():
         await registry_client.validate_pv(pv_name)
-    except RegistryValidationError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
 
     try:
         # subscribe is idempotent in PVMonitorManager; calling it unconditionally
@@ -1250,20 +1308,15 @@ async def execute_device_method(
     409/423 (disabled/locked) / 422 (no instantiation spec) /
     503 (registry or coordination unavailable) / 500 (execution failure).
     """
-    try:
+    async with _map_registry_errors_to_http():
         await registry_client.validate_device(request.device_name)
-    except RegistryValidationError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
 
     try:
         return await device_controller.execute_device_method(request)
     except (DeviceDisabledError, DeviceLockedError) as e:
         _raise_http_for_device_unavailable(e, "device", device_name=request.device_name)
     except CoordinationCheckError as e:
-        logger.error("coordination_check_failed", device_name=request.device_name, error=str(e))
-        raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
+        _raise_http_for_coordination_failure(e, device_name=request.device_name)
     except _DEVICE_CONTROL_CLIENT_ERRORS as e:
         _raise_http_for_control_client_error(e, "device_method", device_name=request.device_name)
     except RuntimeError as e:
@@ -1290,12 +1343,8 @@ async def stop_device(
     registry_client: RegistryClient = Depends(get_registry_client),
 ):
     """Stop a device (calls the device's stop() method with coordination check)."""
-    try:
+    async with _map_registry_errors_to_http():
         await registry_client.validate_device(device_name)
-    except RegistryValidationError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
 
     try:
         return await device_controller.execute_device_method(
@@ -1304,8 +1353,7 @@ async def stop_device(
     except (DeviceDisabledError, DeviceLockedError) as e:
         _raise_http_for_device_unavailable(e, "device_stop", device_name=device_name)
     except CoordinationCheckError as e:
-        logger.error("coordination_check_failed", device_name=device_name, error=str(e))
-        raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
+        _raise_http_for_coordination_failure(e, device_name=device_name)
     except _DEVICE_CONTROL_CLIENT_ERRORS as e:
         _raise_http_for_control_client_error(e, "device_stop", device_name=device_name)
     except RuntimeError as e:
@@ -1340,12 +1388,8 @@ async def access_nested_device(
     if settings.global_read_only and method in ("set", "put", "trigger", "stop"):
         raise HTTPException(status_code=403, detail=READ_ONLY_MESSAGE)
 
-    try:
+    async with _map_registry_errors_to_http():
         await registry_client.validate_device(device_name)
-    except RegistryValidationError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
 
     try:
         result = await device_controller.access_nested_device(
@@ -1362,8 +1406,7 @@ async def access_nested_device(
     except (DeviceDisabledError, DeviceLockedError) as e:
         _raise_http_for_device_unavailable(e, "nested_device", device_path=device_path)
     except CoordinationCheckError as e:
-        logger.error("coordination_check_failed", device_path=device_path, error=str(e))
-        raise HTTPException(status_code=503, detail=f"Coordination check failed: {e}")
+        _raise_http_for_coordination_failure(e, device_path=device_path)
     except _DEVICE_CONTROL_CLIENT_ERRORS as e:
         _raise_http_for_control_client_error(e, "nested_device", device_path=device_path)
     except RuntimeError as e:
@@ -1381,12 +1424,8 @@ async def get_nested_device_value(
 ):
     """Get nested device component value (read-only, no coordination check)."""
     device_name = device_path.split(".")[0]
-    try:
+    async with _map_registry_errors_to_http():
         await registry_client.validate_device(device_name)
-    except RegistryValidationError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
 
     try:
         value = await device_controller.access_nested_device(
