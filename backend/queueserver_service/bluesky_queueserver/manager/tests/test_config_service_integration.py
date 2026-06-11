@@ -533,7 +533,8 @@ async def test_manager_per_plan_lock_settles_leftover_debt(
 ):
     """A leftover lock from a previous plan whose unlock failed must be
     released before the next plan's lock — never silently skipped, never
-    a permanent 409 (the P0.1 regression contract, per-plan flavor)."""
+    a permanent 409 (the lock-reconciliation regression contract, per-plan
+    flavor)."""
     await _upsert(cs_client, "m1")
     stub = _manager_stub(cs_client, existing_devices={"m1": {}})
 
