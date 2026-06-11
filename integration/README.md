@@ -142,7 +142,14 @@ The exerciser is pod-agnostic — it works against `minimal/`, `full/`, or `dev/
 
 **Phase 3 — data pipeline:** add `tiled`, `mongo` (databroker), `redis`, `kafka`. Lets us test the document-streaming path end-to-end.
 
-**Phase 4 — queueserver/httpserver:** once the `merge/httpserver` branch lands, add a container built from `sligara7/bluesky-queueserver`. Mount `integration/localdevs/` into its PYTHONPATH so happi-defined compound devices instantiate.
+**Phase 4 — queueserver/httpserver:** the `with-queueserver/` pod adds the merged bluesky queueserver (unified mode: `start-re-manager` co-hosting the FastAPI httpserver) plus the redis it requires, alongside `configuration_service` and `direct_control_service`. The image (`backend/queueserver_service/Dockerfile`) is built from the in-tree source at `backend/queueserver_service/` — nothing is pulled from an external git ref. `qs_config.yml` points the queueserver's Layer 2 config-service client at `configuration_service:8004`. Milestone 1 (the five services co-run, unified `/api/status` on :60610, queueserver↔config-service connected) runs the shipped ophyd.sim profile; real IOC-backed plans + device-lock propagation are the next step. `integration/localdevs/` is mounted for the config-service consume-mode device injection.
+
+```bash
+cd integration/pods/with-queueserver
+docker compose up --build
+./smoke.sh                                              # health + Side-B behavioral checks
+curl -H "Authorization: ApiKey mad" localhost:60610/api/status
+```
 
 **AreaDetector simulator:** shipped as `ioc_adsim` in `pods/full` (`integration/ioc/ioc_adsim.py`) — a caproto stand-in for ADSimDetector serving `13SIM1:cam1:*` + a live `13SIM1:image1:ArrayData` for the camera-socket / tiff-socket. (A real EPICS `areaDetector` ADSimDetector IOC would be a drop-in replacement; the PV names match.)
 

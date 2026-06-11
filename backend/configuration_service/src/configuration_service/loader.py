@@ -570,7 +570,8 @@ class BitsProfileLoader:
         # e.g., "ophyd.EpicsMotor" -> module IS the class
         # e.g., "mybl.devices.MyDetector" -> last part is class
         parts = module_path.rsplit(".", 1)
-        if len(parts) == 2 and parts[-1][0].isupper():
+        module_is_class = len(parts) == 2 and parts[-1][0].isupper()
+        if module_is_class:
             # Module path ends with a class name (e.g., "ophyd.EpicsMotor")
             class_name = parts[-1]
         else:
@@ -612,7 +613,14 @@ class BitsProfileLoader:
             beamline=beamline,
         )
 
-        device_class_path = f"{module_path}.{creator_name}"
+        # Mirror the class detection above: when the module path itself names
+        # the class ("ophyd.EpicsMotor") and no explicit creator is given,
+        # the path IS the import path — appending the creator default (the
+        # device name) built an unimportable "ophyd.EpicsMotor.m1".
+        if module_is_class and "creator" not in entry:
+            device_class_path = module_path
+        else:
+            device_class_path = f"{module_path}.{creator_name}"
         instantiation_spec = DeviceInstantiationSpec(
             name=name,
             device_class=device_class_path,

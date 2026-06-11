@@ -1,0 +1,124 @@
+# Integration pod: all three ophyd-service backends + redis + an IOC.
+#
+# Sibling to integration/pods/minimal/ and integration/pods/full/. Adds the
+# bluesky queueserver (unified mode: start-re-manager co-hosting the FastAPI
+# httpserver in one process) and the redis it requires, on top of the minimal
+# vertical slice, so the three backends can be exercised together:
+#
+#   ioc                    — caproto mini_beamline on EPICS CA
+#   redis                  — required by the queueserver plan queue
+#   configuration_service  — device/PV registry, loaded from happi_db.json
+#   direct_control_service — WS/REST device commanding + PV monitoring
+#   queueserver            — start-re-manager + co-hosted httpserver (HTTP 60610,
+#                            0MQ 60615/60625), wired to configuration_service
+#
+# Milestone 1 target: the five services co-run, the unified httpserver answers on
+# :60610, and the queueserver connects to configuration_service. The queueserver
+# runs the shipped ophyd.sim profile for now (NOT the caproto IOC); real
+# IOC-backed plans + device-lock propagation are a Milestone 2 follow-up.
+#
+# The queueserver image is built from the in-tree source at
+# backend/queueserver_service/ (the merged queueserver + httpserver) — nothing is
+# pulled from an external git ref.
+#
+# Relative paths assume this file lives at integration/pods/with-queueserver/, so
+# `../..` reaches integration/ and `../../..` reaches the ophyd-service root.
+#
+# Usage:
+#   docker compose up --build
+#   docker compose down
+#   docker compose logs -f queueserver
+#   curl -H "Authorization: ApiKey mad" http://localhost:60610/api/status
+
+services:
+  ioc:
+    build:
+      context: ../../ioc
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f caproto.ioc_examples.mini_beamline > /dev/null"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  redis:
+    image: docker.io/redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  configuration_service:
+    build:
+      context: ../../../backend/configuration_service
+    environment:
+      CONFIG_LOAD_STRATEGY: "happi"
+      CONFIG_PROFILE_PATH: "/profile"
+      # Single-node pod: SQLite persistence (no postgres service here, unlike
+      # pods/minimal). Required since the registry persists via CONFIG_DATABASE_URL.
+      CONFIG_DATABASE_URL: "sqlite+pysqlite:////tmp/config_service.db"
+      PYTHONPATH: "/localdevs"
+    volumes:
+      - ../../happi:/profile:ro
+      - ../../localdevs:/localdevs:ro
+    ports:
+      - "8004:8004"
+
+  direct_control_service:
+    build:
+      context: ../../../backend/direct_control_service
+    environment:
+      DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
+      # No EE service in the pod; coordination check would 502 every call.
+      DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
+      EPICS_CA_ADDR_LIST: ioc
+      EPICS_CA_AUTO_ADDR_LIST: "NO"
+    ports:
+      - "8003:8003"
+    depends_on:
+      configuration_service:
+        condition: service_healthy
+      ioc:
+        condition: service_healthy
+
+  queueserver:
+    build:
+      context: ../../../backend/queueserver_service
+    command:
+      - start-re-manager
+      - --config
+      - /config/qs_config.yml
+      - --redis-addr
+      - redis:6379
+      - --startup-dir
+      - /app/bluesky_queueserver/profile_collection_sim
+      - --zmq-control-addr
+      - "tcp://*:60615"
+      - --zmq-info-addr
+      - "tcp://*:60625"
+    environment:
+      # Single-user API key -> call /api/* with `Authorization: ApiKey mad`.
+      QSERVER_HTTP_SERVER_SINGLE_USER_API_KEY: "mad"
+      # config_service consume-mode instantiates the registry's device specs in the
+      # worker on env-open, so the worker needs the happi compound classes importable
+      # (localdevs.Det, .Spot, ...) and CA pointed at the IOC for those EpicsSignals.
+      PYTHONPATH: "/localdevs"
+      EPICS_CA_ADDR_LIST: ioc
+      EPICS_CA_AUTO_ADDR_LIST: "NO"
+    volumes:
+      - ./qs_config.yml:/config/qs_config.yml:ro
+      - ../../localdevs:/localdevs:ro
+    ports:
+      - "60610:60610"
+      # 0MQ CONTROL + INFO published so the bluesky-queueserver-api compat
+      # exerciser (integration/exercise/queueserver_api_compat.py) can drive
+      # the manager over both transports from the host.
+      - "60615:60615"
+      - "60625:60625"
+    depends_on:
+      redis:
+        condition: service_healthy
+      configuration_service:
+        condition: service_healthy
+      ioc:
+        condition: service_healthy

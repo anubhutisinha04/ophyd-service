@@ -190,6 +190,11 @@ def _walk_class(
 
     current_cls = cls
     current_prefix = prefix
+    # True when the most recent segment resolved to a Component PV. A
+    # trailing DynamicDeviceComponent descends WITHOUT resolving, and
+    # falling out of the loop there must not report the bare parent prefix
+    # as a "resolved PV" (a caller would caput a nonexistent PV name).
+    leaf_resolved = True  # vacuously true for an empty chain
 
     for i, attr in enumerate(parts):
         path_so_far = ".".join(parts[:i]) if i else ""
@@ -202,6 +207,7 @@ def _walk_class(
             # DDC carries a dynamically-built sub-class; walk into it.
             # The DDC itself contributes no suffix — children carry their own.
             current_cls = cpt.cls
+            leaf_resolved = False
             continue
 
         if not isinstance(cpt, Component):
@@ -225,7 +231,12 @@ def _walk_class(
         # descends into cpt.cls using this PV as the new parent prefix.
         current_prefix = pv
         current_cls = cpt.cls
+        leaf_resolved = True
 
+    if not leaf_resolved:
+        # The chain ended on a DDC container — a sub-device, not a
+        # PV-bearing leaf. Same outcome as "exists but is not a Component".
+        return Outcome.NO_SUCH_ATTR, ".".join(parts[:-1]), parts[-1]
     return Outcome.RESOLVED, current_prefix, None
 
 

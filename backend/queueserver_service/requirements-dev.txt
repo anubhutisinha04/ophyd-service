@@ -1,0 +1,47 @@
+# These are required for developing the package (running the tests, building
+# the documentation) but not necessarily required for _using_ it.
+black!=25.11.0
+coverage
+flake8
+isort
+happi>=1.14.0
+pre-commit
+pytest
+pytest-asyncio
+pytest-xprocess
+pytest-split
+py
+sphinx
+# These are dependencies of various sphinx extensions for documentation.
+ipython
+matplotlib
+numpy
+intake
+numpydoc
+scikit-image
+sphinx
+sphinx_rtd_theme
+# Extra dependencies for development
+fastapi[all]
+# moved from requirements.txt
+pandas
+pyarrow
+matplotlib # Needed for BEC, should be factored out
+scikit-image # Needed for BEC/other stuff to run, factor out
+# Dependencies of ophyd-async
+h5py
+aioca
+ophyd-async
+# Required by the Layer 2.8 config-service integration tests
+# (bluesky_queueserver/manager/tests/test_config_service_integration.py).
+# The test module boots configuration_service.main.create_app in-process
+# and drives its ASGI lifespan via asgi-lifespan.LifespanManager.
+bluesky-configuration-service
+asgi-lifespan
+# Merged from subprojects/bluesky-httpserver/requirements-dev.txt so a single
+# dev install can run both suites. Everything else that file lists is already
+# above; only these two were unique to the httpserver tests:
+#   requests -- used directly by the httpserver test client
+#   codecov  -- coverage upload helper used by the httpserver CI
+requests
+codecov

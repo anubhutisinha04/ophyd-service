@@ -123,7 +123,12 @@ class DeviceWebSocketManager:
         # lock and lets the next subscriber create a fresh one, breaking
         # serialization. Memory cost is bounded by total devices ever seen.
         self._device_subscribe_locks: Dict[str, asyncio.Lock] = {}
-        self._pv_callbacks: Dict[str, Callable[[PVUpdate], None]] = {}
+        # Keyed by (device, pv), NOT pv alone: two devices may legitimately
+        # share a PV, and each holds its own callback on pv_monitor. A
+        # pv-only key let the second device overwrite the first's entry, so
+        # teardown unsubscribed the WRONG callback (the survivor went silent
+        # and the dead device's callback leaked).
+        self._pv_callbacks: Dict[tuple, Callable[[PVUpdate], None]] = {}
         self._device_clients: Dict[str, Set[str]] = {}
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
@@ -228,7 +233,7 @@ class DeviceWebSocketManager:
                     if not self._device_clients[device_name]:
                         self._device_clients.pop(device_name)
                         for pv_name in self._device_pvs.pop(device_name, {}).values():
-                            callback = self._pv_callbacks.pop(pv_name, None)
+                            callback = self._pv_callbacks.pop((device_name, pv_name), None)
                             if callback is not None:
                                 releases.append((pv_name, callback))
                         self._device_pv_failures.pop(device_name, None)
@@ -326,7 +331,7 @@ class DeviceWebSocketManager:
                 for component, pv_name in components_to_attempt:
                     callback = self._make_device_callback(device_name, component)
                     on_error = self._make_device_error_handler(device_name, component, pv_name)
-                    self._pv_callbacks[pv_name] = callback
+                    self._pv_callbacks[(device_name, pv_name)] = callback
                     new_subscriptions.append((component, pv_name, callback, on_error))
 
                 self._device_clients[device_name].add(client_id)
@@ -371,7 +376,7 @@ class DeviceWebSocketManager:
                     failures.pop(component, None)
                 for entry in failed:
                     failures[entry.signal] = entry
-                    self._pv_callbacks.pop(entry.pv, None)
+                    self._pv_callbacks.pop((device_name, entry.pv), None)
                 currently_failed = list(failures.values())
 
             if failed and require_connection:
@@ -415,7 +420,7 @@ class DeviceWebSocketManager:
 
         teardowns: list[tuple[str, Callable[[PVUpdate], None]]] = []
         for pv_name in released_pvs.values():
-            callback = self._pv_callbacks.pop(pv_name, None)
+            callback = self._pv_callbacks.pop((device_name, pv_name), None)
             if callback is not None:
                 teardowns.append((pv_name, callback))
         for pv_name, callback in teardowns:
