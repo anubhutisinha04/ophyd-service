@@ -1231,7 +1231,8 @@ class RunEngineManager(Process):
                         # top of (or skipping because of) stale state.
                         await self._unlock_config_service_devices()
                     if device_names:
-                        await client.lock_devices(
+                        await self._lock_with_restart_recovery(
+                            client,
                             device_names,
                             item_id=self._config_service_lock_item_id,
                             plan_name="__environment__",
@@ -1387,6 +1388,68 @@ class RunEngineManager(Process):
         logger.info(
             "config-service locked %d device(s) for plan %r (item_uid=%s): %s",
             len(device_names), item["name"], item["item_uid"], device_names,
+        )
+
+    async def _lock_with_restart_recovery(
+        self,
+        client,
+        device_names: list,
+        *,
+        item_id: str,
+        plan_name: str,
+    ) -> None:
+        """Env-scope lock with restart-orphan recovery.
+
+        Without this, a manager restart while the worker is alive
+        generates a fresh ``_config_service_lock_item_id`` (manager.py
+        ``__init__``, stable for the manager's lifetime) and re-enters
+        env-open. The lock attempt then 409s against the dead instance's
+        locks (held in config-service under the old UID); the exception
+        escapes ``zmq_server_comm``; watchdog restarts the manager; the new
+        manager hits the same 409. The loop never converges and orphaned
+        locks are never released.
+
+        Recovery is force-unlock + retry exactly once. Queueserver runs a
+        single manager process per deployment (watchdog enforces), so any
+        409 seen here on env-open cannot mean "a peer queueserver is racing
+        us" — it can only be a previous incarnation's leftover. The
+        force-unlock takes the entire env's device set, which also clears
+        any orphaned PER-PLAN locks from the dead incarnation (a plan
+        running at crash time), so the per-plan acquisition path does NOT
+        need its own recovery: by the time it runs the env is clean.
+
+        The retry is bounded: if the second lock attempt still 409s,
+        something genuinely external is wrong and the exception is raised
+        so env-open fails loudly per the no-silent-fallback rule.
+
+        Intentionally NOT used by the per-plan lock path: a 409 there can
+        legitimately mean "another plan in this same env still holds the
+        lock" and must surface; the env-scope sweep at env-open is where
+        restart leftovers are reaped.
+        """
+        from .config_service import ConfigServiceConflict
+
+        try:
+            await client.lock_devices(
+                device_names, item_id=item_id, plan_name=plan_name
+            )
+            return
+        except ConfigServiceConflict as conflict:
+            logger.warning(
+                "config-service lock conflict for item_id=%s plan=%r "
+                "(likely orphaned locks from a previous manager incarnation); "
+                "force-unlocking %d device(s) and retrying once: %s",
+                item_id, plan_name, len(device_names), conflict,
+            )
+            await client.force_unlock_devices(
+                device_names,
+                reason=(
+                    f"queueserver manager restart recovery "
+                    f"(new item_id={item_id}, plan={plan_name})"
+                ),
+            )
+        await client.lock_devices(
+            device_names, item_id=item_id, plan_name=plan_name
         )
 
     async def _release_plan_scope_lock(self, *, suppress_errors: bool) -> bool:

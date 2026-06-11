@@ -610,3 +610,56 @@ async def test_manager_release_keeps_books_when_unlock_fails(cs_app):
             assert stub._config_service_locked_devices == ["m1"]
         finally:
             await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_env_open_recovers_from_orphaned_restart_locks(
+    cs_client: ConfigServiceClient, raw_http: httpx.AsyncClient
+):
+    """Restart-recovery against the real config-service: simulate a manager
+    restart with leftover locks under a dead previous incarnation's UID, then
+    run the env-scope lock acquisition on a fresh manager. Pre-fix this 409'd
+    in a watchdog crash loop; now the new manager force-unlocks the orphans
+    and re-locks under its own UID.
+    """
+    from queueserver_service.manager.manager import RunEngineManager
+    from types import SimpleNamespace
+
+    await _upsert(cs_client, "m1", "m2")
+    # Previous incarnation: lock both devices under the dead UID.
+    await cs_client.lock_devices(
+        ["m1", "m2"], item_id="env:dead-incarnation", plan_name="__environment__"
+    )
+
+    # Confirm baseline (and prove the bug pre-fix): plain lock_devices under
+    # a new UID 409s while the orphans are held.
+    with pytest.raises(ConfigServiceConflict):
+        await cs_client.lock_devices(
+            ["m1", "m2"], item_id="env:fresh-incarnation", plan_name="__environment__"
+        )
+
+    # Bind the new recovery helper as an unbound method on a minimal stub.
+    stub = SimpleNamespace()
+    stub._lock_with_restart_recovery = (
+        RunEngineManager._lock_with_restart_recovery.__get__(stub)
+    )
+
+    new_uid = "env:fresh-incarnation"
+    await stub._lock_with_restart_recovery(
+        cs_client, ["m1", "m2"], item_id=new_uid, plan_name="__environment__"
+    )
+
+    # New incarnation now holds the locks; dead UID is gone (force-unlock cleared it).
+    m1_status = (await raw_http.get("/api/v1/devices/m1/status")).json()
+    m2_status = (await raw_http.get("/api/v1/devices/m2/status")).json()
+    assert m1_status["locked_by_item"] == new_uid
+    assert m2_status["locked_by_item"] == new_uid
+
+    # Audit log records the force-unlock with the manager-supplied reason.
+    audit = (await raw_http.get("/api/v1/devices/history?limit=20")).json()
+    force_events = [
+        e for e in audit
+        if e.get("operation") == "force_unlock"
+    ]
+    assert force_events, f"expected a force_unlock audit entry, got {audit!r}"
+    assert any("restart recovery" in (e.get("details") or "") for e in force_events)

@@ -259,6 +259,28 @@ class ConfigServiceClient:
         }
         return await self._request("POST", "/api/v1/devices/lock", json=payload)
 
+    async def force_unlock_devices(
+        self,
+        device_names: List[str],
+        *,
+        reason: str,
+    ) -> Dict[str, Any]:
+        """Administrative override that clears locks regardless of ownership.
+
+        Used by the env-open lock path to recover from orphaned locks left
+        by a dead previous manager incarnation. Without this the
+        watchdog would restart the manager forever into the same 409.
+        Audit-logged on the config-service side; reason should identify the
+        recovery context.
+        """
+        payload = {
+            "device_names": list(device_names),
+            "reason": reason,
+        }
+        return await self._request(
+            "POST", "/api/v1/devices/force-unlock", json=payload
+        )
+
     async def unlock_devices(
         self,
         device_names: List[str],
