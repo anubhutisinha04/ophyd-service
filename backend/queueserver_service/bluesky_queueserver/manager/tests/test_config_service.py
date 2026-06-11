@@ -361,9 +361,10 @@ async def test_backoff_schedule_uses_last_entry_for_extra_attempts():
 
 @pytest.mark.asyncio
 async def test_retries_on_connect_timeout_then_succeeds():
-    # ConnectTimeout is a TCP-handshake timeout (subclass of TimeoutException
-    # but NOT of ReadTimeout). The retry tuple must catch it via the common
-    # TimeoutException base; otherwise a slow upstream during connection
+    # ConnectTimeout is a TCP-handshake timeout. It is a sibling of
+    # ReadTimeout under the common base httpx.TimeoutException, not a
+    # subclass of ReadTimeout. The retry tuple must therefore catch it
+    # via TimeoutException; otherwise a slow upstream during connection
     # setup escapes as a raw httpx.ConnectTimeout, bypassing every typed
     # handler downstream in the manager.
     handlers = [
