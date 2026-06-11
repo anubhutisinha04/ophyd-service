@@ -33,7 +33,9 @@ class DeviceLockStatus(str, Enum):
     """
 
     AVAILABLE = "available"
-    LOCKED = "locked"      # held by an active plan (lock written by queueserver to configuration_service)
+    LOCKED = (
+        "locked"  # held by an active plan (lock written by queueserver to configuration_service)
+    )
     DISABLED = "disabled"  # administratively disabled in configuration_service
     UNKNOWN = "unknown"
 
@@ -308,6 +310,32 @@ class DeviceCommandResponse(BaseModel):
     coordination_checked: bool
     message: Optional[str] = None
     use_put: bool = False
+
+
+class InstantiationSpec(BaseModel):
+    """How to construct a live device object for device-level control.
+
+    Sourced from configuration_service's ``DeviceInstantiationSpec``
+    (``GET /api/v1/devices/{name}/instantiation``) or from the optional
+    ``device_class``/``args``/``kwargs``/``framework`` fields of a file-
+    registry device entry. ``framework`` is an advisory tag
+    ("ophyd-sync" | "ophyd-async"); the authoritative classification is
+    ``drivers.detect_framework`` on the imported class, and a mismatching
+    tag is a hard error, never silently overridden.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    device_class: str = Field(
+        ..., description="Fully qualified class path, e.g. 'ophyd.EpicsMotor'"
+    )
+    args: List[Any] = Field(default_factory=list)
+    kwargs: Dict[str, Any] = Field(default_factory=dict)
+    active: bool = True
+    framework: Optional[str] = Field(
+        None, description="Advisory framework tag: 'ophyd-sync' | 'ophyd-async'"
+    )
 
 
 class CoordinationStatus(BaseModel):
@@ -663,6 +691,9 @@ class HealthResponse(BaseModel):
     timestamp: datetime
     coordination_service_available: bool
     coordination_service_detail: Optional[str] = None
+    # Running mode, so a file-backed / read-only deployment is always visible.
+    registry_backend: str = "http"  # http | file (auto resolves to one of these)
+    read_only: bool = False
     active_subscriptions: int = 0
     connected_pvs: int = 0
     websocket_connections: int = 0
@@ -699,6 +730,22 @@ class DeviceDisabledError(ControlError):
 
 class CoordinationCheckError(ControlError):
     """Raised when coordination check fails."""
+
+
+class MethodNotAllowedError(ControlError):
+    """Raised when a device method is outside the allowlist or the target
+    object doesn't implement it. Maps to HTTP 400."""
+
+
+class DeviceNotInstantiableError(ControlError):
+    """Raised when device-level control is requested for a device whose
+    registry entry carries no instantiation spec (class path + ctor args),
+    or whose spec is marked inactive. Maps to HTTP 422."""
+
+
+class ComponentNotFoundError(ControlError):
+    """Raised when a nested component path doesn't exist on the live device
+    (e.g. ``motor1.no_such_signal``). Maps to HTTP 404."""
 
 
 class ValueLimitError(ControlError):

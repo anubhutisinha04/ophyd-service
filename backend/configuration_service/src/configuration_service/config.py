@@ -62,11 +62,28 @@ class Settings(BaseSettings):
     metrics_enabled: bool = True
     metrics_port: int = 9004
 
-    # SQLite database for persistent stores (device change history, standalone PVs)
-    db_path: Path = Path("/var/lib/bluesky/config_service.db")
+    # Database connection for persistent stores (device registry + audit log,
+    # standalone PVs). SQLAlchemy DSN; the backend is chosen by the scheme:
+    #   postgresql+psycopg://user:pass@host:5432/config_service   (production)
+    #   sqlite+pysqlite:////var/lib/config_service/config.db       (single-node/dev)
+    # Required when device_change_history_enabled is True (the default); startup
+    # fails hard if it is unset in that case.
+    database_url: str = ""
 
-    # Enable runtime device change history (CRUD endpoints)
+    # Enable runtime device change history (CRUD endpoints). When True (default),
+    # configuration_service persists to the database_url backend. When False,
+    # the registry is loaded from the profile on every startup with no DB.
     device_change_history_enabled: bool = True
+
+    # "lock_all" availability policy. When True, the moment ANY device lock is
+    # held (i.e. a plan is running), EVERY registered device reports
+    # locked/unavailable to direct-control — not just the devices the plan
+    # named. Lock acquisition/release semantics are unchanged; only how
+    # availability is derived from lock state changes. This setting is the
+    # boot default; the policy is runtime-changeable via
+    # GET/PUT /api/v1/devices/lock/policy. Standalone PVs (no owning device)
+    # have no device-level lock concept and are not affected.
+    lock_all: bool = False
 
     # Live-enrichment fallback for the path resolver.
     # When the resolver returns ``needs_enrichment`` (typically a classic

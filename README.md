@@ -1,20 +1,20 @@
 # ophyd-service
 
 Monorepo for the Bluesky ophyd-service. Two FastAPI backends + a caproto
-simulated IOC + a React/Vite frontend, all wired together for local
-development via `docker compose`.
+simulated IOC, wired together for a local backend inner loop via
+`docker compose`. The React/Vite frontend lives here too but is run
+separately (see below).
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `backend/configuration_service/` | Device/PV registry. REST on port 8004. |
+| `backend/configuration_service/` | Device/PV registry. REST on port 8004. Optional persistence to PostgreSQL or SQLite (see below). |
 | `backend/direct_control_service/` | Device commanding + PV monitoring. REST + WS on port 8003. |
-| `frontend/` | React + Vite UI. |
-| `ioc/` | Dockerfile for a containerized caproto `mini_beamline` IOC. |
-| `seed/` | One-shot PV seed script used by the compose stack. |
+| `frontend/` | React + Vite UI (not part of `docker-compose.yml`). |
+| `integration/` | Richer multi-service pods (`pods/{minimal,full,dev}/`), the caproto IOC image (`ioc/`), happi seed data (`happi/`), and local device classes (`localdevs/`). |
 | `shared-schema/` | OpenAPI schemas published by the backends. |
-| `docker-compose.yml` | Backend + IOC stack (no frontend service — see below). |
+| `docker-compose.yml` | Backend inner-loop stack: IOC + Postgres + both backends (no frontend service — see below). |
 
 ## Running the backend stack
 
@@ -25,10 +25,12 @@ docker compose up --build
 Starts four containers:
 
 - `ioc` — caproto `mini_beamline` serving EPICS CA on 5064
-- `configuration_service` — http://localhost:8004, Swagger UI at `/docs`
-- `seed_registry` — one-shot sidecar: POSTs the mini_beamline PV list to
-  `configuration_service` and exits. Required because
-  `direct_control_service` 404s any read/write against an unregistered PV.
+- `postgres` — `postgres:16`, the persistence backend for `configuration_service`
+- `configuration_service` — http://localhost:8004, Swagger UI at `/docs`.
+  Seeds its registry on startup from `integration/happi/happi_db.json`
+  (`CONFIG_LOAD_STRATEGY=happi`), so the mini_beamline devices/PVs are
+  registered without a separate seed step. (`direct_control_service` 404s any
+  read/write against a PV the registry doesn't know about.)
 - `direct_control_service` — http://localhost:8003, Swagger UI at `/docs`
 
 On startup each backend writes its live OpenAPI schema to
@@ -103,16 +105,25 @@ localhost:8003 / localhost:8004 work without proxy setup.
 Both backends expose Swagger UI:
 
 - http://localhost:8003/docs — direct_control_service (device commanding, PV read/write, task status)
-- http://localhost:8004/docs — configuration_service (device/PV registry, device locks, metadata)
+- http://localhost:8004/docs — configuration_service (device/PV registry, device locks)
 
 ## Notes
 
 - **WebSocket endpoints on `direct_control_service` are not in the OpenAPI
   schema** (FastAPI limitation). Their contracts are documented separately
   in the service's own README.
-- The `seed_registry` sidecar is a dev-only shortcut. Production
-  deployments seed the registry via profile files or CRUD calls from
+- **Persistence backend** — when persistence is enabled (the default;
+  `CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=false` disables it and loads from the
+  profile each start), `configuration_service` uses SQLAlchemy against either
+  PostgreSQL or SQLite, selected by the `CONFIG_DATABASE_URL` scheme
+  (`postgresql+psycopg://user:pass@host:5432/config_service` or
+  `sqlite+pysqlite:////var/lib/config_service/config.db`). PostgreSQL is
+  recommended for production / multi-writer deploys; SQLite suits single-node /
+  dev use. This compose stack uses the bundled `postgres` service.
+- Startup happi-seeding (`CONFIG_LOAD_STRATEGY=happi`) is the dev shortcut here.
+  Production deployments seed the registry via profile files or CRUD calls from
   an upstream Experiment Execution Service.
-- `configuration_service` runs with `CONFIG_LOAD_STRATEGY=empty` and
-  `CONFIG_DB_PATH=/tmp/...` for the demo; DB resets on every
-  `docker compose down` and the seeder repopulates it on next `up`.
+- The compose `postgres` service has no data volume, so the registry resets on
+  every `docker compose down` and is re-seeded from happi on the next `up`.
+- For a richer full-stack environment (more IOCs, queueserver, etc.), use
+  `integration/pods/<name>/` instead of this inner-loop compose.

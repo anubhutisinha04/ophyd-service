@@ -638,7 +638,7 @@ class StandalonePVCreateRequest(BaseModel):
     # min_length=1 keeps an empty pv_name out of the registry. An empty key
     # is unremovable via DELETE /api/v1/pvs/standalone/{pv_name:path} since
     # an empty path segment doesn't match the route — once it's in the
-    # SQLite store the only way to clear it is to recreate the container.
+    # PostgreSQL store the only way to clear it is to recreate the container.
     #
     # pattern=^[\x21-\x7e]+$ requires printable ASCII only — no whitespace,
     # no ASCII controls (NUL/BEL/ESC), no high-bit Unicode (ZWSP, NBSP,
@@ -736,6 +736,19 @@ class DeviceLockConflict(BaseModel):
     reason: str = Field(description="Why the lock failed (not_found, disabled, already_locked)")
     locked_by_plan: Optional[str] = Field(default=None, description="Plan holding the lock")
     locked_at: Optional[str] = Field(default=None, description="ISO timestamp of lock acquisition")
+
+
+class LockPolicy(BaseModel):
+    """Global device-lock availability policy.
+
+    ``lock_all=True``: while ANY device lock is held (a plan is running),
+    every registered device reports locked/unavailable — not just the
+    devices the plan named. Lock acquisition/release semantics are
+    unchanged. Boot default comes from CONFIG_LOCK_ALL; runtime value is
+    read/changed via GET/PUT /api/v1/devices/lock/policy.
+    """
+
+    lock_all: bool
 
 
 class DeviceLockResponse(BaseModel):

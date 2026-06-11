@@ -293,12 +293,16 @@ if docker ps --format '{{.Names}}' | grep -qx "$SIDE_NAME"; then
     docker kill "$SIDE_NAME" >/dev/null 2>&1 || true
 fi
 
+# This throwaway validator only loads the exported happi_db.json in-memory and
+# serves reads (GET /health, GET /api/v1/devices) — it never writes via CRUD, so
+# it needs no database. Run it with persistence disabled, which is also the only
+# no-Postgres mode now that configuration_service is Postgres-only.
 docker run --rm -d \
     --name "$SIDE_NAME" \
     -p "${SIDE_PORT}:8004" \
     -e CONFIG_LOAD_STRATEGY=happi \
     -e CONFIG_PROFILE_PATH=/profile \
-    -e CONFIG_DB_PATH=/tmp/cs.db \
+    -e CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=false \
     -v "${WORK_DIR}:/profile:ro" \
     "$running_image" >/dev/null
 

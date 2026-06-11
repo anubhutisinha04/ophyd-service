@@ -11,8 +11,6 @@ by ``__module__ + __qualname__`` (the cache uses ``importlib.import_module``).
 
 from __future__ import annotations
 
-import pytest
-
 from ophyd import Component as Cpt, Device, EpicsSignal, FormattedComponent as FmtCpt
 
 
@@ -273,13 +271,8 @@ def test_enrich_extra_field_rejected(client):
     assert r.status_code == 422
 
 
-@pytest.fixture(autouse=True)
-def _clear_cache_between_tests(client):
-    """The ophyd_cache singleton lives on app.state for the test session;
-    instantiated devices hold live CA connections. Clear between tests
-    so cache-size assertions are deterministic and connections drop."""
-    yield
-    cache = client.app.state.ophyd_cache
-    # Destroying a device drops its component dict; clearing the cache
-    # lets pyepics tear down channels on the next GC pass.
-    cache.clear()
+# Cache teardown is intentionally NOT done here anymore. The service lifespan
+# clears app.state.ophyd_cache on shutdown (see direct_control.main), and the
+# `client` fixture re-runs the lifespan per test — so every test starts with a
+# fresh, empty cache and instantiated devices' CA channels are released on
+# teardown, with no per-file fixture to keep in sync.

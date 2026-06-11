@@ -24,6 +24,15 @@ def test_health_endpoint_returns_200(client):
     assert body["coordination_service_available"] is True
 
 
+def test_health_reports_running_mode(client):
+    """/health surfaces the registry backend + read_only so the mode is visible."""
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["registry_backend"] in ("http", "file")
+    assert body["read_only"] is False  # conftest enables control for the suite
+
+
 def test_stats_endpoint_returns_200(client):
     r = client.get("/api/v1/stats")
     assert r.status_code == 200

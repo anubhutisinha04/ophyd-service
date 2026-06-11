@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from .models import (
+    LockPolicy,
     DeviceMetadata,
     DeviceInstantiationSpec,
     DeviceRegistry,
@@ -69,6 +70,9 @@ from .direct_control_client import (
 from .protocols import ConfigurationState
 from .loader import create_loader
 from .config import Settings
+from sqlalchemy.engine import Engine
+
+from .db import make_engine
 from .device_registry_store import DeviceRegistryStore
 from .standalone_pv_store import StandalonePVStore
 from .lock_manager import DeviceLockManager
@@ -251,6 +255,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     # so a warm-cache resolve never re-calls direct-control.
     enrichment_cache_container: Dict[str, dict] = {}
 
+    # The single SQLAlchemy engine shared by both persistent stores. Created in
+    # the lifespan, disposed at shutdown.
+    engine_container: Dict[str, "Engine"] = {}
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Manage application lifecycle - load configuration at startup."""
@@ -262,8 +270,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
         if settings.device_change_history_enabled:
-            # DB-as-source-of-truth mode
-            store = DeviceRegistryStore(settings.db_path)
+            # DB-as-source-of-truth mode (PostgreSQL or SQLite).
+            if not settings.database_url:
+                raise RuntimeError(
+                    "device_change_history_enabled is True but CONFIG_DATABASE_URL is not set. "
+                    "Provide a PostgreSQL DSN (postgresql+psycopg://...) or a SQLite DSN "
+                    "(sqlite+pysqlite:///...), or set "
+                    "CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=false to run without persistence."
+                )
+            engine = make_engine(settings.database_url)
+            engine_container["engine"] = engine
+
+            store = DeviceRegistryStore(engine)
             store.initialize()
             registry_store_container["store"] = store
 
@@ -273,7 +291,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 logger.info(
                     "loaded_from_database",
                     devices=len(registry.devices),
-                    db_path=str(settings.db_path),
+                    database_url=settings.database_url,
                 )
             else:
                 # First startup: seed from profile collection
@@ -305,18 +323,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         # returning 501 with the misleading "Set CONFIG_DEVICE_CHANGE_HISTORY_ENABLED=true"
         # message even though the flag was set.
         if settings.device_change_history_enabled:
-            pv_store = StandalonePVStore(settings.db_path)
+            pv_store = StandalonePVStore(engine_container["engine"])
             pv_store.initialize()
             standalone_pv_container["store"] = pv_store
             _apply_standalone_pvs(registry, pv_store, logger)
             logger.info(
                 "standalone_pv_store_enabled",
-                db_path=str(settings.db_path),
+                database_url=settings.database_url,
             )
 
-        # Initialize device lock manager (in-memory, ephemeral)
-        lock_manager_container["manager"] = DeviceLockManager()
-        logger.info("device_lock_manager_initialized")
+        # Initialize device lock manager (in-memory, ephemeral). lock_all is
+        # the boot default for the availability policy; runtime-changeable
+        # via PUT /api/v1/devices/lock/policy.
+        lock_manager_container["manager"] = DeviceLockManager(lock_all=settings.lock_all)
+        logger.info("device_lock_manager_initialized", lock_all=settings.lock_all)
 
         # Initialize PV health manager (in-memory, ephemeral).
         pv_health_container["manager"] = PVHealthManager()
@@ -346,12 +366,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             standalone_pv_container["store"].close()
         if "store" in registry_store_container:
             registry_store_container["store"].close()
+        if "engine" in engine_container:
+            engine_container["engine"].dispose()
         if "client" in direct_control_container:
             await direct_control_container["client"].aclose()
         logger.info("configuration_service_shutdown")
         state_container.clear()
         registry_store_container.clear()
         standalone_pv_container.clear()
+        engine_container.clear()
         lock_manager_container.clear()
         pv_health_container.clear()
         direct_control_container.clear()
@@ -882,6 +905,39 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             registry_version=lock_manager.version,
         )
 
+    # ===== Lock Policy =====
+    # Like the lock routes above, must precede the {device_name} wildcard.
+
+    @app.get(
+        "/api/v1/devices/lock/policy",
+        response_model=LockPolicy,
+        summary="Get Lock Policy",
+        tags=["Device Locking"],
+    )
+    async def get_lock_policy(lock_manager: LockManagerDep) -> LockPolicy:
+        """Current lock_all availability policy (boot default: CONFIG_LOCK_ALL)."""
+        return LockPolicy(lock_all=lock_manager.lock_all_enabled)
+
+    @app.put(
+        "/api/v1/devices/lock/policy",
+        response_model=LockPolicy,
+        summary="Set Lock Policy",
+        tags=["Device Locking"],
+    )
+    async def set_lock_policy(
+        policy: LockPolicy, lock_manager: LockManagerDep
+    ) -> LockPolicy:
+        """
+        Set the lock_all availability policy at runtime.
+
+        Takes effect immediately for every subsequent availability read
+        (device status, PV status). In-memory like the locks themselves —
+        a restart returns to the CONFIG_LOCK_ALL boot default.
+        """
+        lock_manager.set_lock_all(policy.lock_all)
+        logger.info("lock_policy_set", lock_all=policy.lock_all)
+        return LockPolicy(lock_all=lock_manager.lock_all_enabled)
+
     # ===== Device Status Endpoint =====
     # Must be defined before the {device_name} wildcard GET route.
 
@@ -919,7 +975,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 detail=f"Registry inconsistency: device '{device_name}' has no instantiation spec",
             )
         enabled = spec.active
-        lock_state = lock_manager.get_device_lock(device_name)
+        lock_state = lock_manager.effective_lock(device_name)
         locked = lock_state is not None
 
         # Roll up health for this device's PVs. ``device.pvs`` maps
@@ -1655,7 +1711,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         """
         Register a standalone PV.
 
-        Adds the PV to the in-memory registry and persists it to SQLite.
+        Adds the PV to the in-memory registry and persists it to PostgreSQL.
         Returns 409 if the PV name already exists (device-bound or standalone).
         """
         pv_name = request.pv_name
@@ -1984,7 +2040,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 ),
             )
         enabled = spec.active
-        lock_state = lock_manager.get_device_lock(device_name)
+        lock_state = lock_manager.effective_lock(device_name)
         locked = lock_state is not None
 
         return PVStatusResponse(

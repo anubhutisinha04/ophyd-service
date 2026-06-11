@@ -64,6 +64,18 @@ services:
       timeout: 2s
       retries: 10
 
+  postgres:
+    image: docker.io/postgres:16
+    environment:
+      POSTGRES_USER: bluesky
+      POSTGRES_PASSWORD: bluesky
+      POSTGRES_DB: config_service
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bluesky"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   configuration_service:
     build:
       context: ../../../backend/configuration_service
@@ -84,7 +96,8 @@ services:
     environment:
       CONFIG_LOAD_STRATEGY: "happi"
       CONFIG_PROFILE_PATH: "/profile"
-      CONFIG_DB_PATH: "/tmp/config_service.db"
+      # PostgreSQL persistence (config_service also supports SQLite; this pod uses Postgres).
+      CONFIG_DATABASE_URL: "postgresql+psycopg://bluesky:bluesky@postgres:5432/config_service"
     volumes:
       # Bind-mount live source over the COPY'd source. The image's
       # `pip install -e .` registered /app/src in site-packages, so imports
@@ -93,6 +106,9 @@ services:
       - ../../happi:/profile:ro
     ports:
       - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   direct_control_service:
     build:
@@ -112,10 +128,17 @@ services:
     environment:
       DIRECT_CONTROL_CONFIGURATION_SERVICE_URL: http://configuration_service:8004
       DIRECT_CONTROL_COORDINATION_CHECK_ENABLED: "false"
+      # Read-only defaults to true (monitor-only); allow control in the pod.
+      DIRECT_CONTROL_GLOBAL_READ_ONLY: "false"
       EPICS_CA_ADDR_LIST: "ioc ioc_motor"
       EPICS_CA_AUTO_ADDR_LIST: "NO"
+      # Device-level control (/api/v1/device/execute) instantiates the
+      # registry's device classes in THIS container; the happi DB references
+      # compound classes localdevs.Det / localdevs.Spot.
+      PYTHONPATH: "/localdevs"
     volumes:
       - ../../../backend/direct_control_service/src:/app/src
+      - ../../localdevs:/localdevs:ro
     ports:
       - "8003:8003"
     depends_on:

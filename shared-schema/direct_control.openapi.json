@@ -9,7 +9,7 @@
     "/health": {
       "get": {
         "summary": "Health Check",
-        "description": "Combined health check: coordination availability and monitoring stats.\n\nReturns 503 when configuration_service is unreachable so LB readiness\nprobes can route away. ``coordination_service_detail`` carries the\nstructured reason (timeout / connect-refused / non-2xx).",
+        "description": "Combined health check: coordination availability and monitoring stats.\n\nReturns 503 when a REQUIRED configuration_service (http backend) is\nunreachable so LB readiness probes can route away;\n``coordination_service_detail`` carries the structured reason. In\nfile/standalone mode there is no config-service requirement, so the node is\nhealthy. ``registry_backend`` and ``read_only`` report the running mode so\na file-backed or read-only deployment is always visible, never silent.",
         "operationId": "health_check_health_get",
         "responses": {
           "200": {
@@ -395,7 +395,7 @@
     "/api/v1/device/execute": {
       "post": {
         "summary": "Execute Device Method",
-        "description": "Execute Ophyd device method with coordination check (High Fidelity Channel).\n\nAlways returns a confirmed result. Use when confirmation is required.\nRaises 404/423/503/500 on various failure modes.",
+        "description": "Execute an ophyd / ophyd-async device method with coordination check\n(High Fidelity Channel).\n\nThe device is instantiated live from its registry instantiation spec;\nStatus completion is awaited unless ``use_put=true``. Raises\n400 (method not allowed) / 404 (device not in registry) /\n409/423 (disabled/locked) / 422 (no instantiation spec) /\n503 (registry or coordination unavailable) / 500 (execution failure).",
         "operationId": "execute_device_method_api_v1_device_execute_post",
         "requestBody": {
           "content": {
@@ -474,7 +474,7 @@
     "/api/v1/device/{device_path}": {
       "post": {
         "summary": "Access Nested Device",
-        "description": "Access nested device component (e.g. motor1.user_readback).\n\nCoordination-checked for writes; 404/423/503/500 on failure modes.",
+        "description": "Access nested device component (e.g. motor1.user_readback).\n\nReads are always allowed; write methods are coordination-checked and\nrejected with 403 in read-only mode. 404/423/503/500 on failure modes.",
         "operationId": "access_nested_device_api_v1_device__device_path__post",
         "parameters": [
           {
@@ -839,6 +839,16 @@
               }
             ],
             "title": "Coordination Service Detail"
+          },
+          "registry_backend": {
+            "type": "string",
+            "title": "Registry Backend",
+            "default": "http"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": false
           },
           "active_subscriptions": {
             "type": "integer",

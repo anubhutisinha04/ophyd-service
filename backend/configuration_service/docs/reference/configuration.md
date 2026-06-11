@@ -32,8 +32,8 @@ All settings are read from environment variables with the `CONFIG_` prefix. A `.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `CONFIG_DB_PATH` | path | `/var/lib/bluesky/config_service.db` | SQLite database for device registry and standalone PVs |
-| `CONFIG_DEVICE_CHANGE_HISTORY_ENABLED` | bool | `true` | Enable DB persistence and CRUD endpoints. When `false`, devices load from profile on every startup with no persistence |
+| `CONFIG_DATABASE_URL` | str | — | PostgreSQL DSN (`postgresql+psycopg://user:pass@host:5432/config_service`) for the device registry, audit log, and standalone PVs. Required when persistence is enabled |
+| `CONFIG_DEVICE_CHANGE_HISTORY_ENABLED` | bool | `true` | Enable DB persistence and CRUD endpoints (requires `CONFIG_DATABASE_URL`). When `false`, devices load from profile on every startup with no persistence |
 
 ## Metrics
 

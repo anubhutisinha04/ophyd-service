@@ -623,6 +623,68 @@
         }
       }
     },
+    "/api/v1/devices/lock/policy": {
+      "get": {
+        "tags": [
+          "Device Locking"
+        ],
+        "summary": "Get Lock Policy",
+        "description": "Current lock_all availability policy (boot default: CONFIG_LOCK_ALL).",
+        "operationId": "get_lock_policy_api_v1_devices_lock_policy_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockPolicy"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Device Locking"
+        ],
+        "summary": "Set Lock Policy",
+        "description": "Set the lock_all availability policy at runtime.\n\nTakes effect immediately for every subsequent availability read\n(device status, PV status). In-memory like the locks themselves \u2014\na restart returns to the CONFIG_LOCK_ALL boot default.",
+        "operationId": "set_lock_policy_api_v1_devices_lock_policy_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LockPolicy"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockPolicy"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/devices/{device_name}/status": {
       "get": {
         "tags": [
@@ -3157,6 +3219,20 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "LockPolicy": {
+        "properties": {
+          "lock_all": {
+            "type": "boolean",
+            "title": "Lock All"
+          }
+        },
+        "type": "object",
+        "required": [
+          "lock_all"
+        ],
+        "title": "LockPolicy",
+        "description": "Global device-lock availability policy.\n\n``lock_all=True``: while ANY device lock is held (a plan is running),\nevery registered device reports locked/unavailable \u2014 not just the\ndevices the plan named. Lock acquisition/release semantics are\nunchanged. Boot default comes from CONFIG_LOCK_ALL; runtime value is\nread/changed via GET/PUT /api/v1/devices/lock/policy."
       },
       "NestedDeviceComponent": {
         "properties": {

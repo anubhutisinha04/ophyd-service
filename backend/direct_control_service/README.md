@@ -7,8 +7,8 @@ monitoring via WebSocket, running on a single port.
 
 - **A4 Device Coordination**: Checks the device-lock state in `configuration_service` before any write; returns `423 Locked` if a plan holds the device.
 - **PV Control**: Low-fidelity channel for EPICS PV set/get (fire-and-forget or put-completion).
-- **Device Method Execution**: High-fidelity channel for Ophyd device methods, always confirmed.
-- **Nested Device Access**: Navigate device component hierarchies (ophyd-websocket compatible).
+- **Device Method Execution**: High-fidelity channel — instantiates the registry's device class as a live ophyd object and runs the verb with Status completion awaited. Supports **both classic ophyd and ophyd-async** device classes, dispatched per device by framework detection.
+- **Nested Device Access**: Navigate live device component hierarchies (ophyd-websocket compatible).
 - **EPICS PV Monitoring**: Channel Access + PVAccess subscriptions via ophyd (pyepics, p4p).
 - **WebSocket Streaming**: Real-time PV and device updates; writes route through coordination.
 - **ophyd-websocket compatible**: `pv-socket`, `device-socket`, `control-socket` endpoints.
@@ -61,6 +61,7 @@ locks via `POST /api/v1/devices/lock`; direct_control reads them via
 |------------|-----------|---------|
 | `configuration_service` | `/api/v1/devices/{name}`, `/api/v1/pvs` | Device + PV registry |
 | `configuration_service` | `/api/v1/devices/{name}/status` | A4 device lock status (read-only) |
+| `configuration_service` | `/api/v1/devices/{name}/instantiation` | Instantiation spec (class path + ctor args) for device-level control |
 
 ## Configuration
 
@@ -75,6 +76,10 @@ All settings use the `DIRECT_CONTROL_` environment variable prefix.
 | `DIRECT_CONTROL_COORDINATION_CHECK_ENABLED` | `true` | Enable A4 coordination checks |
 | `DIRECT_CONTROL_COORDINATION_TIMEOUT` | `5.0` | Coordination check timeout (s) |
 | `DIRECT_CONTROL_COMMAND_TIMEOUT` | `30.0` | Command execution timeout (s) |
+| `DIRECT_CONTROL_DEVICE_CONNECT_TIMEOUT` | `10.0` | Connect timeout (s) when instantiating a live device for device-level control |
+| `DIRECT_CONTROL_GLOBAL_READ_ONLY` | `true` | Monitor-only by default: all control/write operations return 403 until set to `false` |
+| `DIRECT_CONTROL_REGISTRY_BACKEND` | `http` | `http` (configuration_service) \| `file` (standalone, local registry file) \| `auto` |
+| `DIRECT_CONTROL_REGISTRY_FILE_PATH` | — | Registry file path; required for `file`, optional fallback for `auto` |
 | `DIRECT_CONTROL_WS_MAX_CONNECTIONS` | `100` | Max WebSocket connections |
 | `DIRECT_CONTROL_WS_HEARTBEAT_INTERVAL` | `30` | Heartbeat interval (s) |
 | `DIRECT_CONTROL_WS_MESSAGE_QUEUE_SIZE` | `1000` | Message queue size |
@@ -178,8 +183,52 @@ Binary mode (`Accept: application/octet-stream` or `?format=binary`):
 ### Device Control (High Fidelity, coordination-checked)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/device/execute` | Execute Ophyd device method |
-| POST | `/api/v1/device/{device_name}/stop` | Stop a device |
+| POST | `/api/v1/device/execute` | Execute a device method on a live ophyd / ophyd-async object |
+| POST | `/api/v1/device/{device_name}/stop` | Stop a device (`stop()` with completion) |
+
+The service instantiates the device from its registry **instantiation spec**
+(class path + constructor args), connects it (cached after first use), and
+runs the method via a framework-matched driver — classic ophyd (pyepics,
+`Status.wait` on a worker thread) or ophyd-async (aioca/p4p, awaited
+`AsyncStatus`) — detected per device from the imported class.
+
+Allowed methods: `set`, `put`, `get`, `read`, `describe`,
+`read_configuration`, `describe_configuration`, `trigger`, `stop`.
+`use_put=true` returns right after initiating a Status-returning method
+instead of awaiting completion.
+
+Status codes: `400` method outside the allowlist or unsupported by the
+device class · `404` device not in registry / unknown nested component ·
+`409` disabled · `422` device has no instantiation spec (device-level
+control unavailable; PV-level operations still work) · `423` locked by a
+plan · `503` registry unreachable.
+
+In standalone (`file`) registry mode — the full service with NO
+configuration_service (`DIRECT_CONTROL_CONFIGURATION_SERVICE_URL` may be
+left unset) — a device entry opts into device-level control by carrying
+class info. A fully-commented example registry lives at
+[`examples/standalone_registry.example.yaml`](examples/standalone_registry.example.yaml),
+and a working containerized deployment (with CI coverage) at
+`integration/pods/standalone/`:
+
+```json
+{
+  "devices": [
+    {
+      "name": "m1",
+      "pvs": ["BL01:M1.RBV"],
+      "device_class": "ophyd.EpicsMotor",
+      "args": ["BL01:M1"],
+      "kwargs": {},
+      "framework": "ophyd-sync"
+    }
+  ]
+}
+```
+
+`framework` (`ophyd-sync` | `ophyd-async`) is optional and advisory — the
+imported class is classified authoritatively, and a mismatching tag is a
+hard error. Entries without `device_class` stay PV-gateway-only.
 
 ### Device metadata
 Device metadata (the device list, per-device records, component trees) is **not**
@@ -200,9 +249,30 @@ lock state) but does not re-expose it as HTTP endpoints.
 | WS | `/api/v1/pv-socket` | PV monitoring (ophyd-websocket compatible) |
 | WS | `/api/v1/device-socket` | Device-level monitoring (ophyd-websocket compatible) |
 | WS | `/api/v1/control-socket` | Combined PV + device control |
+| WS | `/api/v1/camera-socket` | AreaDetector image streaming (finch `ophydSocketCameraPath`) |
+| WS | `/api/v1/tiff-socket` | TIFF-detector image streaming (finch `ophydSocketTIFFPath`) |
 
 All write actions over WebSocket (`set`, `stop`) route through `DeviceControl`
-and inherit the A4 coordination check.
+and inherit the A4 coordination check. The image sockets are read-only EPICS
+monitors (no writes, no coordination check).
+
+### Image streaming (`camera-socket` / `tiff-socket`)
+
+Both stream binary **JPEG** frames plus JSON metadata, matching finch's
+`useCameraCanvas` / `useTIFFCanvas` hooks:
+
+- **Client → server (subscribe):**
+  - camera: `{"imageArray_PV": "...", "startX": "...", "sizeX": "...", "colorMode": "...", "dataType": "...", ...}` — any omitted setting PV is inferred from the `imageArray_PV` prefix (`<prefix>:cam1:<suffix>`); an omitted `imageArray_PV` falls back to `DIRECT_CONTROL_CAMERA_DEFAULT_IMAGE_ARRAY_PV`.
+  - tiff: `{"prefix": "13PIL1"}` — expands to `<prefix>:image1:ArrayData` + `<prefix>:cam1:*` (tiff is camera-with-prefix-inference).
+- **Client → server (optional):** `{"toggleLogNormalization": true|false}`.
+- **Server → client:** binary JPEG frames; JSON `{"x":int,"y":int,...}` on dimension change; JSON `{"logNormalization":bool}` on toggle. No heartbeat is sent on these sockets (finch interprets any non-`logNormalization` JSON text frame as a dimension message).
+
+The **image array PV** is validated against the configuration_service registry before connecting — the same gate as `pv-socket`/`device-socket`. An unregistered array PV (or an unreachable config-service) refuses the connection with an `error` envelope. The `cam1:*` setting PVs are *not* registry-validated: AreaDetector devices register the image-data PV but not each scalar setting as a standalone registry entry, and the settings ride on the same validated detector prefix.
+
+The wire encoding is pluggable via `DIRECT_CONTROL_IMAGE_ENCODING` (`jpeg`|`png`|`webp`,
+see `monitoring/image_encoders.py`), but stays `jpeg` by default because finch
+decodes frames as `image/jpeg`. TIFF is intentionally **not** an option — browsers
+cannot decode TIFF; "TIFF" names the detector class, not the wire format.
 
 ## Example curl Commands
 

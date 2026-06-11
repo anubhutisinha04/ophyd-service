@@ -20,6 +20,31 @@ The Configuration Service holds the lock state because it is the shared registry
 
 **Ephemeral state**: Locks are in-memory only (`DeviceLockManager`). On service restart, all locks are cleared. This is intentional — a restart means no plan is running, so no locks should exist.
 
+## The lock_all policy
+
+By default, a lock request only locks the devices it names: a plan using
+device A leaves B and C available to Direct Control. Some facilities want the
+opposite — while *any* plan is running, *nothing* should be commandable out
+of band.
+
+The **lock_all** availability policy provides that. When enabled, the moment
+any lock is held, every registered device reports locked/unavailable, with
+`locked_by_plan` attributed to the plan holding the (earliest) lock.
+Acquisition and release semantics are unchanged — this is purely a change in
+how availability is derived from lock state, so the lock writer (queueserver
+/ Experiment Execution) needs no changes.
+
+Configuration:
+
+- `CONFIG_LOCK_ALL` (default `false`) — boot default.
+- `GET /api/v1/devices/lock/policy` / `PUT /api/v1/devices/lock/policy`
+  with `{"lock_all": true|false}` — read or change at runtime. Like the
+  locks themselves, the runtime value is in-memory; a restart returns to
+  the boot default.
+
+Standalone PVs are not affected (see below) — they have no device-level
+lock concept.
+
 ## PV-level resolution
 
 Locks are stored at the device level. Direct Control operates at the PV level. The `GET /api/v1/pvs/status` endpoint bridges this: given a PV name, it resolves to the owning device and returns the device's lock and enabled state.

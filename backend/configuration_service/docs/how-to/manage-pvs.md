@@ -75,4 +75,4 @@ curl http://localhost:8004/api/v1/pvs/SR:C01:RING:CURR
 
 ## Persistence
 
-Standalone PVs are stored in the same SQLite database as the device registry. They survive service restarts and are re-applied to the in-memory registry on startup. They are not affected by `POST /api/v1/registry/reset`.
+Standalone PVs are stored in the same PostgreSQL database as the device registry. They survive service restarts and are re-applied to the in-memory registry on startup. They are not affected by `POST /api/v1/registry/reset`.

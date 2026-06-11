@@ -24,7 +24,6 @@ from typing import Iterator
 
 import pytest
 
-
 _IOC_PORT = 5064  # default EPICS CA
 _IOC_ADDR = f"localhost:{_IOC_PORT}"
 
@@ -98,6 +97,15 @@ def _epics_env(test_ioc):
     # Point at a harmless URL; the `client` fixture swaps the real
     # configuration_service client for a stub after lifespan runs.
     os.environ["DIRECT_CONTROL_CONFIGURATION_SERVICE_URL"] = "http://localhost:0"
+    # Skip the startup readiness probe: the unit-test app boots its lifespan
+    # against the harmless URL above (no real config-service), so the probe
+    # would block then fail. Integration tests that want the real probe drive
+    # is_service_available() directly instead of booting the app.
+    os.environ["DIRECT_CONTROL_CONFIG_SERVICE_STARTUP_PROBE"] = "false"
+    # Enable control: read-only defaults to true, but the suite exercises the
+    # write paths (PV set, device execute, WS set/stop). The read-only gate has
+    # its own dedicated tests that flip this on explicitly.
+    os.environ["DIRECT_CONTROL_GLOBAL_READ_ONLY"] = "false"
     yield
 
 
@@ -117,6 +125,11 @@ class _StubRegistry:
         return None
 
     async def get_owning_device(self, pv_name: str):
+        return None
+
+    async def get_instantiation_spec(self, device_name: str):
+        # No class info — device-level control paths get a clean 422; tests
+        # that exercise live device control install a spec-bearing stub.
         return None
 
     async def cleanup(self) -> None:
@@ -203,6 +216,9 @@ def client(app):
         app.state.registry_client = stub_registry
         if hasattr(app.state, "ws_manager"):
             app.state.ws_manager.registry_client = stub_registry
+        for image_mgr in ("camera_ws_manager", "tiff_ws_manager"):
+            if hasattr(app.state, image_mgr):
+                getattr(app.state, image_mgr).registry_client = stub_registry
         if hasattr(app.state, "device_controller"):
             # device_controller owns a registry_client for the PV→owning-device
             # lookup that drives the disabled/locked gate on PV-keyed writes.
