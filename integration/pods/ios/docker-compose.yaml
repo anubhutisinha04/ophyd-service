@@ -91,7 +91,10 @@ services:
     environment:
       CONFIG_LOAD_STRATEGY: "happi"
       CONFIG_PROFILE_PATH: "/profile"
-      CONFIG_DB_PATH: "/tmp/config_service.db"
+      # config-service migrated from a bare SQLite path to a SQLAlchemy DSN
+      # (CONFIG_DATABASE_URL); the old CONFIG_DB_PATH is ignored and startup
+      # then fails because device_change_history_enabled defaults to True.
+      CONFIG_DATABASE_URL: "sqlite+pysqlite:////tmp/config_service.db"
       # The resolver walks ophyd device classes statically (no IOC connection);
       # for IOS classes (ios_devs.PGM etc.) ios_devs.py must be importable.
       # /profile is the mounted IOS site dir, which contains ios_devs.py.
