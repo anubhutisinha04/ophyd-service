@@ -135,6 +135,7 @@ most of the supported parameters:
       zmq_publish_console: true
       redis_addr: localhost:6379
       redis_name_prefix: qs_default
+      queue_store_uri: sqlite+aiosqlite:///var/lib/qserver/queue.db
     startup:
       keep_re: true
       startup_dir: ~/.ipython/profile_collection/startup
@@ -216,6 +217,21 @@ Parameters that define for network settings used by RE Manager:
 - ``redis_name_prefix`` - the prefix is appended to the Redis keys to differentiate between keys
   created by different instances of RE Manager. The value may also be passed using
   ``--redis-name-prefix`` CLI parameter.
+
+- ``queue_store_uri`` - storage backend for the plan queue. By default the queue is stored in
+  Redis at ``redis_addr`` and this option is unset. Set a SQLAlchemy async URI to store the
+  queue in a SQL database instead. Supported URI schemes:
+
+  - ``sqlite+aiosqlite:///path/to/queue.db`` - store the queue in a local SQLite file. Useful
+    for development, single-host deployments, or hosts that do not run Redis.
+  - ``postgresql+psycopg://user:password@host:5432/dbname`` - store the queue in PostgreSQL.
+  - ``redis://host[:port]`` - selects Redis explicitly; equivalent to leaving the option
+    unset and using ``redis_addr``.
+
+  Any other scheme is rejected with an error (there is no silent fallback). The same value
+  may be passed using the ``QSERVER_QUEUE_STORE_URI`` environment variable or the
+  ``--queue-store-uri`` CLI parameter. Default behavior (Redis at ``redis_addr``) is
+  unchanged when the option is not set.
 
 startup
 +++++++

@@ -71,11 +71,22 @@ a manager-config YAML pointing `config_service.url` at the configuration_service
 See `integration/pods/with-queueserver/` for the full pod (redis + the three backends + an IOC)
 and the manager-config YAML.
 
-**Queue storage** is pluggable (`queueserver_service/manager/queue_store.py`): redis is the
-default; `--queue-store-uri` (or `QSERVER_QUEUE_STORE_URI`, or the `network/queue_store_uri`
-config key) selects a SQL backend instead — `sqlite+aiosqlite:///...` or
-`postgresql+psycopg://...`, mirroring configuration_service's dual-backend pattern. The
-plan-queue test suite runs against both backends.
+**Queue storage** is pluggable (`queueserver_service/manager/queue_store.py`). Redis
+is the default; the queue is stored in Redis at `--redis-addr` unless
+`--queue-store-uri` (or `QSERVER_QUEUE_STORE_URI`, or the `network/queue_store_uri`
+config key) is set. Supported URI schemes:
+
+- `sqlite+aiosqlite:///path/to/queue.db` — store the queue in a local SQLite file
+  (good for development, single-host deployments, or hosts without Redis).
+- `postgresql+psycopg://user:pass@host:5432/dbname` — store the queue in
+  PostgreSQL (shares the dual-backend pattern with `configuration_service`).
+- `redis://host[:port]` — selects Redis explicitly; equivalent to leaving the
+  option unset and using `--redis-addr`.
+
+Any other scheme is an error (no silent fallback). Default behavior is unchanged
+when the option is not set. The plan-queue test suite runs against both backends
+(`tests/manager/test_plan_queue_ops.py` is parametrized over `["redis", "sqlite"]`).
+See `docs/source/manager_config.rst` for the full config surface.
 
 ## Running the tests
 

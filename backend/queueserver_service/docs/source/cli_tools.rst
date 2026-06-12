@@ -198,6 +198,14 @@ Other Configuration Parameters
 - ``--redis-addr`` is the address of Redis server
   used by RE Manager as persistent storage.
 
+- ``--queue-store-uri`` selects a storage backend for the plan queue. By default the
+  queue is stored in Redis at ``--redis-addr``. Set a SQLAlchemy async URI to store
+  the queue in a SQL database instead, e.g.
+  ``sqlite+aiosqlite:///var/lib/qserver/queue.db`` or
+  ``postgresql+psycopg://user:pass@host:5432/qserver``. May also be set with the
+  ``QSERVER_QUEUE_STORE_URI`` environment variable or the ``network/queue_store_uri``
+  config-file key. Default behavior is unchanged when the option is not set.
+
 - ``--verbose``, ``--quiet`` and ``--silent`` options modify logging verbosity
   level for RE Manager.
 
@@ -220,6 +228,7 @@ Other Configuration Parameters
                           [--user-group-permissions USER_GROUP_PERMISSIONS_PATH]
                           [--user-group-permissions-reload {NEVER,ON_REQUEST,ON_STARTUP}]
                           [--redis-addr REDIS_ADDR] [--redis-name-prefix REDIS_NAME_PREFIX]
+                          [--queue-store-uri QUEUE_STORE_URI]
                           [--keep-re] [--use-ipython-kernel {ON,OFF}]
                           [--ipython-dir IPYTHON_DIR]
                           [--ipython-matplotlib IPYTHON_MATPLOTLIB]
@@ -345,6 +354,15 @@ Other Configuration Parameters
     --redis-name-prefix REDIS_NAME_PREFIX
                       The prefix for the names of Redis keys used by RE Manager (default:
                       qs_default).
+    --queue-store-uri QUEUE_STORE_URI
+                      Storage backend for the plan queue. By default the queue is stored
+                      in Redis (see --redis-addr). Set a SQLAlchemy async URI, e.g.
+                      'sqlite+aiosqlite:////var/lib/qserver/queue.db' or
+                      'postgresql+psycopg://user:pass@host:5432/qserver', to store the
+                      queue in a SQL database instead; 'redis://host[:port]' selects
+                      Redis explicitly. May also be set with the
+                      QSERVER_QUEUE_STORE_URI environment variable or the
+                      'network/queue_store_uri' config-file key.
     --keep-re         The parameter is deprecated. The value is ignored by the Queue Server.
                       Run Engine instance must always be defined and configured in the
                       startup code. The parameter will be removed in future releases.
