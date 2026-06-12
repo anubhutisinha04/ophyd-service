@@ -524,7 +524,18 @@ def build_staleness_plan(
                 raise ConfigServiceProtocolError(
                     f"upsert change for {name!r} is missing 'spec'"
                 )
-            upserts[name] = spec
+            # An upsert with active=false means the device was disabled.
+            # The full-refresh path fetches /devices/instantiation with
+            # active_only=True (the server-side default), which silently
+            # drops disabled devices. Mirror that here so the incremental
+            # path agrees: a disable removes the device from the overlay
+            # instead of re-instantiating it. ``active`` is optional in
+            # the wire format (older clients may omit it); treat absent
+            # as True so unrelated changes keep their previous meaning.
+            if spec.get("active", True) is False:
+                deletes.append(name)
+            else:
+                upserts[name] = spec
         elif op == "delete":
             deletes.append(name)
         else:

@@ -694,6 +694,81 @@ def test_build_staleness_plan_rejects_unknown_op():
         build_staleness_plan(response, saved_epoch="e1")
 
 
+def _upsert_inactive(name: str, *, prefix: str = "XF:M1") -> dict:
+    """Upsert change with active=false (device disabled)."""
+    change = _upsert(name, prefix=prefix)
+    change["spec"]["active"] = False
+    return change
+
+
+def _upsert_no_active_field(name: str, *, prefix: str = "XF:M1") -> dict:
+    """Upsert change with no ``active`` field — older clients that pre-date
+    the per-device active flag may emit this shape."""
+    change = _upsert(name, prefix=prefix)
+    change["spec"].pop("active", None)
+    return change
+
+
+def test_build_staleness_plan_upsert_active_false_becomes_delete():
+    # The full-refresh path uses /devices/instantiation with the server's
+    # default active_only=True, which silently drops disabled devices.
+    # The incremental path must agree: active=false upserts become deletes
+    # so disabling a device actually takes effect.
+    response = _changes_response(
+        current_version=9,
+        service_epoch="e1",
+        changes=[_upsert_inactive("m1")],
+    )
+    plan = build_staleness_plan(response, saved_epoch="e1")
+    assert plan.replace_overlay is False
+    assert plan.upserts == {}
+    assert plan.deletes == ["m1"]
+    assert plan.is_noop is False
+
+
+def test_build_staleness_plan_upsert_active_true_stays_upsert():
+    # Sanity: the default-shaped upsert (active=True) keeps its meaning.
+    response = _changes_response(
+        current_version=9,
+        service_epoch="e1",
+        changes=[_upsert("m1")],
+    )
+    plan = build_staleness_plan(response, saved_epoch="e1")
+    assert set(plan.upserts) == {"m1"}
+    assert plan.deletes == []
+
+
+def test_build_staleness_plan_upsert_active_missing_defaults_to_true():
+    # Older clients that don't emit the ``active`` field must keep their
+    # previous meaning (upsert), not be silently dropped as if disabled.
+    response = _changes_response(
+        current_version=9,
+        service_epoch="e1",
+        changes=[_upsert_no_active_field("m1")],
+    )
+    plan = build_staleness_plan(response, saved_epoch="e1")
+    assert set(plan.upserts) == {"m1"}
+    assert "active" not in plan.upserts["m1"]
+    assert plan.deletes == []
+
+
+def test_build_staleness_plan_mixed_changes_partition_correctly():
+    # One active upsert, one disabled upsert, one explicit delete:
+    # active goes to upserts; disabled and explicit both land in deletes.
+    response = _changes_response(
+        current_version=9,
+        service_epoch="e1",
+        changes=[
+            _upsert("m1"),
+            _upsert_inactive("m2"),
+            _delete("m3"),
+        ],
+    )
+    plan = build_staleness_plan(response, saved_epoch="e1")
+    assert set(plan.upserts) == {"m1"}
+    assert sorted(plan.deletes) == ["m2", "m3"]
+
+
 @pytest.mark.asyncio
 async def test_fetch_staleness_plan_incremental_hits_only_changes():
     changes = _changes_response(
