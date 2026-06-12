@@ -20,7 +20,7 @@ from .core import PatchedStreamingResponse
 from .database.core import purge_expired
 from .openapi_config import custom_openapi
 from .resources import SERVER_RESOURCES as SR
-from .routers import core_api
+from .routers import core_api, profile_collection as profile_collection_router
 from .settings import get_settings
 from .utils import (
     API_KEY_COOKIE_NAME,
@@ -114,6 +114,9 @@ def build_app(authentication=None, api_access=None, resource_access=None, server
 
     # Include standard routers
     app.include_router(core_api.router)
+    # Profile-collection reload (NSLS2/ophyd-service#61)
+    app.include_router(profile_collection_router.router)
+    app.include_router(profile_collection_router.devices_router)
 
     # Include custom routers
     router_names = []

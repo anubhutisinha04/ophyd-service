@@ -3720,6 +3720,222 @@
         ]
       }
     },
+    "/api/profile_collection/status": {
+      "get": {
+        "tags": [
+          "Profile Collection"
+        ],
+        "summary": "Status of the on-disk profile collection",
+        "description": "Returns the current commit, branch, dirty flag, and ahead/behind counts relative to the configured upstream. Cheap; safe to poll from the UI for the Profile Collection header badge. Required scope: `read:status`.",
+        "operationId": "profile_collection_status_handler_api_profile_collection_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileStatusResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": [
+              "read:status"
+            ]
+          },
+          {
+            "APIKeyQuery": [
+              "read:status"
+            ]
+          },
+          {
+            "APIKeyAuthorizationHeader": [
+              "read:status"
+            ]
+          },
+          {
+            "APIKeyCookie": [
+              "read:status"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/profile_collection/pull": {
+      "post": {
+        "tags": [
+          "Profile Collection"
+        ],
+        "summary": "Fast-forward the profile collection from upstream",
+        "description": "Runs `git fetch` then `git merge --ff-only @{upstream}` in the profile-collection directory. Rejected (409) when the working tree is dirty \u2014 operator must commit or revert on-host edits first. Rejected (409) when upstream has diverged (non-fast-forward) \u2014 operator must resolve on-host. Returns commit_before, commit_after, the diff file list, and a pixi_toml_changed flag the UI uses to decide whether a hard service restart is needed before reload. Required scope: `write:manager:control`.",
+        "operationId": "profile_collection_pull_handler_api_profile_collection_pull_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilePullResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": [
+              "write:manager:control"
+            ]
+          },
+          {
+            "APIKeyQuery": [
+              "write:manager:control"
+            ]
+          },
+          {
+            "APIKeyAuthorizationHeader": [
+              "write:manager:control"
+            ]
+          },
+          {
+            "APIKeyCookie": [
+              "write:manager:control"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/profile_collection/reload": {
+      "post": {
+        "tags": [
+          "Profile Collection"
+        ],
+        "summary": "Pull and recycle the worker (one-shot for the UI)",
+        "description": "Wrapper that runs `pull`, then \u2014 if an environment is open \u2014 closes and reopens it so the new profile is loaded into the worker. Does NOT mutate the device registry; the UI should follow up with `GET /api/devices/diff_against_profile` and (on operator confirm) `POST /api/devices/sync_from_profile`. Returns 409 when the working tree is dirty or when pixi.toml changed and an environment is currently open (pixi.toml changes require a service-level restart \u2014 see ophyd-service#61). Required scope: `write:manager:control`.",
+        "operationId": "profile_collection_reload_handler_api_profile_collection_reload_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileReloadResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": [
+              "write:manager:control"
+            ]
+          },
+          {
+            "APIKeyQuery": [
+              "write:manager:control"
+            ]
+          },
+          {
+            "APIKeyAuthorizationHeader": [
+              "write:manager:control"
+            ]
+          },
+          {
+            "APIKeyCookie": [
+              "write:manager:control"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/devices/diff_against_profile": {
+      "get": {
+        "tags": [
+          "Profile Collection"
+        ],
+        "summary": "Diff worker-introspected devices against the registry (stub)",
+        "description": "Will return added/removed/modified device specs vs configuration_service. Non-destructive. Backed by a compute_diff helper that this PR cannot land yet because the split inside manager/config_service.py collides with #59. Returns 501 until the follow-up commit on this branch lands. See ophyd-service#61.",
+        "operationId": "devices_diff_against_profile_stub_api_devices_diff_against_profile_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": [
+              "read:status"
+            ]
+          },
+          {
+            "APIKeyQuery": [
+              "read:status"
+            ]
+          },
+          {
+            "APIKeyAuthorizationHeader": [
+              "read:status"
+            ]
+          },
+          {
+            "APIKeyCookie": [
+              "read:status"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/devices/sync_from_profile": {
+      "post": {
+        "tags": [
+          "Profile Collection"
+        ],
+        "summary": "Apply a selected/all device diff to the registry (stub)",
+        "description": "Will accept {strategy: 'all'|'additions_only'|'selected', devices?: [...]} and upsert/remove accordingly. Returns 501 until the follow-up commit on this branch lands. See ophyd-service#61.",
+        "operationId": "devices_sync_from_profile_stub_api_devices_sync_from_profile_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": [
+              "write:manager:control"
+            ]
+          },
+          {
+            "APIKeyQuery": [
+              "write:manager:control"
+            ]
+          },
+          {
+            "APIKeyAuthorizationHeader": [
+              "write:manager:control"
+            ]
+          },
+          {
+            "APIKeyCookie": [
+              "write:manager:control"
+            ]
+          }
+        ]
+      }
+    },
     "/api/auth/principal": {
       "get": {
         "tags": [
@@ -5465,6 +5681,123 @@
           "service"
         ],
         "title": "PrincipalType"
+      },
+      "ProfilePullResponse": {
+        "properties": {
+          "commit_before": {
+            "type": "string",
+            "title": "Commit Before",
+            "description": "HEAD SHA before the pull."
+          },
+          "commit_after": {
+            "type": "string",
+            "title": "Commit After",
+            "description": "HEAD SHA after the pull."
+          },
+          "files_changed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Files Changed",
+            "description": "Files that differ between commit_before and commit_after. Empty list when the pull was a no-op."
+          },
+          "pixi_toml_changed": {
+            "type": "boolean",
+            "title": "Pixi Toml Changed",
+            "description": "True when pixi.toml is in files_changed. The HTTP layer uses this to surface requires_hard_restart to the UI; the endpoint itself does not 409 because the operator may have intentionally pulled without an open environment."
+          }
+        },
+        "type": "object",
+        "required": [
+          "commit_before",
+          "commit_after",
+          "pixi_toml_changed"
+        ],
+        "title": "ProfilePullResponse",
+        "description": "Outcome of a successful fast-forward pull."
+      },
+      "ProfileReloadResponse": {
+        "properties": {
+          "pull": {
+            "$ref": "#/components/schemas/ProfilePullResponse"
+          },
+          "environment_recycled": {
+            "type": "boolean",
+            "title": "Environment Recycled",
+            "description": "True if an existing environment was closed and reopened. False when no environment was open at call time \u2014 the operator must call /api/environment/open separately to trigger device introspection."
+          }
+        },
+        "type": "object",
+        "required": [
+          "pull",
+          "environment_recycled"
+        ],
+        "title": "ProfileReloadResponse",
+        "description": "Outcome of the wrapper that pulls + recycles the worker."
+      },
+      "ProfileStatusResponse": {
+        "properties": {
+          "profile_dir": {
+            "type": "string",
+            "title": "Profile Dir",
+            "description": "Absolute path on the server."
+          },
+          "commit": {
+            "type": "string",
+            "title": "Commit",
+            "description": "HEAD commit SHA (40-char hex)."
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch",
+            "description": "Current branch name, or null if HEAD is detached."
+          },
+          "is_dirty": {
+            "type": "boolean",
+            "title": "Is Dirty",
+            "description": "True when the working tree has uncommitted changes (staged, unstaged, or untracked)."
+          },
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead",
+            "description": "Commits ahead of the configured upstream, or null if no upstream is set."
+          },
+          "behind": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Behind",
+            "description": "Commits behind the configured upstream, or null if no upstream is set."
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_dir",
+          "commit",
+          "is_dirty"
+        ],
+        "title": "ProfileStatusResponse",
+        "description": "Status of the on-disk profile collection."
       },
       "QueueGetResponse": {
         "properties": {

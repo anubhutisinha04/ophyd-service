@@ -21,12 +21,14 @@ from fastapi import FastAPI
 
 from queueserver_service.http.authentication import base_authentication_router
 from queueserver_service.http.openapi_config import custom_openapi
-from queueserver_service.http.routers import core_api
+from queueserver_service.http.routers import core_api, profile_collection as profile_collection_router
 
 
 def build_schema() -> dict:
     app = FastAPI()
     app.include_router(core_api.router)
+    app.include_router(profile_collection_router.router)
+    app.include_router(profile_collection_router.devices_router)
     app.include_router(base_authentication_router, prefix="/api/auth")
     app.openapi = partial(custom_openapi, app)
     return app.openapi()

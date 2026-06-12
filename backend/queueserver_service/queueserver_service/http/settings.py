@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     database_uri: Optional[str] = os.getenv("QSERVER_HTTP_SERVER_DATABASE_URI")
     database_pool_size: Optional[int] = int(os.getenv("QSERVER_HTTP_SERVER_DATABASE_POOL_SIZE", 5))
     database_pool_pre_ping: Optional[bool] = bool(int(os.getenv("QSERVER_HTTP_SERVER_DATABASE_POOL_PRE_PING", 1)))
+    # Path on the HTTP server's host to the profile-collection git checkout
+    # that the RE Worker loads at environment-open time. Used by the
+    # /api/profile_collection/* endpoints to surface git status and apply
+    # fast-forward pulls from the UI. See NSLS2/ophyd-service#61. When
+    # unset, those endpoints respond 500 with a clear "not configured"
+    # message — the rest of the HTTP API is unaffected.
+    profile_collection_dir: Optional[str] = os.getenv(
+        "QSERVER_HTTP_SERVER_PROFILE_COLLECTION_DIR"
+    )
 
     @property
     def database_settings(self):
