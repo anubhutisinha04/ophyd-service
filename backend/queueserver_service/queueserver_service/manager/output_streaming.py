@@ -243,7 +243,8 @@ class PublishZMQStreamOutput:
             elif channel == "info":
                 topic = self._zmq_topic_info
             else:
-                logger.error("Failed to publish the message: unsupported 0MQ channel %s.")
+                logger.error("Failed to publish the message: unsupported 0MQ channel %s.", channel)
+                return
             payload = {k: payload[k] for k in ("time", "msg")}
             if self._encoding == ZMQEncoding.JSON:
                 payload_json = json.dumps(payload)

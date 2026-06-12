@@ -82,6 +82,31 @@ def test_setup_console_output_redirection_1(sys_stdout_stderr_restore):
         assert msg_in_queue["msg"] == "\n"
 
 
+def test_PublishZMQStreamOutput_publish_unsupported_channel(caplog):
+    """
+    `_publish` must log the offending channel name and return without attempting
+    to send when the payload's channel is not one of the supported topics.
+    Regression: the error log previously had a `%s` placeholder with no argument,
+    and execution fell through to use an unbound `topic` local.
+    """
+    import logging
+    from unittest.mock import MagicMock
+
+    pub = PublishZMQStreamOutput.__new__(PublishZMQStreamOutput)
+    pub._console_output_on = False
+    pub._zmq_publish_on = True
+    pub._socket = MagicMock()
+    pub._zmq_topic_console = "console"
+    pub._zmq_topic_info = "info"
+    pub._encoding = ZMQEncoding.JSON
+
+    with caplog.at_level(logging.ERROR, logger="queueserver_service.manager.output_streaming"):
+        pub._publish({"channel": "bogus", "time": 0.0, "msg": "ignored"})
+
+    assert pub._socket.send_multipart.call_count == 0
+    assert any("bogus" in rec.getMessage() for rec in caplog.records), caplog.text
+
+
 # fmt: off
 @pytest.mark.parametrize("channel", ["console", "info"])
 @pytest.mark.parametrize("zmq_encoding", ["json", "msgpack"])
