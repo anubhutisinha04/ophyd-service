@@ -3663,6 +3663,8 @@ class RunEngineManager(Process):
                 "applied": None,
                 "diff_after": None,
             }
+
+    async def _script_upload_handler(self, request):
         """
         Upload script to RE worker environment. If ``update_lists==True`` (default), then lists
         of existing and available plans and devices are updated after the execution of the script.
