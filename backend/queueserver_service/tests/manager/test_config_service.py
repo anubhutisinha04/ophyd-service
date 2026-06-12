@@ -512,18 +512,110 @@ async def test_sync_raises_if_introspection_missed_a_device():
 
 @pytest.mark.asyncio
 async def test_sync_propagates_bootstrap_failure():
+    # Bootstrap retries each failed device once before raising. A device
+    # that fails on both attempts surfaces as a ConfigServiceError that
+    # names the device and wraps the underlying exception so operators
+    # have something to act on; ``ConfigServiceHTTPError`` from the
+    # individual POST is intentionally NOT what escapes.
     handlers = [
         _json_response(200, {}),                       # empty
-        _json_response(500, {"detail": "db gone"}),    # POST fails hard
+        _json_response(500, {"detail": "db gone"}),    # POST m1 (1st attempt)
+        _json_response(500, {"detail": "db gone"}),    # POST m1 (retry)
     ]
     client, _ = await _aclient(handlers)
     async with client:
-        with pytest.raises(ConfigServiceHTTPError):
+        with pytest.raises(ConfigServiceError, match=r"bootstrap failed after retry.*m1"):
             await sync_devices_on_env_open(
                 client,
                 expected_device_names=["m1"],
                 device_data={"m1": _device_payload("m1")},
             )
+
+
+@pytest.mark.asyncio
+async def test_sync_bootstrap_retries_partial_failure_and_succeeds():
+    # m1 succeeds on the first attempt; m2 fails the first time and
+    # succeeds on retry. After my fix the function must not raise — the
+    # whole device set lands in the registry — and the cursor read at
+    # the end must still happen.
+    changes_payload = {
+        "current_version": 7,
+        "service_epoch": "e1",
+        "reset_occurred": False,
+        "changes": [],
+    }
+    handlers = [
+        _json_response(200, {}),                       # /devices-info: empty
+        _json_response(201, {"success": True}),        # POST m1 (success)
+        _json_response(500, {"detail": "flake"}),      # POST m2 (1st attempt fails)
+        _json_response(201, {"success": True}),        # POST m2 (retry succeeds)
+        _json_response(200, changes_payload),          # GET /devices/changes
+    ]
+    client, responder = await _aclient(handlers)
+    async with client:
+        state = await sync_devices_on_env_open(
+            client,
+            expected_device_names=["m1", "m2"],
+            device_data={"m1": _device_payload("m1"), "m2": _device_payload("m2")},
+        )
+    assert state == ConfigServiceState(cursor=7, epoch="e1")
+    # Both devices posted; one was retried; the changes call happened.
+    posts = [c for c in responder.calls if c.method == "POST"]
+    assert len(posts) == 3
+    assert [c.method for c in responder.calls[-1:]] == ["GET"]
+
+
+@pytest.mark.asyncio
+async def test_sync_bootstrap_raises_loudly_with_all_unrecoverable_failures():
+    # Multiple devices fail both attempts; the raised error must mention
+    # every still-missing device so operators don't have to guess which
+    # were dropped.
+    handlers = [
+        _json_response(200, {}),                          # empty
+        _json_response(500, {"detail": "x"}),             # POST m1 (1st)
+        _json_response(500, {"detail": "x"}),             # POST m2 (1st)
+        _json_response(500, {"detail": "x"}),             # POST m1 (retry)
+        _json_response(500, {"detail": "x"}),             # POST m2 (retry)
+    ]
+    client, _ = await _aclient(handlers)
+    async with client:
+        with pytest.raises(ConfigServiceError) as excinfo:
+            await sync_devices_on_env_open(
+                client,
+                expected_device_names=["m1", "m2"],
+                device_data={"m1": _device_payload("m1"), "m2": _device_payload("m2")},
+            )
+    msg = str(excinfo.value)
+    assert "bootstrap failed after retry" in msg
+    assert "m1" in msg
+    assert "m2" in msg
+
+
+@pytest.mark.asyncio
+async def test_sync_bootstrap_does_not_retry_when_first_attempt_succeeds():
+    # Sanity guard: a clean bootstrap must not make extra POSTs (the
+    # retry path is only invoked when the first pass surfaces failures).
+    changes_payload = {
+        "current_version": 1,
+        "service_epoch": "e1",
+        "reset_occurred": False,
+        "changes": [],
+    }
+    handlers = [
+        _json_response(200, {}),                       # empty
+        _json_response(201, {"success": True}),        # POST m1
+        _json_response(201, {"success": True}),        # POST m2
+        _json_response(200, changes_payload),          # GET /devices/changes
+    ]
+    client, responder = await _aclient(handlers)
+    async with client:
+        await sync_devices_on_env_open(
+            client,
+            expected_device_names=["m1", "m2"],
+            device_data={"m1": _device_payload("m1"), "m2": _device_payload("m2")},
+        )
+    posts = [c for c in responder.calls if c.method == "POST"]
+    assert len(posts) == 2
 
 
 # ===== Layer 2.6: get_instantiation_specs + prefetched_info =====

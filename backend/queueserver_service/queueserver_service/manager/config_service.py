@@ -416,6 +416,69 @@ def _safe_body(response: Any) -> Any:
             return None
 
 
+async def _bootstrap_with_retry(
+    client: "ConfigServiceClient",
+    device_data: Dict[str, Dict[str, Any]],
+) -> None:
+    """Upsert every device into an empty registry; retry survivors once.
+
+    The first env-open against an empty registry has to insert every
+    device the worker knows about. A bare ``asyncio.gather`` over those
+    upserts cancels its siblings on the first failure, leaving the
+    registry partially populated. On the next env-open the is-empty
+    gate sees a non-empty registry, skips bootstrap, and the change
+    feed never delivers the missing devices — permanent partial state
+    until an operator intervenes.
+
+    We instead run the gather with ``return_exceptions=True``, retry
+    exactly the names that failed (once), and raise loudly if anything
+    is still missing. The retry is bounded so a genuinely broken
+    upstream surfaces immediately rather than looping; the loud raise
+    upholds the no-silent-fallback rule.
+
+    Names are upserted in sorted order in both passes so the per-attempt
+    log line is reproducible.
+    """
+    entries = sorted(device_data.items())  # [(name, payload), ...]
+
+    async def _attempt(
+        targets: List[Tuple[str, Dict[str, Any]]],
+    ) -> Dict[str, BaseException]:
+        results = await asyncio.gather(
+            *(
+                client.upsert_device(payload["metadata"], payload["spec"])
+                for _, payload in targets
+            ),
+            return_exceptions=True,
+        )
+        return {
+            name: result
+            for (name, _), result in zip(targets, results)
+            if isinstance(result, BaseException)
+        }
+
+    failures = await _attempt(entries)
+    if failures:
+        logger.warning(
+            "config-service bootstrap: %d device(s) failed first attempt; "
+            "retrying: %s",
+            len(failures),
+            sorted(failures),
+        )
+        retry_entries = [(name, device_data[name]) for name in sorted(failures)]
+        failures = await _attempt(retry_entries)
+
+    if failures:
+        detail = ", ".join(
+            f"{name}: {type(exc).__name__}: {exc}"
+            for name, exc in sorted(failures.items())
+        )
+        raise ConfigServiceError(
+            "config-service bootstrap failed after retry for "
+            f"{len(failures)} device(s): {detail}"
+        )
+
+
 async def sync_devices_on_env_open(
     client: ConfigServiceClient,
     expected_device_names: List[str],
@@ -451,12 +514,7 @@ async def sync_devices_on_env_open(
             "config-service registry is empty; bootstrapping %d device(s)",
             len(device_data),
         )
-        await asyncio.gather(
-            *(
-                client.upsert_device(payload["metadata"], payload["spec"])
-                for payload in device_data.values()
-            )
-        )
+        await _bootstrap_with_retry(client, device_data)
         logger.info("config-service bootstrap complete (%d device(s))", len(device_data))
     else:
         logger.info(
