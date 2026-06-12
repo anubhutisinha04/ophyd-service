@@ -211,6 +211,8 @@ class RunEngineManager(Process):
         "environment_close": "_environment_close_handler",
         "environment_destroy": "_environment_destroy_handler",
         "environment_update": "_environment_update_handler",
+        "config_service_diff": "_config_service_diff_handler",
+        "config_service_sync": "_config_service_sync_handler",
         "script_upload": "_script_upload_handler",
         "function_execute": "_function_execute_handler",
         "task_result": "_task_result_handler",
@@ -3522,7 +3524,145 @@ class RunEngineManager(Process):
 
         return {"success": success, "msg": msg, "task_uid": task_uid}
 
-    async def _script_upload_handler(self, request):
+    async def _config_service_diff_handler(self, request):
+        """Diff the running worker's introspected devices against the
+        configuration-service registry. Non-destructive (pure read).
+
+        Returns ``{"success": bool, "msg": str, "diff": dict|None}`` where
+        ``diff`` follows ``DeviceDiff.to_dict()`` —
+        ``{"added": [...], "removed": [...], "modified": [...]}`` — and is
+        ``None`` whenever ``success`` is False.
+
+        Rejects with ``success=False`` (the HTTP router maps this to 409)
+        when config-service is disabled or no RE environment is open. The
+        device-data the worker last reported is read directly from
+        ``self._config_service_device_data`` — the same snapshot
+        ``_sync_config_service_on_env_open`` consumes — so this endpoint
+        sees exactly what the registry would receive on the next env-open.
+        """
+        try:
+            self._check_request_for_unsupported_params(
+                request=request, param_names=[]
+            )
+
+            if not self._config_service_settings.enabled:
+                return {
+                    "success": False,
+                    "msg": "configuration-service feature is disabled on this manager",
+                    "diff": None,
+                }
+            if not self._environment_exists:
+                return {
+                    "success": False,
+                    "msg": "RE Worker environment is not open; open it before requesting a device diff",
+                    "diff": None,
+                }
+
+            from .config_service import compute_diff
+
+            client = await self._get_config_service_client()
+            registry_specs = await client.get_instantiation_specs()
+            diff = compute_diff(self._config_service_device_data, registry_specs)
+            return {"success": True, "msg": "", "diff": diff.to_dict()}
+        except Exception as ex:
+            return {"success": False, "msg": f"Error: {ex}", "diff": None}
+
+    async def _config_service_sync_handler(self, request):
+        """Apply a profile-vs-registry diff to the configuration-service
+        registry per the requested strategy.
+
+        Request params:
+            ``strategy`` — ``"all"`` (default), ``"additions_only"``, or
+                ``"selected"``.
+            ``devices`` — required when ``strategy="selected"``; list of
+                device names. Names not present in the diff are silently
+                dropped (they're already in sync).
+
+        Returns ``{"success", "msg", "applied", "diff_after"}`` where
+        ``applied`` is ``{"upserted": [...], "deleted": [...]}`` (names
+        actually written) and ``diff_after`` is the post-write diff so
+        the UI can verify the registry now matches the profile (it
+        should be empty for ``strategy="all"`` barring concurrent
+        mutation).
+
+        Acquires the same async lock used by env-open's config-service
+        sync so a concurrent env-open + manual sync don't race on the
+        registry.
+        """
+        try:
+            supported_param_names = ["strategy", "devices"]
+            self._check_request_for_unsupported_params(
+                request=request, param_names=supported_param_names
+            )
+
+            strategy = request.get("strategy", "all")
+            selected = request.get("devices")
+
+            from .config_service import APPLY_STRATEGIES, apply_diff, compute_diff
+
+            if strategy not in APPLY_STRATEGIES:
+                return {
+                    "success": False,
+                    "msg": (
+                        f"unknown strategy {strategy!r}; expected one of "
+                        f"{list(APPLY_STRATEGIES)!r}"
+                    ),
+                    "applied": None,
+                    "diff_after": None,
+                }
+            if strategy == "selected" and not selected:
+                return {
+                    "success": False,
+                    "msg": "strategy='selected' requires a non-empty 'devices' list",
+                    "applied": None,
+                    "diff_after": None,
+                }
+            if not self._config_service_settings.enabled:
+                return {
+                    "success": False,
+                    "msg": "configuration-service feature is disabled on this manager",
+                    "applied": None,
+                    "diff_after": None,
+                }
+            if not self._environment_exists:
+                return {
+                    "success": False,
+                    "msg": "RE Worker environment is not open; open it before requesting a device sync",
+                    "applied": None,
+                    "diff_after": None,
+                }
+
+            async with self._get_config_service_sync_alock():
+                client = await self._get_config_service_client()
+                registry_specs = await client.get_instantiation_specs()
+                diff_before = compute_diff(
+                    self._config_service_device_data, registry_specs
+                )
+                applied = await apply_diff(
+                    client,
+                    diff_before,
+                    self._config_service_device_data,
+                    strategy=strategy,
+                    selected=selected,
+                )
+                registry_after = await client.get_instantiation_specs()
+                diff_after = compute_diff(
+                    self._config_service_device_data, registry_after
+                )
+
+            return {
+                "success": True,
+                "msg": "",
+                "applied": applied,
+                "diff_after": diff_after.to_dict(),
+            }
+        except Exception as ex:
+            return {
+                "success": False,
+                "msg": f"Error: {ex}",
+                "applied": None,
+                "diff_after": None,
+            }
         """
         Upload script to RE worker environment. If ``update_lists==True`` (default), then lists
         of existing and available plans and devices are updated after the execution of the script.

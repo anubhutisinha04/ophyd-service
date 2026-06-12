@@ -3857,15 +3857,17 @@
         "tags": [
           "Profile Collection"
         ],
-        "summary": "Diff worker-introspected devices against the registry (stub)",
-        "description": "Will return added/removed/modified device specs vs configuration_service. Non-destructive. Backed by a compute_diff helper that this PR cannot land yet because the split inside manager/config_service.py collides with #59. Returns 501 until the follow-up commit on this branch lands. See ophyd-service#61.",
-        "operationId": "devices_diff_against_profile_stub_api_devices_diff_against_profile_get",
+        "summary": "Diff worker-introspected devices against the registry",
+        "description": "Returns added/removed/modified device specs comparing what the running RE Worker introspected against what is currently in configuration-service. Non-destructive. Returns 409 when configuration-service is disabled or no environment is open. Required scope: ``read:status``. See ophyd-service#61.",
+        "operationId": "devices_diff_against_profile_api_devices_diff_against_profile_get",
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceDiffResponse"
+                }
               }
             }
           }
@@ -3899,15 +3901,39 @@
         "tags": [
           "Profile Collection"
         ],
-        "summary": "Apply a selected/all device diff to the registry (stub)",
-        "description": "Will accept {strategy: 'all'|'additions_only'|'selected', devices?: [...]} and upsert/remove accordingly. Returns 501 until the follow-up commit on this branch lands. See ophyd-service#61.",
-        "operationId": "devices_sync_from_profile_stub_api_devices_sync_from_profile_post",
+        "summary": "Apply a profile-vs-registry diff to the configuration-service registry",
+        "description": "Applies the current diff to configuration-service per the requested strategy: ``all`` (upsert added/modified, delete removed), ``additions_only`` (upsert added only), or ``selected`` (restrict to the supplied ``devices`` list). Returns 409 when configuration-service is disabled, no environment is open, or the request is malformed (e.g. ``selected`` without devices). Required scope: ``write:manager:control``. See ophyd-service#61.",
+        "operationId": "devices_sync_from_profile_api_devices_sync_from_profile_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceSyncRequest",
+                "default": {
+                  "strategy": "all"
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceSyncResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
               }
             }
           }
@@ -4846,6 +4872,149 @@
           "msg"
         ],
         "title": "ConsoleOutputUpdateResponse"
+      },
+      "DeviceDiff": {
+        "properties": {
+          "added": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Added",
+            "description": "Names present in the worker but missing from the registry."
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Removed",
+            "description": "Names present in the registry but no longer reported by the worker."
+          },
+          "modified": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceDiffModifiedEntry"
+            },
+            "type": "array",
+            "title": "Modified",
+            "description": "Names present in both whose instantiation specs differ."
+          }
+        },
+        "type": "object",
+        "title": "DeviceDiff",
+        "description": "Profile-vs-registry diff."
+      },
+      "DeviceDiffModifiedEntry": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Device name."
+          },
+          "before": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Before",
+            "description": "Instantiation spec currently in the registry."
+          },
+          "after": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "After",
+            "description": "Instantiation spec the running worker reports."
+          },
+          "fields_changed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fields Changed",
+            "description": "Sorted top-level keys whose values differ."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "before",
+          "after"
+        ],
+        "title": "DeviceDiffModifiedEntry"
+      },
+      "DeviceDiffResponse": {
+        "properties": {
+          "diff": {
+            "$ref": "#/components/schemas/DeviceDiff"
+          }
+        },
+        "type": "object",
+        "required": [
+          "diff"
+        ],
+        "title": "DeviceDiffResponse"
+      },
+      "DeviceSyncApplied": {
+        "properties": {
+          "upserted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Upserted"
+          },
+          "deleted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Deleted"
+          }
+        },
+        "type": "object",
+        "title": "DeviceSyncApplied"
+      },
+      "DeviceSyncRequest": {
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "title": "Strategy",
+            "description": "Which diff entries to apply. ``all`` upserts every added/modified device and deletes every removed device. ``additions_only`` only upserts the added bucket (never destroys data). ``selected`` restricts to the names given in ``devices``.",
+            "default": "all"
+          },
+          "devices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Devices",
+            "description": "Required when ``strategy='selected'``. Names not present in the current diff are silently dropped (they are already in sync)."
+          }
+        },
+        "type": "object",
+        "title": "DeviceSyncRequest"
+      },
+      "DeviceSyncResponse": {
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/DeviceSyncApplied"
+          },
+          "diff_after": {
+            "$ref": "#/components/schemas/DeviceDiff",
+            "description": "Diff recomputed after the writes complete. Should be empty for ``strategy='all'`` unless something else mutated the registry concurrently; useful for the UI to confirm convergence."
+          }
+        },
+        "type": "object",
+        "required": [
+          "applied",
+          "diff_after"
+        ],
+        "title": "DeviceSyncResponse"
       },
       "DevicesAllowedResponse": {
         "properties": {

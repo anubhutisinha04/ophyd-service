@@ -1,19 +1,12 @@
 """HTTP routes for the UI-driven profile-collection reload flow.
 
-Implements the design from NSLS2/ophyd-service#61. Three endpoints are
-active in this PR:
+Implements the design from NSLS2/ophyd-service#61. Five endpoints:
 
-- ``GET  /api/profile_collection/status`` — cheap status poll.
-- ``POST /api/profile_collection/pull``   — fast-forward git pull.
-- ``POST /api/profile_collection/reload`` — wrapper: pull → close → open.
-
-Two endpoints are present as 501 stubs because their bodies need a
-``compute_diff`` / ``apply_diff`` split inside
-``manager/config_service.py`` that collides with an in-flight PR (#59).
-They activate in a follow-up commit on this branch once #59 merges:
-
-- ``GET  /api/devices/diff_against_profile``
-- ``POST /api/devices/sync_from_profile``
+- ``GET  /api/profile_collection/status``      — cheap status poll.
+- ``POST /api/profile_collection/pull``        — fast-forward git pull.
+- ``POST /api/profile_collection/reload``      — wrapper: pull → close → open.
+- ``GET  /api/devices/diff_against_profile``   — worker-vs-registry diff.
+- ``POST /api/devices/sync_from_profile``      — apply the diff per strategy.
 
 The profile-collection directory is supplied via the
 ``QSERVER_HTTP_SERVER_PROFILE_COLLECTION_DIR`` environment variable.
@@ -287,61 +280,157 @@ async def profile_collection_reload_handler(
 
 
 # ---------------------------------------------------------------------------
-# Stub endpoints — bodies arrive in a follow-up commit (depends on #59)
+# Device-diff / sync endpoints (live).
+#
+# These delegate to two manager-side ZMQ handlers (``config_service_diff``
+# and ``config_service_sync``) added in this PR. The manager owns the
+# device snapshot and the config-service client; the HTTP layer just
+# forwards the request and converts the manager's success/msg envelope
+# into HTTP status codes. See ophyd-service#61 for the UI flow.
 # ---------------------------------------------------------------------------
 
 
-# A second router for the /api/devices stubs so the prefix differs from
-# the /api/profile_collection router above. Same module; same tag for
-# OpenAPI grouping convenience.
+_VALID_SYNC_STRATEGIES = ("all", "additions_only", "selected")
+
+
+class DeviceDiffModifiedEntry(BaseModel):
+    name: str = Field(..., description="Device name.")
+    before: dict = Field(
+        ...,
+        description="Instantiation spec currently in the registry.",
+    )
+    after: dict = Field(
+        ...,
+        description="Instantiation spec the running worker reports.",
+    )
+    fields_changed: List[str] = Field(
+        default_factory=list,
+        description="Sorted top-level keys whose values differ.",
+    )
+
+
+class DeviceDiff(BaseModel):
+    """Profile-vs-registry diff."""
+
+    added: List[str] = Field(
+        default_factory=list,
+        description="Names present in the worker but missing from the registry.",
+    )
+    removed: List[str] = Field(
+        default_factory=list,
+        description="Names present in the registry but no longer reported by the worker.",
+    )
+    modified: List[DeviceDiffModifiedEntry] = Field(
+        default_factory=list,
+        description="Names present in both whose instantiation specs differ.",
+    )
+
+
+class DeviceDiffResponse(BaseModel):
+    diff: DeviceDiff
+
+
+class DeviceSyncRequest(BaseModel):
+    strategy: str = Field(
+        "all",
+        description=(
+            "Which diff entries to apply. ``all`` upserts every added/modified "
+            "device and deletes every removed device. ``additions_only`` only "
+            "upserts the added bucket (never destroys data). ``selected`` "
+            "restricts to the names given in ``devices``."
+        ),
+    )
+    devices: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Required when ``strategy='selected'``. Names not present in the "
+            "current diff are silently dropped (they are already in sync)."
+        ),
+    )
+
+
+class DeviceSyncApplied(BaseModel):
+    upserted: List[str] = Field(default_factory=list)
+    deleted: List[str] = Field(default_factory=list)
+
+
+class DeviceSyncResponse(BaseModel):
+    applied: DeviceSyncApplied
+    diff_after: DeviceDiff = Field(
+        ...,
+        description=(
+            "Diff recomputed after the writes complete. Should be empty for "
+            "``strategy='all'`` unless something else mutated the registry "
+            "concurrently; useful for the UI to confirm convergence."
+        ),
+    )
+
+
+# Second router so the prefix differs from /api/profile_collection above.
+# Same module; same tag for OpenAPI grouping convenience.
 devices_router = APIRouter(prefix="/api/devices", tags=["Profile Collection"])
 
 
 @devices_router.get(
     "/diff_against_profile",
-    summary="Diff worker-introspected devices against the registry (stub)",
+    response_model=DeviceDiffResponse,
+    summary="Diff worker-introspected devices against the registry",
     description=(
-        "Will return added/removed/modified device specs vs "
-        "configuration_service. Non-destructive. Backed by a "
-        "compute_diff helper that this PR cannot land yet because the "
-        "split inside manager/config_service.py collides with #59. "
-        "Returns 501 until the follow-up commit on this branch lands. "
-        "See ophyd-service#61."
+        "Returns added/removed/modified device specs comparing what the "
+        "running RE Worker introspected against what is currently in "
+        "configuration-service. Non-destructive. Returns 409 when "
+        "configuration-service is disabled or no environment is open. "
+        "Required scope: ``read:status``. See ophyd-service#61."
     ),
 )
-async def devices_diff_against_profile_stub(
+async def devices_diff_against_profile(
     principal=Security(get_current_principal, scopes=["read:status"]),
-):
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Not implemented yet. Requires the compute_diff/apply_diff "
-            "split in manager/config_service.py — landing in a follow-up "
-            "commit once ophyd-service#59 merges. Tracking: "
-            "ophyd-service#61."
-        ),
-    )
+) -> DeviceDiffResponse:
+    try:
+        msg = await SR.RM.send_request(method="config_service_diff", params={})
+    except Exception:
+        process_exception()
+    if not msg.get("success"):
+        raise HTTPException(status_code=409, detail=msg.get("msg") or "diff failed")
+    return DeviceDiffResponse(diff=msg["diff"])
 
 
 @devices_router.post(
     "/sync_from_profile",
-    summary="Apply a selected/all device diff to the registry (stub)",
+    response_model=DeviceSyncResponse,
+    summary="Apply a profile-vs-registry diff to the configuration-service registry",
     description=(
-        "Will accept {strategy: 'all'|'additions_only'|'selected', "
-        "devices?: [...]} and upsert/remove accordingly. Returns 501 "
-        "until the follow-up commit on this branch lands. See "
-        "ophyd-service#61."
+        "Applies the current diff to configuration-service per the requested "
+        "strategy: ``all`` (upsert added/modified, delete removed), "
+        "``additions_only`` (upsert added only), or ``selected`` "
+        "(restrict to the supplied ``devices`` list). Returns 409 when "
+        "configuration-service is disabled, no environment is open, or "
+        "the request is malformed (e.g. ``selected`` without devices). "
+        "Required scope: ``write:manager:control``. See ophyd-service#61."
     ),
 )
-async def devices_sync_from_profile_stub(
+async def devices_sync_from_profile(
+    payload: DeviceSyncRequest = DeviceSyncRequest(),
     principal=Security(get_current_principal, scopes=["write:manager:control"]),
-):
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Not implemented yet. Requires the compute_diff/apply_diff "
-            "split in manager/config_service.py — landing in a follow-up "
-            "commit once ophyd-service#59 merges. Tracking: "
-            "ophyd-service#61."
-        ),
+) -> DeviceSyncResponse:
+    if payload.strategy not in _VALID_SYNC_STRATEGIES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"unknown strategy {payload.strategy!r}; expected one of "
+                f"{list(_VALID_SYNC_STRATEGIES)!r}"
+            ),
+        )
+    params: dict = {"strategy": payload.strategy}
+    if payload.devices is not None:
+        params["devices"] = payload.devices
+    try:
+        msg = await SR.RM.send_request(method="config_service_sync", params=params)
+    except Exception:
+        process_exception()
+    if not msg.get("success"):
+        raise HTTPException(status_code=409, detail=msg.get("msg") or "sync failed")
+    return DeviceSyncResponse(
+        applied=DeviceSyncApplied(**msg["applied"]),
+        diff_after=msg["diff_after"],
     )

@@ -1404,3 +1404,188 @@ async def test_happy_path_does_not_force_unlock(_stub_env_open_sync):
     assert len(client.lock_calls) == 1
     assert client.force_unlock_calls == []
     assert manager._config_service_locked_devices == ["m1"]
+
+
+# ===== compute_diff / apply_diff (device-diff endpoints) =====
+
+
+from queueserver_service.manager.config_service import (  # noqa: E402
+    APPLY_STRATEGIES,
+    DeviceDiff,
+    apply_diff,
+    compute_diff,
+)
+
+
+def _payload(spec=None, **metadata):
+    return {"metadata": dict(metadata) or {"foo": "bar"}, "spec": spec}
+
+
+def test_compute_diff_empty_inputs_returns_empty_diff():
+    d = compute_diff({}, {})
+    assert d.is_empty
+    assert d.to_dict() == {"added": [], "removed": [], "modified": []}
+
+
+def test_compute_diff_all_added():
+    device_data = {"b": _payload({"x": 1}), "a": _payload({"x": 2})}
+    d = compute_diff(device_data, {})
+    assert d.added == ["a", "b"]
+    assert d.removed == []
+    assert d.modified == []
+
+
+def test_compute_diff_all_removed():
+    d = compute_diff({}, {"a": {"x": 1}, "b": {"x": 2}})
+    assert d.added == []
+    assert d.removed == ["a", "b"]
+    assert d.modified == []
+
+
+def test_compute_diff_modified_lists_changed_fields():
+    device_data = {"m1": _payload({"x": 1, "y": "new", "z": 0})}
+    registry = {"m1": {"x": 1, "y": "old", "w": 9}}
+    d = compute_diff(device_data, registry)
+    assert d.added == [] and d.removed == []
+    assert len(d.modified) == 1
+    entry = d.modified[0]
+    assert entry["name"] == "m1"
+    assert entry["before"] == registry["m1"]
+    assert entry["after"] == device_data["m1"]["spec"]
+    # w only in before, y differs, z only in after; x matches
+    assert entry["fields_changed"] == ["w", "y", "z"]
+
+
+def test_compute_diff_noop_when_specs_equal():
+    spec = {"x": 1, "nested": {"k": [1, 2]}}
+    d = compute_diff({"a": _payload(spec)}, {"a": dict(spec)})
+    assert d.is_empty
+
+
+def test_compute_diff_skips_modified_when_worker_payload_has_no_spec():
+    # Spec-less worker payload: name exists in both, but nothing to compare.
+    d = compute_diff({"a": {"metadata": {"k": "v"}}}, {"a": {"x": 1}})
+    assert d.modified == []
+    assert d.added == [] and d.removed == []
+
+
+def test_compute_diff_sorts_outputs():
+    device_data = {"c": _payload({"x": 1}), "a": _payload({"x": 1})}
+    registry = {"d": {"x": 1}, "b": {"x": 1}}
+    d = compute_diff(device_data, registry)
+    assert d.added == ["a", "c"]
+    assert d.removed == ["b", "d"]
+
+
+# --- apply_diff ---
+
+
+class _FakeCSClient:
+    def __init__(self, fail_upsert=(), fail_delete=()):
+        self.upserts: List[tuple] = []
+        self.deletes: List[str] = []
+        self._fail_upsert = set(fail_upsert)
+        self._fail_delete = set(fail_delete)
+
+    async def upsert_device(self, metadata, spec):
+        name = metadata.get("name") or metadata.get("device") or repr(metadata)
+        # tests pass metadata={"name": <name>}
+        if name in self._fail_upsert:
+            raise RuntimeError(f"boom upsert {name}")
+        self.upserts.append((name, spec))
+        return {"ok": True}
+
+    async def delete_device(self, name):
+        if name in self._fail_delete:
+            raise RuntimeError(f"boom delete {name}")
+        self.deletes.append(name)
+        return {"ok": True}
+
+
+def _named_payload(name, spec=None):
+    return {"metadata": {"name": name}, "spec": spec}
+
+
+@pytest.mark.asyncio
+async def test_apply_diff_strategy_all_writes_all_buckets():
+    diff = DeviceDiff(
+        added=["a"],
+        removed=["r"],
+        modified=[{"name": "m", "before": {}, "after": {"x": 1}, "fields_changed": ["x"]}],
+    )
+    device_data = {"a": _named_payload("a", {"v": 1}), "m": _named_payload("m", {"v": 2})}
+    client = _FakeCSClient()
+    result = await apply_diff(client, diff, device_data, strategy="all")
+    assert result == {"upserted": ["a", "m"], "deleted": ["r"]}
+    assert sorted(n for n, _ in client.upserts) == ["a", "m"]
+    assert client.deletes == ["r"]
+
+
+@pytest.mark.asyncio
+async def test_apply_diff_strategy_additions_only_skips_removed_and_modified():
+    diff = DeviceDiff(
+        added=["a"],
+        removed=["r"],
+        modified=[{"name": "m", "before": {}, "after": {"x": 1}, "fields_changed": ["x"]}],
+    )
+    device_data = {"a": _named_payload("a", {"v": 1}), "m": _named_payload("m", {"v": 2})}
+    client = _FakeCSClient()
+    result = await apply_diff(client, diff, device_data, strategy="additions_only")
+    assert result == {"upserted": ["a"], "deleted": []}
+    assert client.deletes == []
+
+
+@pytest.mark.asyncio
+async def test_apply_diff_strategy_selected_restricts_to_named_devices():
+    diff = DeviceDiff(
+        added=["a", "a2"],
+        removed=["r", "r2"],
+        modified=[{"name": "m", "before": {}, "after": {"x": 1}, "fields_changed": ["x"]}],
+    )
+    device_data = {
+        "a": _named_payload("a", {"v": 1}),
+        "a2": _named_payload("a2", {"v": 1}),
+        "m": _named_payload("m", {"v": 2}),
+    }
+    client = _FakeCSClient()
+    # Select a and r; m, a2, r2 are ignored. "unknown" is also dropped.
+    result = await apply_diff(
+        client, diff, device_data, strategy="selected", selected={"a", "r", "unknown"}
+    )
+    assert result == {"upserted": ["a"], "deleted": ["r"]}
+
+
+@pytest.mark.asyncio
+async def test_apply_diff_strategy_selected_without_devices_raises():
+    diff = DeviceDiff(added=[], removed=[], modified=[])
+    with pytest.raises(ValueError, match="selected"):
+        await apply_diff(_FakeCSClient(), diff, {}, strategy="selected")
+
+
+@pytest.mark.asyncio
+async def test_apply_diff_invalid_strategy_raises():
+    diff = DeviceDiff(added=[], removed=[], modified=[])
+    with pytest.raises(ValueError, match="unknown strategy"):
+        await apply_diff(_FakeCSClient(), diff, {}, strategy="nope")
+
+
+@pytest.mark.asyncio
+async def test_apply_diff_raises_on_per_device_failure():
+    diff = DeviceDiff(added=["a", "b"], removed=[], modified=[])
+    device_data = {"a": _named_payload("a", {"v": 1}), "b": _named_payload("b", {"v": 2})}
+    client = _FakeCSClient(fail_upsert={"b"})
+    with pytest.raises(ConfigServiceError, match="device-diff apply failed"):
+        await apply_diff(client, diff, device_data, strategy="all")
+
+
+@pytest.mark.asyncio
+async def test_apply_diff_noop_when_diff_is_empty():
+    diff = DeviceDiff(added=[], removed=[], modified=[])
+    client = _FakeCSClient()
+    result = await apply_diff(client, diff, {}, strategy="all")
+    assert result == {"upserted": [], "deleted": []}
+    assert client.upserts == [] and client.deletes == []
+
+
+def test_apply_strategies_constant_is_exhaustive():
+    assert set(APPLY_STRATEGIES) == {"all", "additions_only", "selected"}

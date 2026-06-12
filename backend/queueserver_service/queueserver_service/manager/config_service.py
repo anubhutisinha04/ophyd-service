@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Collection, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -639,3 +639,237 @@ async def fetch_staleness_plan(
         specs = await client.get_instantiation_specs()
         plan = dataclasses.replace(plan, upserts=specs)
     return plan
+
+
+# ---------------------------------------------------------------------------
+# Device-registry diff + apply (powers the device-diff endpoints)
+# ---------------------------------------------------------------------------
+
+
+# Strategies accepted by ``apply_diff``. Kept in module scope so the HTTP
+# router and tests can reference the same constant.
+APPLY_STRATEGIES = ("all", "additions_only", "selected")
+
+
+@dataclasses.dataclass(frozen=True)
+class DeviceDiff:
+    """Profile-collection vs config-service registry diff.
+
+    ``added`` — names the running worker introspected that are NOT in the
+    registry. ``removed`` — names in the registry that the running worker
+    no longer reports. ``modified`` — entries whose normalized instantiation
+    spec differs between profile and registry; each item is a dict with
+    ``name``, ``before`` (registry spec), ``after`` (worker spec), and
+    ``fields_changed`` (sorted top-level keys whose values differ).
+
+    Lists are sorted by name for reproducible logs and stable API output.
+    """
+
+    added: List[str]
+    removed: List[str]
+    modified: List[Dict[str, Any]]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.added and not self.removed and not self.modified
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "added": list(self.added),
+            "removed": list(self.removed),
+            "modified": [dict(item) for item in self.modified],
+        }
+
+
+def _spec_from_device_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Pull the instantiation spec out of a worker device-data payload.
+
+    Worker payloads have the shape ``{"metadata": {...}, "spec": {...}}``;
+    the spec is what config-service stores under ``instantiation_spec``.
+    Returns ``None`` if the payload doesn't carry a spec (e.g. a metadata-
+    only entry) — the diff treats spec-less worker entries as "matches
+    anything" for the modified-detection pass, since there's nothing to
+    compare structurally.
+    """
+    if not isinstance(payload, dict):
+        return None
+    spec = payload.get("spec")
+    if spec is None:
+        return None
+    return spec
+
+
+def _changed_fields(before: Dict[str, Any], after: Dict[str, Any]) -> List[str]:
+    """Top-level keys whose values differ between ``before`` and ``after``.
+
+    Compares values with ``==``; nested dicts are compared by structural
+    equality (Python default), which matches issue #61's "structural
+    equality over the payloads already sent to config_service".
+    """
+    keys = set(before.keys()) | set(after.keys())
+    return sorted(k for k in keys if before.get(k) != after.get(k))
+
+
+def compute_diff(
+    device_data: Dict[str, Dict[str, Any]],
+    registry_specs: Dict[str, Dict[str, Any]],
+) -> DeviceDiff:
+    """Compare the running worker's introspected devices to the registry.
+
+    Pure function. ``device_data`` is the worker payload dict the manager
+    already carries on ``self._config_service_device_data`` (shape:
+    ``{name: {"metadata": ..., "spec": ...}}``). ``registry_specs`` is
+    the result of ``ConfigServiceClient.get_instantiation_specs()``
+    (shape: ``{name: spec}``).
+
+    The ``modified`` bucket only includes names present in both sides
+    whose specs differ. An entry whose worker payload carries no
+    ``spec`` is skipped from the modified pass (there's nothing
+    structural to compare); the name still appears in ``added`` if
+    missing from the registry.
+    """
+    profile_names = set(device_data.keys())
+    registry_names = set(registry_specs.keys())
+
+    added = sorted(profile_names - registry_names)
+    removed = sorted(registry_names - profile_names)
+
+    modified: List[Dict[str, Any]] = []
+    for name in sorted(profile_names & registry_names):
+        after = _spec_from_device_payload(device_data[name])
+        if after is None:
+            continue
+        before = registry_specs[name]
+        if before == after:
+            continue
+        modified.append(
+            {
+                "name": name,
+                "before": before,
+                "after": after,
+                "fields_changed": _changed_fields(before, after),
+            }
+        )
+
+    return DeviceDiff(added=added, removed=removed, modified=modified)
+
+
+def _validate_strategy(strategy: str) -> None:
+    if strategy not in APPLY_STRATEGIES:
+        raise ValueError(
+            f"unknown strategy {strategy!r}; expected one of {APPLY_STRATEGIES!r}"
+        )
+
+
+def _select_writes(
+    diff: DeviceDiff,
+    *,
+    strategy: str,
+    selected: Optional[Collection[str]],
+) -> Tuple[List[str], List[str]]:
+    """Resolve (upserts, deletes) name lists from a diff + strategy.
+
+    ``"all"`` — every added/modified upserted, every removed deleted.
+    ``"additions_only"`` — only the ``added`` list is upserted; removed and
+        modified are left alone (cheapest, never destroys data).
+    ``"selected"`` — caller-supplied ``selected`` set restricted to the
+        names that actually appear in the diff. Selections that don't
+        match anything in the diff are silently dropped (they're already
+        in sync); a non-collection ``selected`` is rejected.
+    """
+    _validate_strategy(strategy)
+    modified_names = [item["name"] for item in diff.modified]
+
+    if strategy == "all":
+        return (sorted(diff.added + modified_names), list(diff.removed))
+
+    if strategy == "additions_only":
+        return (list(diff.added), [])
+
+    # strategy == "selected"
+    if selected is None:
+        raise ValueError("strategy='selected' requires a non-empty 'selected' set")
+    selected_set = set(selected)
+    upserts = sorted(set(diff.added + modified_names) & selected_set)
+    deletes = sorted(set(diff.removed) & selected_set)
+    return (upserts, deletes)
+
+
+async def apply_diff(
+    client: "ConfigServiceClient",
+    diff: DeviceDiff,
+    device_data: Dict[str, Dict[str, Any]],
+    *,
+    strategy: str,
+    selected: Optional[Collection[str]] = None,
+) -> Dict[str, List[str]]:
+    """Apply the selected writes from ``diff`` to the config-service registry.
+
+    Returns ``{"upserted": [...], "deleted": [...]}`` listing the names
+    that were successfully written. Raises ``ConfigServiceError`` if any
+    individual write fails, carrying a detail string that names every
+    failure and chaining the first underlying exception via ``__cause__``
+    (matches the no-silent-fallback policy used by ``_bootstrap_with_retry``).
+
+    Writes inside each bucket run concurrently with
+    ``return_exceptions=True`` so one slow/failing device doesn't stall
+    the rest; if any failures remain after the gather, the function
+    raises rather than reporting partial success. Upserts and deletes
+    are issued in two passes (upserts first), so a rename-style change
+    (delete + add a renamed device) lands "new device, then old removed"
+    rather than briefly leaving the registry without the device.
+    """
+    upsert_names, delete_names = _select_writes(
+        diff, strategy=strategy, selected=selected
+    )
+
+    async def _gather_with_failures(
+        coros: Sequence[Tuple[str, Any]],
+    ) -> Tuple[List[str], Dict[str, Exception]]:
+        if not coros:
+            return [], {}
+        results = await asyncio.gather(
+            *(coro for _, coro in coros), return_exceptions=True
+        )
+        successes: List[str] = []
+        failures: Dict[str, Exception] = {}
+        for (name, _), result in zip(coros, results):
+            if isinstance(result, Exception):
+                failures[name] = result
+            elif isinstance(result, BaseException):
+                # CancelledError / KeyboardInterrupt / SystemExit — propagate.
+                raise result
+            else:
+                successes.append(name)
+        return successes, failures
+
+    upsert_coros: List[Tuple[str, Any]] = []
+    for name in upsert_names:
+        payload = device_data.get(name)
+        if not isinstance(payload, dict) or "metadata" not in payload:
+            raise ConfigServiceError(
+                f"device-diff apply: worker payload for {name!r} is missing "
+                "'metadata'; cannot upsert"
+            )
+        upsert_coros.append(
+            (name, client.upsert_device(payload["metadata"], payload.get("spec")))
+        )
+
+    upserted, upsert_failures = await _gather_with_failures(upsert_coros)
+
+    delete_coros = [(name, client.delete_device(name)) for name in delete_names]
+    deleted, delete_failures = await _gather_with_failures(delete_coros)
+
+    all_failures = {**upsert_failures, **delete_failures}
+    if all_failures:
+        ordered = sorted(all_failures.items())
+        detail = ", ".join(
+            f"{name}: {type(exc).__name__}: {exc}" for name, exc in ordered
+        )
+        first_cause = ordered[0][1]
+        raise ConfigServiceError(
+            "device-diff apply failed for "
+            f"{len(all_failures)} device(s): {detail}"
+        ) from first_cause
+
+    return {"upserted": sorted(upserted), "deleted": sorted(deleted)}
