@@ -260,6 +260,23 @@ async def test_unlock_devices_sends_correct_body():
     assert body == {"device_names": ["a"], "item_id": "item-1"}
 
 
+@pytest.mark.asyncio
+async def test_force_unlock_devices_sends_correct_body():
+    """Administrative client method — used by the manager's restart-recovery path
+    to clear orphaned locks left by a dead previous incarnation."""
+    client, responder = await _aclient([_json_response(200, {"success": True, "unlocked_devices": ["a", "b"]})])
+    async with client:
+        out = await client.force_unlock_devices(
+            ["a", "b"], reason="queueserver manager restart recovery (item_id=env:abc)"
+        )
+    assert out == {"success": True, "unlocked_devices": ["a", "b"]}
+    assert responder.calls[0].method == "POST"
+    assert responder.calls[0].url.path == "/api/v1/devices/force-unlock"
+    body = json.loads(responder.calls[0].content.decode())
+    assert body["device_names"] == ["a", "b"]
+    assert "restart recovery" in body["reason"]
+
+
 # ===== Retry behavior =====
 
 
@@ -941,13 +958,27 @@ async def test_load_lists_returns_true_on_success():
 class _LockClientStub:
     """Records lock/unlock calls; optionally fails unlocks."""
 
-    def __init__(self, *, unlock_error: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        unlock_error: Exception | None = None,
+        lock_errors: list | None = None,
+        force_unlock_error: Exception | None = None,
+    ):
         self.lock_calls: List[tuple] = []
         self.unlock_calls: List[tuple] = []
+        self.force_unlock_calls: List[tuple] = []
         self.unlock_error = unlock_error
+        # Per-call lock errors, popped FIFO; None means succeed.
+        self._lock_errors = list(lock_errors) if lock_errors else []
+        self.force_unlock_error = force_unlock_error
 
     async def lock_devices(self, device_names, *, item_id, plan_name):
         self.lock_calls.append((list(device_names), item_id, plan_name))
+        if self._lock_errors:
+            err = self._lock_errors.pop(0)
+            if err is not None:
+                raise err
         return {"success": True}
 
     async def unlock_devices(self, device_names, *, item_id):
@@ -955,6 +986,12 @@ class _LockClientStub:
         if self.unlock_error is not None:
             raise self.unlock_error
         return {"success": True}
+
+    async def force_unlock_devices(self, device_names, *, reason):
+        self.force_unlock_calls.append((list(device_names), reason))
+        if self.force_unlock_error is not None:
+            raise self.force_unlock_error
+        return {"success": True, "unlocked_devices": list(device_names)}
 
 
 def _manager_lock_stub(client, *, devices=("m1", "det1")):
@@ -1099,3 +1136,103 @@ async def test_env_open_reconcile_failure_fails_loudly(_stub_env_open_sync):
     assert client.lock_calls == []
     assert manager._config_service_locked_devices == ["old1"]
     assert manager._config_service_locked_item_id == "env:old-uid"
+
+
+# ===== Manager restart 409 recovery =========================================
+#
+# A manager restart with the worker still alive generates a fresh
+# _config_service_lock_item_id in __init__ and re-enters env-open. The lock
+# attempt 409s against the previous incarnation's locks (still held in
+# config-service under the dead instance's UID). Pre-fix the exception escaped
+# zmq_server_comm, watchdog restarted the manager, and the loop repeated
+# forever — orphaned locks never released. Recovery: force-unlock + retry
+# once on 409, since queueserver runs a single manager process per
+# deployment so any conflict here is by definition a previous incarnation's
+# leftover.
+
+
+@pytest.mark.asyncio
+async def test_restart_recovery_force_unlocks_then_retries(_stub_env_open_sync):
+    """Env-open with NO bookkeeping (fresh manager instance) hits a 409 from
+    config-service that still holds the dead previous incarnation's locks;
+    recovery force-unlocks the env's device set under a labeled audit reason
+    and re-acquires under the new item_id."""
+    client = _LockClientStub(
+        lock_errors=[
+            ConfigServiceConflict(409, {"detail": "locked by env:dead-uid"}),
+            None,  # retry succeeds
+        ]
+    )
+    manager = _manager_lock_stub(client, devices=("m1", "det1"))
+    # Fresh instance: empty bookkeeping, fresh lock_item_id from __init__.
+    assert manager._config_service_locked_item_id == ""
+
+    await manager._sync_config_service_on_env_open()
+
+    assert len(client.lock_calls) == 2
+    assert all(c[1] == "env:test-uid" for c in client.lock_calls)
+    assert all(c[2] == "__environment__" for c in client.lock_calls)
+    assert len(client.force_unlock_calls) == 1
+    devices_unlocked, reason = client.force_unlock_calls[0]
+    assert sorted(devices_unlocked) == ["det1", "m1"]
+    assert "restart recovery" in reason
+    assert "env:test-uid" in reason
+    # Final bookkeeping reflects the successful retry, not the failed first attempt.
+    assert sorted(manager._config_service_locked_devices) == ["det1", "m1"]
+    assert manager._config_service_locked_item_id == "env:test-uid"
+
+
+@pytest.mark.asyncio
+async def test_restart_recovery_bounded_to_one_retry(_stub_env_open_sync):
+    """If the lock STILL 409s after force-unlock (a real external peer, not a
+    stale incarnation), the second exception must propagate so env-open fails
+    loudly — no infinite recursion, no silent fallback."""
+    persistent_conflict = ConfigServiceConflict(409, {"detail": "still locked"})
+    client = _LockClientStub(
+        lock_errors=[persistent_conflict, persistent_conflict]
+    )
+    manager = _manager_lock_stub(client, devices=("m1",))
+
+    with pytest.raises(ConfigServiceConflict):
+        await manager._sync_config_service_on_env_open()
+
+    # Force-unlocked exactly once; second lock attempt raised; never went round again.
+    assert len(client.force_unlock_calls) == 1
+    assert len(client.lock_calls) == 2
+    # Bookkeeping NOT advanced on failure (no phantom locked state).
+    assert manager._config_service_locked_devices == []
+    assert manager._config_service_locked_item_id == ""
+
+
+@pytest.mark.asyncio
+async def test_restart_recovery_force_unlock_failure_propagates(_stub_env_open_sync):
+    """If the force-unlock itself fails (config-service genuinely down or
+    refusing), the failure must propagate — pre-fix this path either
+    swallowed the error or looped."""
+    client = _LockClientStub(
+        lock_errors=[ConfigServiceConflict(409, {"detail": "locked"})],
+        force_unlock_error=ConfigServiceUnreachable("down"),
+    )
+    manager = _manager_lock_stub(client, devices=("m1",))
+
+    with pytest.raises(ConfigServiceUnreachable):
+        await manager._sync_config_service_on_env_open()
+
+    assert len(client.lock_calls) == 1  # first attempt only — never retried
+    assert len(client.force_unlock_calls) == 1
+    assert manager._config_service_locked_devices == []
+    assert manager._config_service_locked_item_id == ""
+
+
+@pytest.mark.asyncio
+async def test_happy_path_does_not_force_unlock(_stub_env_open_sync):
+    """Sanity: when the first lock succeeds, force-unlock is NEVER called
+    (no clobbering of valid concurrent state on a healthy restart cycle)."""
+    client = _LockClientStub()
+    manager = _manager_lock_stub(client, devices=("m1",))
+
+    await manager._sync_config_service_on_env_open()
+
+    assert len(client.lock_calls) == 1
+    assert client.force_unlock_calls == []
+    assert manager._config_service_locked_devices == ["m1"]
