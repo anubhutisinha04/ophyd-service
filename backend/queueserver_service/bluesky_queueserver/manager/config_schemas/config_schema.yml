@@ -1,0 +1,395 @@
+# This schema (a jsonschema in YAML format) is used
+# for validating configuration.
+#
+# ref: https://json-schema.org/learn/getting-started-step-by-step.html
+#
+$schema": http://json-schema.org/draft-07/schema#
+type: object
+additionalProperties: false
+properties:
+  network:
+    type: object
+    additionalProperties: false
+    properties:
+      zmq_control_addr:
+        type: string
+      zmq_private_key:
+        type: string
+      zmq_info_addr:
+        type: string
+      zmq_encoding:
+        type: string
+      zmq_publish_console:
+        type: boolean
+      redis_addr:
+        type: string
+      redis_name_prefix:
+        type: string
+  worker:
+    type: object
+    additionalProperties: false
+    properties:
+      use_ipython_kernel:
+        type: boolean
+      ipython_kernel_ip:
+        type: string
+      ipython_matplotlib:
+        type: string
+      ipython_connection_file:
+        type: string
+      ipython_connection_dir:
+        type: string
+      ipython_shell_port:
+        type: integer
+      ipython_iopub_port:
+        type: integer
+      ipython_stdin_port:
+        type: integer
+      ipython_hb_port:
+        type: integer
+      ipython_control_port:
+        type: integer
+      permitted_re_metadata_keys:
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+  startup:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        properties:
+          keep_re:
+            type: boolean
+          device_max_depth:
+            type: integer
+          ignore_invalid_plans:
+            type: boolean
+          existing_plans_and_devices_path:
+            type: string
+          user_group_permissions_path:
+            type: string
+          startup_dir:
+            type: string
+          startup_profile:
+            type: string
+          startup_module:
+            type: string
+          startup_script:
+            type: string
+          ipython_dir:
+            type: string
+        oneOf:
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              startup_profile:
+                type: string
+            required:
+              - startup_profile
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              ipython_dir:
+                type: string
+            required:
+              - ipython_dir
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              startup_profile:
+                type: string
+              ipython_dir:
+                type: string
+            required:
+              - startup_profile
+              - ipython_dir
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              startup_dir:
+                type: string
+            required:
+              - startup_dir
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              startup_script:
+                type: string
+            required:
+              - startup_script
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              startup_module:
+                type: string
+            required:
+              - startup_module
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              startup_profile:
+                type: string
+              startup_script:
+                type: string
+            required:
+              - startup_profile
+              - startup_script
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              ipython_dir:
+                type: string
+              startup_script:
+                type: string
+            required:
+              - ipython_dir
+              - startup_script
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              startup_profile:
+                type: string
+              ipython_dir:
+                type: string
+              startup_script:
+                type: string
+            required:
+              - startup_profile
+              - ipython_dir
+              - startup_script
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              startup_profile:
+                type: string
+              startup_module:
+                type: string
+            required:
+              - startup_profile
+              - startup_module
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              ipython_dir:
+                type: string
+              startup_module:
+                type: string
+            required:
+              - ipython_dir
+              - startup_module
+          - type: object
+            additionalProperties: false
+            properties:
+              keep_re:
+                type: boolean
+              device_max_depth:
+                type: integer
+              ignore_invalid_plans:
+                type: boolean
+              existing_plans_and_devices_path:
+                type: string
+              user_group_permissions_path:
+                type: string
+
+              startup_profile:
+                type: string
+              ipython_dir:
+                type: string
+              startup_module:
+                type: string
+            required:
+              - startup_profile
+              - ipython_dir
+              - startup_module
+
+  operation:
+    type: object
+    additionalProperties: false
+    properties:
+      print_console_output:
+        type: boolean
+      console_logging_level:
+        type: string
+        pattern: "^(VERBOSE)|(NORMAL)|(QUIET)|(SILENT)$"
+      update_existing_plans_and_devices:
+        type: string
+        pattern: "^(NEVER)|(ENVIRONMENT_OPEN)|(ALWAYS)$"
+      user_group_permissions_reload:
+        type: string
+        pattern: "^(NEVER)|(ON_REQUEST)|(ON_STARTUP)"
+      emergency_lock_key:
+        type: string
+
+  config_service:
+    type: object
+    additionalProperties: false
+    properties:
+      enabled:
+        type: boolean
+      url:
+        type: string
+      timeout:
+        type: number
+      max_attempts:
+        type: integer
+        minimum: 1
+      backoff_ms:
+        type: array
+        items:
+          type: integer
+          minimum: 0
+      service_name:
+        type: string
+      lock_scope:
+        type: string
+        enum: ["environment", "plan"]
+
+  http_server:
+    type: object
+    additionalProperties: false
+    properties:
+      enabled:
+        type: boolean
+      host:
+        type: string
+      port:
+        type: integer
+        minimum: 1
+        maximum: 65535
+      config_path:
+        type: string

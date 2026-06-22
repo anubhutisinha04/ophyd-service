@@ -1,9 +1,20 @@
 # End-to-end integration test for the ophyd-service backends.
 #
-# Brings up the `full` pod (5 caproto IOCs + configuration_service +
-# direct_control_service) and runs every exerciser under
-# integration/exercise/ against it. Each exerciser exits non-zero on any
-# assertion miss, so the workflow fails fast on contract drift.
+# Four pods, one job each:
+#   - `full`: 5 caproto IOCs + configuration_service + direct_control_service,
+#     driven by every exerciser under integration/exercise/.
+#   - `with-queueserver`: IOC + redis + all three backends; its smoke.sh covers
+#     the Side-B edge (queueserver <-> config-service env-open sync, consume-mode
+#     device injection, websocket streaming).
+#   - `standalone`: IOC + direct_control_service alone in FILE-REGISTRY mode
+#     (no configuration_service, no database) — proves the standalone deploy
+#     story stays working.
+#   - `profile-seeded`: the opposite bootstrap direction — empty registry seeded
+#     from a profile collection on env-open, registry as the device source from
+#     then on, and per-plan device locking (lock_scope: plan + lock_all policy)
+#     enforced through direct-control while plans execute.
+# Each script exits non-zero on any assertion miss, so the workflow fails
+# fast on contract drift.
 #
 # Triggers:
 #   - every PR (catches breakage before merge)
@@ -26,6 +37,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+# Cancel superseded runs of the same PR branch; never cancel main/dispatch runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   full-pod:
@@ -92,10 +108,67 @@ jobs:
         working-directory: integration/pods/full
         run: docker compose down --volumes
 
-  standalone-pod:
-    name: standalone pod (file registry, no config-service)
+  with-queueserver-pod:
+    name: with-queueserver pod Side-B end-to-end
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: integration/pods/with-queueserver
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Bring up the with-queueserver pod
+        run: docker compose up --build -d
+
+      - name: Wait for the unified queueserver to answer
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf -H "Authorization: ApiKey mad" http://localhost:60610/api/status >/dev/null; then
+              echo "queueserver answering after ${i} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "queueserver did not answer within 120s" >&2
+          exit 1
+
+      - name: Run Side-B smoke (env-open sync, consume-mode injection, websockets)
+        run: ./smoke.sh
+
+      - name: Exercise bluesky-queueserver-api compatibility
+        # The PyPI client package is the frozen public contract: the in-tree
+        # queueserver_service may diverge from upstream bluesky-queueserver,
+        # but whatever bluesky-queueserver-api consumes (0MQ protocol +
+        # HTTP/WS API) must keep working. See the service README.
+        working-directory: .
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-input bluesky-queueserver-api
+          python integration/exercise/queueserver_api_compat.py
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "::group::compose ps"
+          docker compose ps
+          echo "::endgroup::"
+          echo "::group::compose logs"
+          docker compose logs --tail=200
+          echo "::endgroup::"
+
+      - name: Tear down the pod
+        if: always()
+        run: docker compose down --volumes
+
+  standalone-pod:
+    name: standalone pod (file-registry direct_control)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     defaults:
       run:
@@ -121,7 +194,7 @@ jobs:
           echo "direct_control did not become healthy within 120s" >&2
           exit 1
 
-      - name: Exercise standalone mode (file registry gate, PV + device control)
+      - name: Exercise standalone mode (file-registry gate, PV + device control, refusals)
         run: ./integration/exercise/direct_control_standalone.sh
 
       - name: Dump container logs on failure
@@ -138,4 +211,53 @@ jobs:
       - name: Tear down the pod
         if: always()
         working-directory: integration/pods/standalone
+        run: docker compose down --volumes
+
+  profile-seeded-pod:
+    name: profile-seeded pod Side-B end-to-end (bootstrap + per-plan locking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: integration/pods/profile-seeded
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Bring up the profile-seeded pod
+        run: docker compose up --build -d
+
+      - name: Wait for the unified queueserver to answer
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf -H "Authorization: ApiKey mad" http://localhost:60610/api/status >/dev/null; then
+              echo "queueserver answering after ${i} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "queueserver did not answer within 120s" >&2
+          exit 1
+
+      - name: Run the exerciser (bootstrap, registry source-of-truth, per-plan locking)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-input httpx
+          ./exercise.py
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "::group::compose ps"
+          docker compose ps
+          echo "::endgroup::"
+          echo "::group::compose logs"
+          docker compose logs --tail=300
+          echo "::endgroup::"
+
+      - name: Tear down the pod
+        if: always()
         run: docker compose down --volumes

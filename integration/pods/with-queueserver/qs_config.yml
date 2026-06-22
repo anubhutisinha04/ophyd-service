@@ -1,0 +1,24 @@
+# bluesky-queueserver manager config for the with-queueserver integration pod.
+#
+# Passed to start-re-manager via `--config /config/qs_config.yml`. The manager
+# env-expands this YAML, so ${VAR} placeholders work; here the values are fixed
+# to compose service names.
+
+# Publish console output + periodic status to the 0MQ PUB socket. The co-hosted
+# httpserver's /console_output/ws, /status/ws and /info/ws websockets are fed
+# from this stream — without it they connect but never emit.
+network:
+  zmq_publish_console: true
+
+# Unified mode: co-host the FastAPI httpserver inside the manager process.
+http_server:
+  enabled: true
+  host: 0.0.0.0
+  port: 60610
+
+# Layer 2 integration: point the manager's configuration-service client at the
+# config_service container. On environment open the manager syncs devices /
+# locks against this URL.
+config_service:
+  enabled: true
+  url: http://configuration_service:8004

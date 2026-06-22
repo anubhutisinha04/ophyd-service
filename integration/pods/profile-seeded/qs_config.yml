@@ -1,0 +1,25 @@
+# bluesky-queueserver manager config for the profile-seeded integration pod.
+#
+# Differences from pods/with-queueserver/qs_config.yml:
+# - config_service.lock_scope: plan — no environment-wide lock at env-open;
+#   the manager locks exactly the devices referenced by each plan's
+#   args/kwargs for the duration of that plan.
+# - startup.existing_plans_and_devices_path points at a writable location:
+#   the profile collection is mounted read-only and ships no pre-generated
+#   lists; the manager (re)generates them on env-open.
+
+network:
+  zmq_publish_console: true
+
+http_server:
+  enabled: true
+  host: 0.0.0.0
+  port: 60610
+
+startup:
+  existing_plans_and_devices_path: /tmp/existing_plans_and_devices.yaml
+
+config_service:
+  enabled: true
+  url: http://configuration_service:8004
+  lock_scope: plan

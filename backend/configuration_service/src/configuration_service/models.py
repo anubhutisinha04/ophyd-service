@@ -4,8 +4,9 @@ Domain models for Configuration Service (SVC-004).
 These models represent the core entities for the device/PV registry.
 """
 
+import logging
 from datetime import datetime
-from typing import Dict, List, Literal, Optional, Any
+from typing import Dict, List, Literal, Optional, Any, Set
 from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
@@ -13,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 # truth for outcome values. Lazy to avoid pulling path_resolver's optional
 # ophyd / ophyd-async lazy imports into this module's import time.
 from .path_resolver import Outcome as PathResolveOutcome
+
+logger = logging.getLogger(__name__)
 
 
 class DeviceLabel(str, Enum):
@@ -234,6 +237,14 @@ class DeviceRegistry(BaseModel):
     instantiation_specs: Dict[str, DeviceInstantiationSpec] = Field(
         default_factory=dict, description="Device name to instantiation specification mapping"
     )
+    standalone_pv_names: Set[str] = Field(
+        default_factory=set,
+        description=(
+            "PVs registered as standalone (no owning device). Tracked so a "
+            "device that later claims one of these PVs can be removed without "
+            "destroying the standalone registration."
+        ),
+    )
 
     def get_device(self, name: str) -> Optional[DeviceMetadata]:
         """Get device by name."""
@@ -331,9 +342,48 @@ class DeviceRegistry(BaseModel):
                     pv=pv_name, device_name=device.name, component_name=component_name
                 )
             else:
-                # Update existing PV with device ownership info
+                # Update existing PV with device ownership info. Shared PVs
+                # are legitimate (compound devices + leaf-PV entries index the
+                # same PV); the index points at the most recent registrant.
+                # remove_device() re-homes the entry instead of deleting it,
+                # so the earlier owner's registration survives removal.
+                prior_owner = self.pvs[pv_name].device_name
+                if prior_owner is not None and prior_owner != device.name:
+                    logger.info(
+                        "PV %s ownership reassigned from device %s to %s",
+                        pv_name, prior_owner, device.name,
+                    )
                 self.pvs[pv_name].device_name = device.name
                 self.pvs[pv_name].component_name = component_name
+
+    def add_standalone_pv(self, pv_name: str) -> None:
+        """Register a PV with no owning device.
+
+        If a device already owns the PV in the index, the device's ownership
+        is preserved (the device-level lock/disable gate stays in force) and
+        the PV is only marked standalone — removal of that device then
+        reverts the entry to standalone instead of deleting it.
+        """
+        self.standalone_pv_names.add(pv_name)
+        if pv_name not in self.pvs:
+            self.pvs[pv_name] = PVMetadata(pv=pv_name, device_name=None)
+        elif self.pvs[pv_name].device_name is not None:
+            logger.info(
+                "PV %s registered standalone but is owned by device %s; "
+                "device ownership preserved",
+                pv_name, self.pvs[pv_name].device_name,
+            )
+
+    def remove_standalone_pv(self, pv_name: str) -> None:
+        """Unregister a standalone PV.
+
+        Drops the index entry only when no device owns it — deleting a
+        device-owned entry here would destroy that device's registration.
+        """
+        self.standalone_pv_names.discard(pv_name)
+        meta = self.pvs.get(pv_name)
+        if meta is not None and meta.device_name is None:
+            del self.pvs[pv_name]
 
     def remove_device(self, name: str) -> bool:
         """Remove device from registry including its instantiation spec and indexed PVs.
@@ -347,12 +397,33 @@ class DeviceRegistry(BaseModel):
         if name not in self.devices:
             return False
 
-        # Remove indexed PVs owned by this device
-        pv_names_to_remove = [
+        # Re-home or drop the PVs this device owns in the index. A PV that
+        # another device also lists is REASSIGNED to that device (pre-fix it
+        # was deleted, destroying the surviving owner's registry entry); a PV
+        # registered as standalone reverts to standalone; only PVs nobody
+        # else claims are dropped.
+        owned = [
             pv_name for pv_name, pv_meta in self.pvs.items() if pv_meta.device_name == name
         ]
-        for pv_name in pv_names_to_remove:
-            del self.pvs[pv_name]
+        for pv_name in owned:
+            new_owner = None
+            for other_name, other_device in self.devices.items():
+                if other_name == name:
+                    continue
+                for component_name, other_pv in other_device.pvs.items():
+                    if other_pv == pv_name:
+                        new_owner = (other_name, component_name)
+                        break
+                if new_owner:
+                    break
+            if new_owner is not None:
+                self.pvs[pv_name].device_name = new_owner[0]
+                self.pvs[pv_name].component_name = new_owner[1]
+            elif pv_name in self.standalone_pv_names:
+                self.pvs[pv_name].device_name = None
+                self.pvs[pv_name].component_name = None
+            else:
+                del self.pvs[pv_name]
 
         # Remove instantiation spec
         self.instantiation_specs.pop(name, None)

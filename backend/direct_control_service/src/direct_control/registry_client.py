@@ -122,12 +122,19 @@ class RegistryClient:
                 self._pv_cache[pv_name] = (False, time.monotonic())
                 raise RegistryValidationError(pv_name, "PV")
             else:
-                logger.warning(
+                # A 5xx/unexpected status is a REGISTRY failure, not "this PV
+                # doesn't exist" — raise the unavailability error (503 at the
+                # endpoints), never the not-found one (404). Don't cache: the
+                # outage must not poison the TTL window.
+                logger.error(
                     "registry_pv_check_unexpected_status",
                     pv_name=pv_name,
                     status_code=response.status_code,
                 )
-                raise RegistryValidationError(pv_name, "PV")
+                raise RuntimeError(
+                    f"Configuration service registry error: PV lookup for "
+                    f"{pv_name!r} returned HTTP {response.status_code}"
+                )
 
         except httpx.RequestError as e:
             logger.error("configuration_service_unavailable", error=str(e))
@@ -160,12 +167,16 @@ class RegistryClient:
                 self._device_cache[device_name] = (False, time.monotonic())
                 raise RegistryValidationError(device_name, "Device")
             else:
-                logger.warning(
+                # Mirror validate_pv: registry failure → 503, never 404.
+                logger.error(
                     "registry_device_check_unexpected_status",
                     device_name=device_name,
                     status_code=response.status_code,
                 )
-                raise RegistryValidationError(device_name, "Device")
+                raise RuntimeError(
+                    f"Configuration service registry error: device lookup for "
+                    f"{device_name!r} returned HTTP {response.status_code}"
+                )
 
         except httpx.RequestError as e:
             logger.error("configuration_service_unavailable", error=str(e))
@@ -190,11 +201,25 @@ class RegistryClient:
             logger.error("configuration_service_unavailable", error=str(e))
             raise RuntimeError("Configuration service unavailable") from e
 
-        if response.status_code != 200:
+        if response.status_code == 404:
             # PV not in registry — caller will hit the validate_pv gate
             # separately. Don't cache as None here: that would shadow a real
             # owner once the PV gets registered.
             return None
+        if response.status_code != 200:
+            # FAIL CLOSED: a 5xx must not be read as "standalone PV, no lock
+            # concept" — that would let a write bypass the device-lock gate
+            # exactly when the lock authority is unhealthy. Surface the
+            # outage instead (503 at the endpoints).
+            logger.error(
+                "registry_owner_lookup_unexpected_status",
+                pv_name=pv_name,
+                status_code=response.status_code,
+            )
+            raise RuntimeError(
+                f"Configuration service registry error: owner lookup for "
+                f"{pv_name!r} returned HTTP {response.status_code}"
+            )
         device_name: Optional[str] = response.json().get("device_name")
         self._pv_owner_cache[pv_name] = (device_name, time.monotonic())
         return device_name

@@ -622,3 +622,50 @@ class TestLockAllPolicy:
         app = create_app(settings)
         with TestClient(app) as c:
             assert c.get("/api/v1/devices/lock/policy").json() == {"lock_all": True}
+
+
+class TestLockLoggingAtInfoLevel:
+    """The lock manager logs through the stdlib logger; INFO-level deployments
+    used to hit TypeError from structlog-style kwargs AFTER the lock state was
+    mutated — the endpoint 500'd while the devices stayed locked.
+    Latent under the default WARNING level, so the cycle is exercised with the
+    lock_manager logger explicitly raised to INFO."""
+
+    def test_full_lock_cycle_logs_cleanly_at_info(self, client, caplog):
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="configuration_service.lock_manager"):
+            resp = client.post(
+                "/api/v1/devices/lock",
+                json={
+                    "device_names": ["sample_x"],
+                    "item_id": "item-001",
+                    "plan_name": "count",
+                },
+            )
+            assert resp.status_code == 200, resp.text
+
+            resp = client.post(
+                "/api/v1/devices/unlock",
+                json={"device_names": ["sample_x"], "item_id": "item-001"},
+            )
+            assert resp.status_code == 200, resp.text
+
+            client.post(
+                "/api/v1/devices/lock",
+                json={
+                    "device_names": ["sample_x"],
+                    "item_id": "item-002",
+                    "plan_name": "scan",
+                },
+            )
+            resp = client.post(
+                "/api/v1/devices/force-unlock",
+                json={"device_names": ["sample_x"], "reason": "test cleanup"},
+            )
+            assert resp.status_code == 200, resp.text
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("locks_acquired" in m for m in messages)
+        assert any("locks_released" in m for m in messages)
+        assert any("locks_force_cleared" in m for m in messages)

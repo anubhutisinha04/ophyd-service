@@ -254,6 +254,11 @@ class ImageStreamManager:
             for task in (recv_task, stream_task):
                 if not task.done():
                     task.cancel()
+            # Let the cancellations land before inspecting results — calling
+            # task.exception() on a just-cancelled (still pending) task raises
+            # InvalidStateError, which fired on every normal disconnect and
+            # masked real loop crashes.
+            await asyncio.gather(recv_task, stream_task, return_exceptions=True)
             # Surface a non-cancellation crash in either loop.
             for task in (recv_task, stream_task):
                 if task.cancelled():

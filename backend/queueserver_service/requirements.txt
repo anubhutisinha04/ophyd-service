@@ -1,0 +1,32 @@
+bluesky>=1.7.0
+ipykernel
+jsonschema
+jupyter-client>=7.4.2
+jupyter-console
+numpydoc
+openpyxl
+ophyd
+packaging
+pydantic
+python-multipart
+pyyaml
+pyzmq
+redis[hiredis]
+requests
+typing-extensions;python_version<'3.8'
+
+# bluesky-httpserver runtime deps (merged in via subprojects/bluesky-httpserver).
+# httpx is imported unconditionally by bluesky_httpserver.authorization.api_access
+# but is missing from httpserver's own requirements.txt (upstream omission).
+alembic
+bluesky-queueserver-api
+fastapi
+httpx
+ldap3
+orjson
+pamela
+pydantic-settings
+python-jose
+sqlalchemy
+starlette
+uvicorn
