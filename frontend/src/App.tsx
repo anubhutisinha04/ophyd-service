@@ -1,11 +1,14 @@
 import { HubAppLayout, RouteItem } from '@blueskyproject/finch'
 import { Atom, SlidersHorizontal, Table } from '@phosphor-icons/react'
+import { useAuth } from './contexts/AuthContext'
 import IosScan from './pages/IosScan'
 import ScanSettings from './pages/ScanSettings'
 import PresetsAdmin from './pages/PresetsAdmin'
 
 function App() {
-  const routes: RouteItem[] = [
+  const auth = useAuth()
+
+  const allRoutes: RouteItem[] = [
     {
       path: '/',
       label: 'IOS Scan',
@@ -28,6 +31,16 @@ function App() {
       isBackgroundTransparent: false,
     },
   ]
+
+  // Filter routes based on user permissions
+  const routes = allRoutes.filter((route) => {
+    // Presets admin is only for admins
+    if (route.path === '/presets-admin') {
+      return auth.canAccessPresetsAdmin()
+    }
+    // All other routes are accessible to operators
+    return auth.hasRole('ios.operator') || auth.isAdmin()
+  })
 
   return (
     <HubAppLayout
