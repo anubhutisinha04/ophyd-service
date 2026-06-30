@@ -1,6 +1,7 @@
-import { HubAppLayout, RouteItem } from '@blueskyproject/finch'
+import type { RouteItem } from '@blueskyproject/finch'
 import { Atom, SlidersHorizontal, Table } from '@phosphor-icons/react'
 import { useAuth } from './contexts/AuthContext'
+import { ClientFinchBridge } from './components/ClientFinchBridge'
 import IosScan from './pages/IosScan'
 import ScanSettings from './pages/ScanSettings'
 import PresetsAdmin from './pages/PresetsAdmin'
@@ -43,9 +44,10 @@ function App() {
   })
 
   return (
-    <HubAppLayout
+    <ClientFinchBridge
       routes={routes}
       headerTitle="IOS Scan"
+      fallback={<div className="p-4 text-gray-500">Loading interface...</div>}
     />
   )
 }

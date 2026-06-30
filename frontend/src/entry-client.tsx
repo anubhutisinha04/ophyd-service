@@ -13,8 +13,7 @@ const queryClient = new QueryClient()
 // Read auth data injected during SSR
 const authData = window.__AUTH_DATA__ || null
 
-ReactDOM.hydrateRoot(
-  document.getElementById('root')!,
+const app = (
   <React.StrictMode>
     <BrowserRouter>
       <QueryClientProvider client={queryClient}>
@@ -27,5 +26,13 @@ ReactDOM.hydrateRoot(
         </FinchConfigProvider>
       </QueryClientProvider>
     </BrowserRouter>
-  </React.StrictMode>,
+  </React.StrictMode>
 )
+
+const rootElement = document.getElementById('root')!
+
+if (rootElement.hasChildNodes()) {
+  ReactDOM.hydrateRoot(rootElement, app)
+} else {
+  ReactDOM.createRoot(rootElement).render(app)
+}

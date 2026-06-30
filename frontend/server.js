@@ -9,8 +9,22 @@ import { createServer as createViteServer } from 'vite';
 const isProduction = process.env.NODE_ENV === 'production';
 const basePath = process.env.BASE || '/';
 const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 5173;
+// Inject a fake admin user when no HAProxy auth headers are present. Always on
+// in dev; opt-in for local production preview via DEV_AUTH=true. Never enable
+// in real deployments — HAProxy supplies the headers there.
+const allowDevAuth = !isProduction || process.env.DEV_AUTH === 'true';
 
-// Cached production assets
+const defaultDevAuthData = {
+  upn: 'local.dev@bnl.gov',
+  name: 'Local Dev User',
+  roles: ['ios.admin'],
+  givenName: 'Local',
+  familyName: 'Dev',
+};
+
+const renderAuthScript = (authData) => `<script>window.__AUTH_DATA__=${JSON.stringify(authData)};</script>`;
+
+// Cached production assets (client-side only - finch doesn't support SSR)
 const templateHtml = isProduction
   ? await fs.readFile('./dist/client/index.html', 'utf-8')
   : '';
@@ -24,6 +38,28 @@ let vite;
 
 // Middleware: Correlation ID
 app.use(correlator({ header: 'X-Request-ID' }));
+
+// API proxy — forward backend requests in both dev and production.
+// Mirrors the proxy config in vite.config.ts (which only applies to
+// the standalone Vite dev server, not middleware mode).
+const { createProxyMiddleware } = await import('http-proxy-middleware');
+
+const PRESETS_TARGET = process.env.VITE_PRESETS_TARGET || 'http://localhost:8005';
+const CONFIG_TARGET  = process.env.VITE_CONFIG_TARGET  || 'http://localhost:8004';
+const CONTROL_TARGET = process.env.VITE_CONTROL_TARGET || 'http://localhost:8003';
+
+app.use('/api/presets', createProxyMiddleware({
+  target: PRESETS_TARGET, changeOrigin: true,
+  pathRewrite: (path) => '/api/v1' + path,
+}));
+app.use('/api/config', createProxyMiddleware({
+  target: CONFIG_TARGET, changeOrigin: true,
+  pathRewrite: (path) => '/api/v1' + path,
+}));
+app.use('/api/control', createProxyMiddleware({
+  target: CONTROL_TARGET, changeOrigin: true,
+  pathRewrite: (path) => '/api/v1' + path,
+}));
 
 if (isProduction) {
   // Production middleware layers
@@ -50,7 +86,7 @@ app.use(async (req, res) => {
 
     /** @type {string} */
     let template;
-    /** @type {import('./src/entry-server.tsx').render} */
+    /** @type {import('./src/entry-server.tsx').render | undefined} */
     let render;
 
     if (isProduction) {
@@ -61,11 +97,10 @@ app.use(async (req, res) => {
       // Always read fresh template in development
       template = await fs.readFile('./index.html', 'utf-8');
       template = await vite.transformIndexHtml(url, template);
-      render = (await vite.ssrLoadModule('/src/entry-server.tsx')).render;
     }
 
     // Extract Entra ID auth headers from HAProxy
-    const authData = {
+    let authData = {
       upn: req.headers['access-token-upn'] || '',
       name: req.headers['access-token-name'] || '',
       roles: req.headers['access-token-roles']
@@ -75,12 +110,18 @@ app.use(async (req, res) => {
       familyName: req.headers['access-token-family-name'],
     };
 
+    if (allowDevAuth && authData.roles.length === 0) {
+      authData = defaultDevAuthData;
+    }
+
     // Log auth for debugging (don't log in production for security)
     if (!isProduction) {
       console.log(`[${req.correlationId()}] Auth: ${authData.upn || 'none'} - Roles: ${authData.roles.join(', ') || 'none'}`);
     }
 
-    const rendered = await render(url, authData);
+    const rendered = render
+      ? await render(url, authData)
+      : { html: '', head: renderAuthScript(authData) };
 
     const html = template
       .replace(`<!--app-head-->`, rendered.head ?? '')
