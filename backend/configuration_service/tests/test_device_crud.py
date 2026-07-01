@@ -8,10 +8,12 @@ as well as direct registry store persistence, audit log, reset, and export.
 import json
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from configuration_service.config import Settings
 from configuration_service.device_registry_store import DeviceRegistryStore
+from configuration_service.loader import BitsProfileLoader
 from configuration_service.main import create_app
 from configuration_service.models import (
     DeviceInstantiationSpec,
@@ -122,6 +124,62 @@ class TestDeviceRegistryStore:
         assert len(log) == 1
         assert log[0].operation == "seed"
         assert log[0].device_name == "motor1"
+
+        store.close()
+
+    def test_export_bits_roundtrip(self, db_engine, tmp_path):
+        """export_bits() emits guarneri devices.yml that reloads via BitsProfileLoader."""
+        store = DeviceRegistryStore(db_engine)
+        store.initialize()
+
+        registry = DeviceRegistry()
+        # Class-style device: YAML key is the class path, entry has no creator.
+        registry.add_device(
+            DeviceMetadata(
+                name="motor1",
+                device_label=DeviceLabel.MOTOR,
+                ophyd_class="EpicsMotor",
+                is_movable=True,
+                labels=["motors"],
+            ),
+            DeviceInstantiationSpec(
+                name="motor1",
+                device_class="ophyd.EpicsMotor",
+                args=["IOC:M1"],
+                kwargs={"name": "motor1", "labels": ["motors"]},
+            ),
+        )
+        # Factory-style device: YAML key is the module, creator names the callable.
+        registry.add_device(
+            DeviceMetadata(
+                name="sim_motor",
+                device_label=DeviceLabel.MOTOR,
+                ophyd_class="motor",
+            ),
+            DeviceInstantiationSpec(
+                name="sim_motor",
+                device_class="ophyd.sim.motor",
+                kwargs={"name": "sim_motor"},
+            ),
+        )
+        store.seed_from_registry(registry)
+
+        bits_data = store.export_bits()
+
+        # Class path is keyed directly; factory is keyed by module + creator.
+        assert bits_data["ophyd.EpicsMotor"][0]["prefix"] == "IOC:M1"
+        assert bits_data["ophyd.EpicsMotor"][0]["labels"] == ["motors"]
+        assert "creator" not in bits_data["ophyd.EpicsMotor"][0]
+        assert bits_data["ophyd.sim"][0]["creator"] == "motor"
+
+        # Round-trip: write devices.yml and reload it with the BITS loader.
+        configs_dir = tmp_path / "configs"
+        configs_dir.mkdir()
+        (configs_dir / "devices.yml").write_text(yaml.safe_dump(bits_data))
+
+        reloaded = BitsProfileLoader(tmp_path).load_registry()
+        assert reloaded.instantiation_specs["motor1"].device_class == "ophyd.EpicsMotor"
+        assert reloaded.instantiation_specs["sim_motor"].device_class == "ophyd.sim.motor"
 
         store.close()
 
@@ -383,6 +441,25 @@ class TestDeviceRegistryStore:
 
         store.close()
 
+    def test_export_bits_spec_missing_raises(self, db_engine):
+        """A device row with a NULL spec must fail BITS export, not synthesize defaults."""
+        store = DeviceRegistryStore(db_engine)
+        store.initialize()
+
+        registry = DeviceRegistry()
+        metadata = DeviceMetadata(
+            name="orphan_device",
+            device_label=DeviceLabel.MOTOR,
+            ophyd_class="EpicsMotor",
+        )
+        registry.add_device(metadata, instantiation_spec=None)
+        store.seed_from_registry(registry)
+
+        with pytest.raises(RuntimeError, match="Registry inconsistency.*orphan_device"):
+            store.export_bits()
+
+        store.close()
+
     def test_data_survives_reopen(self, db_engine):
         """Test that data persists across store reopens (simulated restart)."""
         store1 = DeviceRegistryStore(db_engine)
@@ -470,6 +547,35 @@ class TestDeviceRegistryStore:
 
 
 # ===== DeviceRegistry Method Tests =====
+
+
+class TestExportRegistryEndpoint:
+    """Test the /api/v1/registry/export endpoint format negotiation."""
+
+    def test_export_default_is_happi(self, client):
+        """No format param defaults to happi JSON."""
+        response = client.get("/api/v1/registry/export")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json")
+        assert isinstance(response.json(), dict)
+
+    def test_export_bits_returns_yaml(self, client):
+        """format=bits returns a guarneri devices.yml document."""
+        response = client.get("/api/v1/registry/export", params={"format": "bits"})
+        assert response.status_code == 200
+        assert "yaml" in response.headers["content-type"]
+        parsed = yaml.safe_load(response.text)
+        # Keyed by callable path -> list of entries, each carrying a name.
+        assert isinstance(parsed, dict)
+        for entries in parsed.values():
+            assert isinstance(entries, list)
+            assert all("name" in entry for entry in entries)
+
+    def test_export_unsupported_format_is_400(self, client):
+        """Unknown formats are rejected with a helpful message."""
+        response = client.get("/api/v1/registry/export", params={"format": "xml"})
+        assert response.status_code == 400
+        assert "bits" in response.json()["detail"]
 
 
 class TestDeviceRegistryMethods:

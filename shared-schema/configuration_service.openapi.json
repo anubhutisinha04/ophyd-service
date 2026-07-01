@@ -1321,7 +1321,7 @@
           "Registry Admin"
         ],
         "summary": "Export Registry",
-        "description": "Export the device registry in a portable format (happi)",
+        "description": "Export the device registry in a portable format (happi JSON or BITS devices.yml)",
         "operationId": "export_registry_api_v1_registry_export_get",
         "parameters": [
           {
@@ -1330,21 +1330,25 @@
             "required": false,
             "schema": {
               "type": "string",
-              "description": "Export format (currently only 'happi')",
+              "description": "Export format: 'happi' (default, JSON) or 'bits' (guarneri devices.yml)",
               "default": "happi",
               "title": "Format"
             },
-            "description": "Export format (currently only 'happi')"
+            "description": "Export format: 'happi' (default, JSON) or 'bits' (guarneri devices.yml)"
           }
         ],
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "Registry export. `format=happi` (default) returns happi JSON (`application/json`); `format=bits` returns a BITS `devices.yml` document (`application/x-yaml`).",
             "content": {
               "application/json": {
                 "schema": {}
-              }
+              },
+              "application/x-yaml": {}
             }
+          },
+          "400": {
+            "description": "Unsupported export format."
           },
           "422": {
             "description": "Validation Error",

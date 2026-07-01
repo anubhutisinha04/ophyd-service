@@ -24,9 +24,10 @@ from pathlib import Path
 from typing import Annotated, NamedTuple, TypeVar
 
 import structlog
+import yaml
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.engine import Engine
 
@@ -1698,27 +1699,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(
         "/api/v1/registry/export",
         summary="Export Registry",
-        description="Export the device registry in a portable format (happi)",
+        description="Export the device registry in a portable format (happi JSON or BITS devices.yml)",
         tags=["Registry Admin"],
+        responses={
+            200: {
+                "description": (
+                    "Registry export. `format=happi` (default) returns happi "
+                    "JSON (`application/json`); `format=bits` returns a BITS "
+                    "`devices.yml` document (`application/x-yaml`)."
+                ),
+                "content": {
+                    "application/json": {},
+                    "application/x-yaml": {},
+                },
+            },
+            400: {"description": "Unsupported export format."},
+        },
     )
     async def export_registry(
         registry_store: RegistryStoreDep,
-        format: str = Query("happi", description="Export format (currently only 'happi')"),
+        format: str = Query(
+            "happi",
+            description="Export format: 'happi' (default, JSON) or 'bits' (guarneri devices.yml)",
+        ),
     ):
         """
         Export the device registry.
 
-        Returns the full device registry in happi JSON format, suitable
-        for importing on another VM or as a backup.
+        Returns the full device registry in happi JSON format (default) or, when
+        ``format=bits``, as a BITS (BCDA-APS guarneri) ``devices.yml``. Either is
+        suitable for importing on another VM or as a backup. The BITS format is
+        lossy for constructor arguments the guarneri schema cannot express
+        (see ``DeviceRegistryStore.export_bits``); prefer happi for full fidelity.
         """
-        if format != "happi":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported export format: '{format}'. Supported: happi",
-            )
+        if format == "happi":
+            happi_data = await asyncio.to_thread(registry_store.export_happi)
+            return JSONResponse(content=happi_data)
 
-        happi_data = await asyncio.to_thread(registry_store.export_happi)
-        return JSONResponse(content=happi_data)
+        if format == "bits":
+            bits_data = await asyncio.to_thread(registry_store.export_bits)
+            yaml_text = yaml.safe_dump(bits_data, default_flow_style=False, sort_keys=True)
+            return Response(content=yaml_text, media_type="application/x-yaml")
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported export format: '{format}'. Supported: happi, bits",
+        )
 
     # ===== Standalone PV Endpoints =====
     # NOTE: These must be defined BEFORE /api/v1/pvs/{pv_name:path}
