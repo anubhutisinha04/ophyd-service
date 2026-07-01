@@ -173,6 +173,7 @@ services:
   frontend:
     build:
       context: ../../../frontend
+      dockerfile: Containerfile
       target: dev
     ports:
       - "5173:5173"
