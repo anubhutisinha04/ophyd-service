@@ -2,12 +2,12 @@
 #
 # queueserver_service is a large in-tree fork of bluesky-queueserver /
 # bluesky-httpserver and keeps its OWN lint conventions — it is intentionally
-# excluded from the monorepo root .pre-commit-config.yaml and the CI lint
-# workflow (see .github/workflows/lint.yml). This local config is that
-# convention: ruff, pinned to the same version the rest of the repo uses,
-# scoped to only the modules this repo maintains in-tree (not the vendored
-# bulk, and not the vendored docs / .test_durations that unscoped hygiene
-# hooks would otherwise rewrite).
+# excluded from the monorepo's shared lint tooling (the root
+# .pre-commit-config.yaml and the CI lint workflow, which gate only the other
+# two backends). This local config is that convention: ruff, pinned to the same
+# version the rest of the repo uses, scoped to only the modules this repo
+# maintains in-tree (not the vendored bulk, and not the vendored docs /
+# .test_durations that unscoped hygiene hooks would otherwise rewrite).
 #
 # The ruleset lives in this directory's pyproject.toml ([tool.ruff]); ruff
 # auto-discovers it from each linted file, so this works whether pre-commit is
