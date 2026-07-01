@@ -349,13 +349,6 @@ class DeviceSyncRequest(BaseModel):
     )
 
 
-# Module-level singleton used as the optional-body default below. The handler
-# only ever reads it, and FastAPI parses a fresh instance whenever a body is
-# supplied, so sharing one immutable default is safe (and avoids constructing a
-# value in the argument default).
-_EMPTY_SYNC_REQUEST = DeviceSyncRequest()
-
-
 class DeviceSyncApplied(BaseModel):
     upserted: List[str] = Field(default_factory=list)
     deleted: List[str] = Field(default_factory=list)
@@ -417,9 +410,11 @@ async def devices_diff_against_profile(
     ),
 )
 async def devices_sync_from_profile(
-    payload: DeviceSyncRequest = _EMPTY_SYNC_REQUEST,
+    payload: Optional[DeviceSyncRequest] = None,
     principal=Security(get_current_principal, scopes=["write:manager:control"]),
 ) -> DeviceSyncResponse:
+    if payload is None:
+        payload = DeviceSyncRequest()
     if payload.strategy not in _VALID_SYNC_STRATEGIES:
         raise HTTPException(
             status_code=409,
