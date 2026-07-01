@@ -225,16 +225,20 @@ async def exchange_code(token_uri, auth_code, client_id, client_secret, redirect
         raise ModuleNotFoundError("This authenticator requires 'httpx'. (pip install httpx)")
     import httpx
 
-    response = httpx.post(
-        url=token_uri,
-        data={
-            "grant_type": "authorization_code",
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "code": auth_code,
-            "client_secret": client_secret,
-        },
-    )
+    # Use the async client + await so the token exchange does not block the
+    # server's event loop for the duration of the IdP round-trip (a synchronous
+    # httpx.post here stalls every other request until the IdP responds).
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            url=token_uri,
+            data={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "code": auth_code,
+                "client_secret": client_secret,
+            },
+        )
     return response
 
 

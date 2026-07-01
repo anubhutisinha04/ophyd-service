@@ -3565,6 +3565,7 @@ class RunEngineManager(Process):
             diff = compute_diff(self._config_service_device_data, registry_specs)
             return {"success": True, "msg": "", "diff": diff.to_dict()}
         except Exception as ex:
+            logger.exception("config-service device diff failed: %s", ex)
             return {"success": False, "msg": f"Error: {ex}", "diff": None}
 
     async def _config_service_sync_handler(self, request):
@@ -3657,6 +3658,7 @@ class RunEngineManager(Process):
                 "diff_after": diff_after.to_dict(),
             }
         except Exception as ex:
+            logger.exception("config-service device sync failed: %s", ex)
             return {
                 "success": False,
                 "msg": f"Error: {ex}",
@@ -4469,7 +4471,7 @@ class RunEngineManager(Process):
                     break
                 except zmq.Again as ex:
                     logger.debug(f"OMQ receive error ('AGAIN'): {ex}. Retrying ...")
-                    ttime.sleep(0.05)
+                    await asyncio.sleep(0.05)
         except zmq.ZMQError as ex:
             msg_in = f"0MQ receive error: {ex}. Error code: {ex.errno}"
         except Exception as ex:

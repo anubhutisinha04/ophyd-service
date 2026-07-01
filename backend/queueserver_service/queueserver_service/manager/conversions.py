@@ -5,7 +5,6 @@ import os
 import re
 
 import numpy as np
-import pandas as pd
 
 from .profile_ops import _convert_str_to_number
 
@@ -270,6 +269,12 @@ def spreadsheet_to_plan_list(*, spreadsheet_file, file_name, **kwargs):  # noqa:
         raise ValueError(
             f"File '{file_name}' (extension '{ss_ext}') is not supported: supported extensions '{supported_ext}'"
         )
+
+    # Lazy import: 'pandas' is only needed for spreadsheet->plan conversion, not
+    # for importing this module (which the HTTP app / unified mode pulls in via
+    # core_api). Matches the lazy-import convention used for other heavy optional
+    # deps (httpx, uvicorn, sqlalchemy) so a base install doesn't require pandas.
+    import pandas as pd
 
     if ss_ext == ".xlsx":
         df = pd.read_excel(spreadsheet_file, engine="openpyxl", keep_default_na=False, na_values="")
