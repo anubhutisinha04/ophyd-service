@@ -274,7 +274,16 @@ def spreadsheet_to_plan_list(*, spreadsheet_file, file_name, **kwargs):  # noqa:
     # for importing this module (which the HTTP app / unified mode pulls in via
     # core_api). Matches the lazy-import convention used for other heavy optional
     # deps (httpx, uvicorn, sqlalchemy) so a base install doesn't require pandas.
-    import pandas as pd
+    # Raise a helpful hint if it is missing (like authenticators.exchange_code
+    # does for httpx) instead of a bare ModuleNotFoundError.
+    try:
+        import pandas as pd
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Spreadsheet-to-plan conversion requires 'pandas', which is not "
+            "installed. Install it with `pip install pandas` (or install this "
+            "service's optional extra: `pip install 'bluesky-queueserver[spreadsheet]'`)."
+        ) from exc
 
     if ss_ext == ".xlsx":
         df = pd.read_excel(spreadsheet_file, engine="openpyxl", keep_default_na=False, na_values="")
