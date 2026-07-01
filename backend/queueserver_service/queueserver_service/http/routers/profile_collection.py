@@ -25,6 +25,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Security
 from pydantic import BaseModel, Field
 
+from ...manager.config_service import ERROR_KIND_CONFIG_SERVICE_UNREACHABLE
 from ...manager.profile_collection import (
     ProfileCollectionError,
     get_status,
@@ -261,12 +262,29 @@ async def profile_collection_reload_handler(
 
     environment_recycled = False
     if env_exists:
+        # Recycle the environment in two explicit steps. If the close fails the
+        # environment is still up and nothing was lost — surface it as a normal
+        # error. If the close succeeds but the reopen fails, the environment is
+        # now DOWN and no automatic rollback is possible (you cannot un-destroy
+        # a worker); say so explicitly so the operator knows to reopen it,
+        # rather than returning a generic error that hides the changed state.
         try:
             await SR.RM.environment_close()
-            await SR.RM.environment_open()
-            environment_recycled = True
         except Exception:
             process_exception()
+        try:
+            await SR.RM.environment_open()
+            environment_recycled = True
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Profile pulled and the RE Worker environment was closed, "
+                    "but reopening it failed — the environment is now CLOSED. "
+                    "Reopen it manually (POST /api/environment/open) once the cause "
+                    f"is resolved. Reopen error: {exc}"
+                ),
+            ) from exc
 
     return ProfileReloadResponse(
         pull=ProfilePullResponse(
@@ -349,6 +367,24 @@ class DeviceSyncRequest(BaseModel):
     )
 
 
+def _raise_device_command_failure(msg: dict, *, default_detail: str) -> None:
+    """Map a failed manager config-service envelope to an HTTP error.
+
+    A config-service *outage* (the manager tags the envelope with
+    ``error_kind == config_service_unreachable``) becomes **503 Service
+    Unavailable** — the request was fine, an upstream dependency is down.
+    Everything else (feature disabled, no environment, a genuine registry
+    conflict, malformed request) stays **409 Conflict**, matching the prior
+    behavior. Callers invoke this only when ``msg["success"]`` is false.
+    """
+    if msg.get("error_kind") == ERROR_KIND_CONFIG_SERVICE_UNREACHABLE:
+        raise HTTPException(
+            status_code=503,
+            detail=msg.get("msg") or "configuration-service is unreachable",
+        )
+    raise HTTPException(status_code=409, detail=msg.get("msg") or default_detail)
+
+
 class DeviceSyncApplied(BaseModel):
     upserted: List[str] = Field(default_factory=list)
     deleted: List[str] = Field(default_factory=list)
@@ -391,7 +427,7 @@ async def devices_diff_against_profile(
     except Exception:
         process_exception()
     if not msg.get("success"):
-        raise HTTPException(status_code=409, detail=msg.get("msg") or "diff failed")
+        _raise_device_command_failure(msg, default_detail="diff failed")
     return DeviceDiffResponse(diff=msg["diff"])
 
 
@@ -431,7 +467,7 @@ async def devices_sync_from_profile(
     except Exception:
         process_exception()
     if not msg.get("success"):
-        raise HTTPException(status_code=409, detail=msg.get("msg") or "sync failed")
+        _raise_device_command_failure(msg, default_detail="sync failed")
     return DeviceSyncResponse(
         applied=DeviceSyncApplied(**msg["applied"]),
         diff_after=msg["diff_after"],

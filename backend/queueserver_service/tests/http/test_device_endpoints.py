@@ -18,12 +18,20 @@ the endpoints exist and answer, and they answer "disabled" rather than
 erroring or 404ing.
 """
 
+import pytest
 import requests
+from fastapi import HTTPException
 from tests.manager.common import (  # noqa: F401
     re_manager,
     re_manager_factory,
 )
 
+from queueserver_service.http.routers.profile_collection import (
+    _raise_device_command_failure,
+)
+from queueserver_service.manager.config_service import (
+    ERROR_KIND_CONFIG_SERVICE_UNREACHABLE,
+)
 from tests.http.conftest import (  # noqa: F401
     API_KEY_FOR_TESTS,
     SERVER_ADDRESS,
@@ -88,3 +96,37 @@ def test_devices_endpoints_require_auth(re_manager, fastapi_server_fs):  # noqa:
         json={"strategy": "all"},
     )
     assert r_post.status_code in (401, 403), r_post.text
+
+
+# --- status-mapping unit tests (fast; no server) ---------------------------
+#
+# The router maps a failed manager config-service envelope to an HTTP status:
+# an outage (error_kind == config_service_unreachable) -> 503; everything else
+# (disabled, no environment, conflict, malformed) -> 409.
+
+
+def test_status_mapping_unreachable_is_503():
+    with pytest.raises(HTTPException) as exc_info:
+        _raise_device_command_failure(
+            {"error_kind": ERROR_KIND_CONFIG_SERVICE_UNREACHABLE, "msg": "cfg down"},
+            default_detail="diff failed",
+        )
+    assert exc_info.value.status_code == 503
+    assert "cfg down" in exc_info.value.detail
+
+
+def test_status_mapping_other_failure_is_409():
+    with pytest.raises(HTTPException) as exc_info:
+        _raise_device_command_failure(
+            {"msg": "configuration-service feature is disabled on this manager"},
+            default_detail="diff failed",
+        )
+    assert exc_info.value.status_code == 409
+    assert "disabled" in exc_info.value.detail
+
+
+def test_status_mapping_falls_back_to_default_detail():
+    with pytest.raises(HTTPException) as exc_info:
+        _raise_device_command_failure({}, default_detail="diff failed")
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "diff failed"

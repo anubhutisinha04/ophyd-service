@@ -15,7 +15,11 @@ import zmq.asyncio
 import queueserver_service
 
 from ..common.comms import CommTimeoutError, PipeJsonRpcSendAsync, ZMQEncoding, process_zmq_encoding_name, validate_zmq_key
-from .config_service import ConfigServiceError
+from .config_service import (
+    ERROR_KIND_CONFIG_SERVICE_UNREACHABLE,
+    ConfigServiceError,
+    ConfigServiceUnreachable,
+)
 from ..common.logging_setup import PPrintForLogging as ppfl
 from ..common.logging_setup import setup_loggers
 from .output_streaming import push_info_to_msg_queue, setup_console_output_redirection
@@ -3564,6 +3568,14 @@ class RunEngineManager(Process):
             registry_specs = await client.get_instantiation_specs()
             diff = compute_diff(self._config_service_device_data, registry_specs)
             return {"success": True, "msg": "", "diff": diff.to_dict()}
+        except ConfigServiceUnreachable as ex:
+            logger.exception("config-service unreachable during device diff: %s", ex)
+            return {
+                "success": False,
+                "msg": f"configuration-service is unreachable: {ex}",
+                "diff": None,
+                "error_kind": ERROR_KIND_CONFIG_SERVICE_UNREACHABLE,
+            }
         except Exception as ex:
             logger.exception("config-service device diff failed: %s", ex)
             return {"success": False, "msg": f"Error: {ex}", "diff": None}
@@ -3656,6 +3668,15 @@ class RunEngineManager(Process):
                 "msg": "",
                 "applied": applied,
                 "diff_after": diff_after.to_dict(),
+            }
+        except ConfigServiceUnreachable as ex:
+            logger.exception("config-service unreachable during device sync: %s", ex)
+            return {
+                "success": False,
+                "msg": f"configuration-service is unreachable: {ex}",
+                "applied": None,
+                "diff_after": None,
+                "error_kind": ERROR_KIND_CONFIG_SERVICE_UNREACHABLE,
             }
         except Exception as ex:
             logger.exception("config-service device sync failed: %s", ex)
