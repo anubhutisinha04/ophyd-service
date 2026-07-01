@@ -27,7 +27,7 @@ from .common import (
     zmq_request,
 )
 
-timeout_env_open = 20
+timeout_env_open = 40  # cold IPython-kernel env-open can exceed 20 s under CI load
 
 # Plans used in most of the tests: '_plan1' and '_plan2' are quickly executed '_plan3' runs for 5 seconds.
 _plan1 = {"name": "count", "args": [["det1", "det2"]], "item_type": "plan"}

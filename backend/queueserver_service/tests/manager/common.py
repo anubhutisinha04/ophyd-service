@@ -668,10 +668,11 @@ def re_manager_cmd():
         re["re"] = ReManager(params, stdout=stdout, stderr=stderr, set_redis_name_prefix=set_redis_name_prefix)
 
         # Wait until RE Manager is started. Raise exception if the server failed to start.
-        # 30 s: loaded CI runners exceed 10 s on cold manager boots (seen on the
+        # 60 s: loaded CI runners exceed 10 s on cold manager boots, and even 30 s is
+        # not enough under the full ~40-min suite load (seen flaking on the
         # non-default-zmq-address tests); a successful start returns as soon as
         # the manager reports idle, so the larger ceiling costs nothing locally.
-        if not wait_for_condition(time=30, condition=condition_manager_idle):
+        if not wait_for_condition(time=60, condition=condition_manager_idle):
             failed_to_start = True
             re["re"].kill_manager()
             raise TimeoutError("Timeout: RE Manager failed to start.")
@@ -717,10 +718,11 @@ def re_manager_factory(request):
         failed_to_start = False
 
         # Wait until RE Manager is started. Raise exception if the server failed to start.
-        # 30 s: loaded CI runners exceed 10 s on cold manager boots (seen on the
+        # 60 s: loaded CI runners exceed 10 s on cold manager boots, and even 30 s is
+        # not enough under the full ~40-min suite load (seen flaking on the
         # non-default-zmq-address tests); a successful start returns as soon as
         # the manager reports idle, so the larger ceiling costs nothing locally.
-        if not wait_for_condition(time=30, condition=condition_manager_idle):
+        if not wait_for_condition(time=60, condition=condition_manager_idle):
             failed_to_start = True
             re.kill_manager()
             raise TimeoutError("Timeout: RE Manager failed to start.")
