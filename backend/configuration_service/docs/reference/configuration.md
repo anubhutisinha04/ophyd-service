@@ -35,6 +35,13 @@ All settings are read from environment variables with the `CONFIG_` prefix. A `.
 | `CONFIG_DATABASE_URL` | str | — | PostgreSQL DSN (`postgresql+psycopg://user:pass@host:5432/config_service`) for the device registry, audit log, and standalone PVs. Required when persistence is enabled |
 | `CONFIG_DEVICE_CHANGE_HISTORY_ENABLED` | bool | `true` | Enable DB persistence and CRUD endpoints (requires `CONFIG_DATABASE_URL`). When `false`, devices load from profile on every startup with no persistence |
 
+## Device Locking
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `CONFIG_LOCK_ALL` | bool | `false` | Boot default for the lock_all availability policy. When `true`, every device reports locked while *any* lock is held (Variant 1); when `false`, only explicitly locked devices do (Variant 2). Runtime-changeable via `PUT /api/v1/devices/lock/policy`. See [Device Locking](../explanation/device-locking.md) |
+| `CONFIG_LOCK_LEASE_TTL_SECONDS` | float | `0.0` | Lock lease TTL in seconds. `0` disables leases (locks held until released/force-unlocked). When > 0, locks lapse unless renewed via `POST /api/v1/devices/lock/renew`; only enable when the lock holder heartbeats (queueserver does) |
+
 ## Metrics
 
 | Variable | Type | Default | Description |

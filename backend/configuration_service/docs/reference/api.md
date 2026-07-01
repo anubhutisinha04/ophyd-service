@@ -71,10 +71,11 @@ Interactive documentation: `http://localhost:8004/docs` (Swagger UI)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/devices/lock` | Acquire locks atomically. Body: `{device_names, item_id, plan_name}`. 409 on conflict, 404 if not found, 422 if disabled |
+| POST | `/api/v1/devices/lock` | Acquire locks atomically. Body: `{device_names, item_id, plan_name}`. 409 on conflict, 404 if not found, 422 if disabled. Response includes `lock_epoch`, `expires_at`, `lease_ttl_seconds` |
 | POST | `/api/v1/devices/unlock` | Release locks. Body: `{device_names, item_id}`. 403 if wrong owner |
+| POST | `/api/v1/devices/lock/renew` | Renew (heartbeat) held leases. Body: `{device_names, item_id}`. Returns `{renewed_devices, lost_devices, conflict_devices, lock_epoch, expires_at}` — `lost_devices` means re-acquire is needed |
 | POST | `/api/v1/devices/force-unlock` | Admin override. Body: `{device_names, reason}`. 404 if not found |
-| GET | `/api/v1/devices/{device_name}/status` | Lock and enabled state. Returns `{available, enabled, lock_status}` |
+| GET | `/api/v1/devices/{device_name}/status` | Lock and enabled state. Returns `{available, enabled, lock_status, lock_epoch, locked_until, ...}` |
 | GET | `/api/v1/pvs/status` | PV availability via owning device. Query param: `pv_name` (required) |
 
 ## Metadata

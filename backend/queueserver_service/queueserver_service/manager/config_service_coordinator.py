@@ -257,6 +257,15 @@ class ConfigServiceCoordinator:
         resulting upserts + deletes to the worker's overlay; commits the advanced
         cursor. Raises if config-service is unreachable or the worker rejects the
         overlay update — plan start aborts loudly (no silent fallback).
+
+        Propagation model (intentional; there is no config→queueserver push):
+        registry edits made in configuration_service reach the *running worker*
+        lazily, at the next plan start, via this check — plus at env-open. A
+        device added or edited mid-queue is therefore not usable by the worker
+        until the next plan begins. This is a latency property, not a
+        correctness gap: each plan starts against a registry snapshot that is
+        current as of that plan's start. A push/subscribe channel (or a periodic
+        pull between plans) would shorten the window if a use case needs it.
         """
         if not self._settings.enabled:
             return
