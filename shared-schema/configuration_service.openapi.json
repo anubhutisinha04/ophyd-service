@@ -1339,12 +1339,16 @@
         ],
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "Registry export. `format=happi` (default) returns happi JSON (`application/json`); `format=bits` returns a BITS `devices.yml` document (`application/x-yaml`).",
             "content": {
               "application/json": {
                 "schema": {}
-              }
+              },
+              "application/x-yaml": {}
             }
+          },
+          "400": {
+            "description": "Unsupported export format."
           },
           "422": {
             "description": "Validation Error",

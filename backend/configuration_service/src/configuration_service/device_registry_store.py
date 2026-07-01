@@ -369,23 +369,28 @@ class DeviceRegistryStore:
         """Map an instantiation spec to a ``(yaml_key, entry)`` BITS pair.
 
         Mirrors ``BitsProfileLoader._process_entry`` so exported YAML reloads
-        into an equivalent registry:
+        into an equivalent registry. That loader treats a YAML key as a class
+        path iff its final dotted segment starts with an uppercase letter
+        (``parts[-1][0].isupper()``); this uses the same predicate:
 
-        - Class-style paths whose final segment is capitalised
-          (e.g. ``ophyd.EpicsMotor``) become the YAML key directly; the entry
-          carries no ``creator``.
-        - Factory-style paths whose final segment is lower-case
-          (e.g. ``ophyd.sim.motor``) are split: the module becomes the YAML key
-          and the callable name becomes the entry's ``creator``.
+        - Final segment starts with an uppercase letter (e.g. ``ophyd.EpicsMotor``)
+          => the whole path becomes the YAML key directly; the entry carries no
+          ``creator``.
+        - Otherwise (e.g. ``ophyd.sim.motor``) the path is split: the module
+          becomes the YAML key and the callable name becomes the entry's
+          ``creator``. Using ``isupper`` rather than ``islower`` matches the
+          loader for final segments that start with a non-letter (e.g. a private
+          ``_Factory``), which ``islower`` would misclassify as a class path.
         """
         device_class = spec.device_class
         module_part, _, last = device_class.rpartition(".")
-        if module_part and last[:1].islower():
+        if module_part and not last[:1].isupper():
             # Factory/creator function: key is the module, creator names the callable.
             group_key = module_part
             entry: dict[str, Any] = {"name": spec.name, "creator": last}
         else:
-            # Class path (the common case) or a single-segment fallback.
+            # Class path (last segment is a capitalised class name) or a
+            # single-segment fallback.
             group_key = device_class
             entry = {"name": spec.name}
 

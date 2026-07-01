@@ -1701,6 +1701,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         summary="Export Registry",
         description="Export the device registry in a portable format (happi JSON or BITS devices.yml)",
         tags=["Registry Admin"],
+        responses={
+            200: {
+                "description": (
+                    "Registry export. `format=happi` (default) returns happi "
+                    "JSON (`application/json`); `format=bits` returns a BITS "
+                    "`devices.yml` document (`application/x-yaml`)."
+                ),
+                "content": {
+                    "application/json": {},
+                    "application/x-yaml": {},
+                },
+            },
+            400: {"description": "Unsupported export format."},
+        },
     )
     async def export_registry(
         registry_store: RegistryStoreDep,

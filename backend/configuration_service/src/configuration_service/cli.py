@@ -236,9 +236,11 @@ def _run_export(args: argparse.Namespace) -> int:
     """Load a device registry and serialize it to happi JSON or BITS devices.yml.
 
     Reuses ``DeviceRegistryStore``'s serializers by seeding a throwaway on-disk
-    SQLite database from the loaded registry, so the CLI output matches the
-    ``GET /api/v1/registry/export`` endpoint byte-for-byte. Returns a process
-    exit code.
+    SQLite database from the loaded registry, so the CLI produces the same
+    registry export as the ``GET /api/v1/registry/export`` endpoint. (The
+    rendering differs: this CLI pretty-prints happi JSON with a trailing
+    newline for terminal use, whereas the endpoint returns compact JSON.)
+    Returns a process exit code.
     """
     import json
     import tempfile
