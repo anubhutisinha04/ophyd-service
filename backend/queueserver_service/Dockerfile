@@ -7,17 +7,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpam0g \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md requirements.txt ./
+COPY pyproject.toml README.md ./
 COPY queueserver_service ./queueserver_service/
 # One-module legacy import surface for bluesky-queueserver-api (see its docstring)
 COPY bluesky_queueserver ./bluesky_queueserver/
 
-# Extra deps the editable install doesn't pull but the service needs at runtime:
-#   pandas     -- imported unconditionally by manager/conversions.py (spreadsheet->plan)
-#   matplotlib -- imported by the shipped profile_collection_sim startup (05-run-engine.py)
-#   pyepics    -- ophyd EPICS control layer; required to instantiate the EpicsSignal-backed
-#                 devices that config_service consume-mode injects into the worker
-RUN pip install --no-cache-dir -e . pandas matplotlib pyepics
+# The `all` extra pulls the optional, deployment-specific runtime deps kept out
+# of the base install (see pyproject [project.optional-dependencies]):
+#   pandas     -- manager/conversions.py spreadsheet->plan conversion
+#   matplotlib -- the shipped profile_collection_sim startup (05-run-engine.py)
+#   pyepics    -- ophyd EPICS layer for config-service consume-mode devices
+RUN pip install --no-cache-dir -e ".[all]"
 
 RUN useradd -m -u 1000 qserver && chown -R qserver:qserver /app
 USER qserver

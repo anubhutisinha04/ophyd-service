@@ -93,7 +93,7 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: |
-            backend/queueserver_service/requirements.txt
+            backend/queueserver_service/pyproject.toml
             backend/queueserver_service/requirements-dev.txt
             backend/configuration_service/pyproject.toml
 
@@ -144,7 +144,7 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: |
-            backend/queueserver_service/requirements.txt
+            backend/queueserver_service/pyproject.toml
             backend/queueserver_service/requirements-dev.txt
             backend/configuration_service/pyproject.toml
 

@@ -48,14 +48,23 @@ transports (`integration/exercise/queueserver_api_compat.py`).
 ## How the image is built
 
 The `Dockerfile` builds from the **in-tree source** in this directory — it does not track
-upstream, and nothing is pulled from an external git ref at build time. A single editable
-`pip install -e .` installs the `queueserver_service` package and registers the console
-scripts (`start-re-manager`, `qserver`, `start-bluesky-httpserver`, ...). The console-script
-names are kept from upstream so existing deployments and docs keep working.
+upstream, and nothing is pulled from an external git ref at build time. It installs
+`pip install -e ".[all]"`, which installs the `queueserver_service` package and registers the
+console scripts (`start-re-manager`, `qserver`, `start-bluesky-httpserver`, ...). The
+console-script names are kept from upstream so existing deployments and docs keep working.
 
-A few runtime deps the install doesn't pull are added explicitly: `pandas`
-(`manager/conversions.py`), `matplotlib` (the shipped `profile_collection_sim` startup), and
-`pyepics` (the ophyd EPICS layer for config-service consume-mode device injection).
+A few heavy, deployment-specific runtime deps are kept out of the base install and exposed as
+**optional extras** (see `[project.optional-dependencies]` in `pyproject.toml`), so a lean or
+standalone install can pick only what it needs:
+
+- `spreadsheet` → `pandas` (`manager/conversions.py` spreadsheet→plan conversion);
+- `sim` → `matplotlib` (the shipped `profile_collection_sim` startup);
+- `epics` → `pyepics` (the ophyd EPICS layer for config-service consume-mode device injection);
+- `all` → all three (what the Docker image installs).
+
+Runtime dependencies are declared statically in `pyproject.toml` and pinned in the committed
+`uv.lock` for reproducible resolution (`uv sync` / `uv lock`), mirroring the other backends.
+Development/test dependencies remain in `requirements-dev.txt`.
 
 ```bash
 docker build -t queueserver_service backend/queueserver_service

@@ -21,7 +21,53 @@ classifiers = [
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
 ]
-dynamic = ["dependencies"]
+dependencies = [
+    # --- queueserver (manager/worker) runtime ---
+    "bluesky>=1.7.0",
+    # Directly imported by manager/conversions.py. Capped below 2.4: numpy 2.4
+    # breaks repeated in-process startup-script loads (see requirements-dev
+    # notes and the manager test suite).
+    "numpy>=1.24,<2.4",
+    "ipykernel",
+    "jsonschema",
+    "jupyter-client>=7.4.2",
+    "jupyter-console",
+    "numpydoc",
+    "openpyxl",
+    "ophyd",
+    "packaging",
+    "pydantic>=2",
+    "python-multipart",
+    "pyyaml",
+    "pyzmq",
+    "redis[hiredis]",
+    "requests",
+    # --- httpserver (FastAPI) runtime (merged from bluesky-httpserver) ---
+    # httpx is imported unconditionally by http.authorization.api_access but is
+    # missing from httpserver's own requirements (upstream omission).
+    "alembic",
+    "bluesky-queueserver-api",
+    "fastapi",
+    "httpx",
+    "ldap3",
+    "orjson",
+    "pamela",
+    "pydantic-settings",
+    "python-jose",
+    "sqlalchemy",
+    "starlette",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+# Heavy, deployment-specific runtime deps kept out of the base install. The
+# Dockerfile installs `.[all]`; a lean/standalone install can pick only what it
+# needs. See the module docstrings / README for why each is optional.
+spreadsheet = ["pandas"]  # manager/conversions.py spreadsheet->plan conversion
+sim = ["matplotlib"]  # the shipped profile_collection_sim startup
+epics = ["pyepics"]  # ophyd EPICS layer for config-service consume-mode devices
+all = ["pandas", "matplotlib", "pyepics"]
+
 
 [project.scripts]
 qserver = "queueserver_service.manager.qserver_cli:qserver"
@@ -34,13 +80,17 @@ qserver-qtconsole = "queueserver_service.manager.qserver_cli:qserver_qtconsole"
 qserver-console-monitor = "queueserver_service.manager.output_streaming:qserver_console_monitor_cli"
 start-bluesky-httpserver = "queueserver_service.http.server:start_server"
 
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
-
 [tool.setuptools.packages.find]
 # bluesky_queueserver is the one-module legacy import surface needed by the
 # bluesky-queueserver-api client; see its docstring.
 include = ["queueserver_service*", "bluesky_queueserver"]
+
+[tool.uv]
+# The service runs on Python 3.11 (Docker image) / 3.12 (CI). Restrict lock
+# resolution to 3.11+ so uv.lock reflects the actually-supported runtimes and
+# stays a reasonable size; the package itself still declares requires-python
+# >=3.9, so installs on older interpreters are unaffected.
+environments = ["python_full_version >= '3.11'"]
 
 [tool.setuptools.package-data]
 queueserver_service = ["profile_collection_sim/*"]

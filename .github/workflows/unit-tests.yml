@@ -152,7 +152,7 @@ jobs:
           # Both paths: this job also installs -e ../configuration_service, so
           # config-service dep changes must refresh the cache key too.
           cache-dependency-path: |
-            backend/queueserver_service/requirements.txt
+            backend/queueserver_service/pyproject.toml
             backend/configuration_service/pyproject.toml
 
       - name: Install queueserver + sibling configuration_service

@@ -35,6 +35,12 @@ _RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
 
 _VALID_LOCK_SCOPES = frozenset({"environment", "plan"})
 
+# Sentinel placed in a manager command's failure envelope under ``error_kind``
+# when the failure was config-service being unreachable (network error or 5xx
+# exhaustion). The HTTP layer maps this to 503 Service Unavailable instead of a
+# generic 409, so an upstream outage is not misreported as a conflict.
+ERROR_KIND_CONFIG_SERVICE_UNREACHABLE = "config_service_unreachable"
+
 
 class ConfigServiceError(Exception):
     """Base class for configuration-service client errors."""
