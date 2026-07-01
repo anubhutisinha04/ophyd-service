@@ -24,7 +24,8 @@
 # different `command:` overrides choose which caproto module + prefix runs.
 #
 # Usage:
-#   docker compose up --build
+#   docker compose up --build                      # backends only (no frontend)
+#   docker compose --profile frontend up --build   # include the frontend UI
 #   docker compose down
 #   docker compose logs ioc_random_walk
 
@@ -170,7 +171,13 @@ services:
       ioc_adsim:
         condition: service_healthy
 
+  # The frontend is owned by the frontend team and is NOT exercised by this
+  # pod's end-to-end checks (they only hit the backends on 8003/8004). It is
+  # gated behind the "frontend" compose profile so a frontend-team build change
+  # cannot break the backend/integration CI. Bring it up explicitly with:
+  #   docker compose --profile frontend up --build
   frontend:
+    profiles: ["frontend"]
     build:
       context: ../../../frontend
       target: dev
