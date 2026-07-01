@@ -392,7 +392,8 @@ async def queue_upload_spreadsheet(
     """
     try:
         # Create fully functional file object. The file object returned by FastAPI is not fully functional.
-        f = io.BytesIO(spreadsheet.file.read())
+        # Use UploadFile.read() (async) so a large upload does not block the event loop.
+        f = io.BytesIO(await spreadsheet.read())
         # File name is also passed to the processing function (may be useful in user created
         #   processing code, since processing may differ based on extension or file name)
         f_name = spreadsheet.filename

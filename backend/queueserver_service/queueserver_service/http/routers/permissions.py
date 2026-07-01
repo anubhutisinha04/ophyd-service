@@ -79,7 +79,7 @@ async def permissions_get_handler(principal=Security(get_current_principal, scop
     tags=["Permissions"],
 )
 async def permissions_set_handler(
-    payload: dict, principal=Security(get_current_principal, scopes=["write:permissions", "write:permissions"])
+    payload: dict, principal=Security(get_current_principal, scopes=["write:permissions"])
 ):
     """
     Upload the dictionary of user group permissions (parameter: ``user_group_permissions``).
