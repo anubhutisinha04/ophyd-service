@@ -234,6 +234,15 @@ class SqlQueueStore:
     async def _rows(self, conn, key):
         return (await conn.execute(self._list_select(key))).all()
 
+    async def _count(self, conn, key):
+        sa = self._sa
+        n = (
+            await conn.execute(
+                sa.select(sa.func.count()).where(self._t_list.c.list_key == key)
+            )
+        ).scalar()
+        return int(n or 0)
+
     @staticmethod
     def _resolve_range(length, start, stop):
         """Redis-style inclusive range with negative indices -> python slice bounds."""
@@ -245,31 +254,51 @@ class SqlQueueStore:
         return start, stop
 
     async def list_len(self, key):
-        sa = self._sa
         async with self._engine.connect() as conn:
-            n = (
-                await conn.execute(
-                    sa.select(sa.func.count()).where(self._t_list.c.list_key == key)
-                )
-            ).scalar()
-        return int(n or 0)
+            return await self._count(conn, key)
 
     async def list_range(self, key, start, stop):
+        # Push the window into SQL (ORDER BY pos,id LIMIT/OFFSET) instead of
+        # materializing the whole list, so a large history is not fully loaded
+        # for every read. Both statements run on one connection; the single
+        # writer (PlanQueueOperations serializes calls) makes count+select
+        # consistent without an explicit transaction.
+        sa = self._sa
+        t = self._t_list
         async with self._engine.connect() as conn:
-            rows = await self._rows(conn, key)
-        start, stop = self._resolve_range(len(rows), start, stop)
-        if start > stop:
-            return []
-        return [r.value for r in rows[start : stop + 1]]
+            length = await self._count(conn, key)
+            start, stop = self._resolve_range(length, start, stop)
+            if start > stop:
+                return []
+            rows = (
+                await conn.execute(
+                    sa.select(t.c.value)
+                    .where(t.c.list_key == key)
+                    .order_by(t.c.pos, t.c.id)
+                    .limit(stop - start + 1)
+                    .offset(start)
+                )
+            ).all()
+        return [r.value for r in rows]
 
     async def list_index(self, key, index):
+        sa = self._sa
+        t = self._t_list
         async with self._engine.connect() as conn:
-            rows = await self._rows(conn, key)
-        if index < 0:
-            index = len(rows) + index
-        if 0 <= index < len(rows):
-            return rows[index].value
-        return None
+            if index < 0:
+                index = await self._count(conn, key) + index
+            if index < 0:
+                return None
+            row = (
+                await conn.execute(
+                    sa.select(t.c.value)
+                    .where(t.c.list_key == key)
+                    .order_by(t.c.pos, t.c.id)
+                    .limit(1)
+                    .offset(index)
+                )
+            ).first()
+        return row.value if row else None
 
     async def _push(self, key, value, *, front):
         sa = self._sa
@@ -345,14 +374,47 @@ class SqlQueueStore:
         return int(result.rowcount or 0)
 
     async def list_trim(self, key, start, stop):
+        # Trim to the kept [start, stop] window using position boundaries so the
+        # DELETE stays constant-size: no per-id bound-parameter list (which
+        # would hit SQLite's "too many SQL variables" limit for large windows)
+        # and no self-referential subquery evaluated during the delete. Two
+        # single-row boundary lookups locate the first/last kept rows; the
+        # DELETE removes everything ordered before the first or after the last.
         sa = self._sa
         t = self._t_list
         async with self._engine.begin() as conn:
-            rows = await self._rows(conn, key)
-            start, stop = self._resolve_range(len(rows), start, stop)
-            doomed = [r.id for i, r in enumerate(rows) if not (start <= i <= stop)]
-            if doomed:
-                await conn.execute(sa.delete(t).where(t.c.id.in_(doomed)))
+            length = await self._count(conn, key)
+            start, stop = self._resolve_range(length, start, stop)
+            if start > stop:
+                # Empty window -> redis LTRIM removes the whole list.
+                await conn.execute(sa.delete(t).where(t.c.list_key == key))
+                return
+
+            def _row_at(offset):
+                return (
+                    sa.select(t.c.pos, t.c.id)
+                    .where(t.c.list_key == key)
+                    .order_by(t.c.pos, t.c.id)
+                    .limit(1)
+                    .offset(offset)
+                )
+
+            first = (await conn.execute(_row_at(start))).first()
+            last = (await conn.execute(_row_at(stop))).first()
+            before_first = sa.or_(
+                t.c.pos < first.pos,
+                sa.and_(t.c.pos == first.pos, t.c.id < first.id),
+            )
+            after_last = sa.or_(
+                t.c.pos > last.pos,
+                sa.and_(t.c.pos == last.pos, t.c.id > last.id),
+            )
+            await conn.execute(
+                sa.delete(t).where(
+                    t.c.list_key == key,
+                    sa.or_(before_first, after_last),
+                )
+            )
 
 
 def create_queue_store(uri: str) -> "QueueStore":
