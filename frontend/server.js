@@ -22,7 +22,11 @@ const defaultDevAuthData = {
   familyName: 'Dev',
 };
 
-const renderAuthScript = (authData) => `<script>window.__AUTH_DATA__=${JSON.stringify(authData)};</script>`;
+const renderAuthScript = (authData) => {
+  // Escape < to prevent XSS if authData contains malicious content like </script>
+  const safeJson = JSON.stringify(authData).replace(/</g, '\\u003c');
+  return `<script>window.__AUTH_DATA__=${safeJson};</script>`;
+};
 
 // Cached production assets (client-side only - finch doesn't support SSR)
 const templateHtml = isProduction
