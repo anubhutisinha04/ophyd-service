@@ -60,6 +60,40 @@ markers = [
     "slow: recorded duration >= the QS_SLOW_TEST_THRESHOLD (default 1s); applied automatically from .test_durations in tests/conftest.py",
 ]
 
+# Ruff config for THIS service. The monorepo pre-commit gate (root
+# .pre-commit-config.yaml) runs ruff with this config, scoped via `files:` to
+# the modules maintained in-tree by this fork (config_service, queue_store,
+# http_server, the profile-collection router). The bulk of the package is
+# vendored bluesky-queueserver/-httpserver code and is intentionally NOT gated
+# here — hence a deliberately narrow, bug-focused ruleset rather than the full
+# style set the other backends use. `ruff check <whole package>` will still
+# report findings in the vendored code; that is expected and is not the gate.
+[tool.ruff]
+line-length = 115
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes — undefined names, unused imports, real defects
+    "B",     # flake8-bugbear — mutable defaults, except-without-from, traps
+    "ASYNC", # flake8-async — blocking calls / missing awaits in async code
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection markers are call-in-argument-default by
+# design; whitelisting them avoids B008 false positives on every route.
+extend-immutable-calls = [
+    "fastapi.Security",
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Body",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.Form",
+    "fastapi.File",
+]
+
 [tool.black]
 line-length = 115
 target-version = ['py310']
