@@ -60,8 +60,6 @@ def test_export_happi_mock_to_stdout(capsys):
 
 def test_export_requires_profile_path_for_disk_strategies(capsys):
     """A disk-backed strategy without a profile path exits 2 with guidance."""
-    rc = _run_export(
-        _export_args(format="bits", load_strategy="auto", use_mock_data=False)
-    )
+    rc = _run_export(_export_args(format="bits", load_strategy="auto", use_mock_data=False))
     assert rc == 2
     assert "profile-path" in capsys.readouterr().err

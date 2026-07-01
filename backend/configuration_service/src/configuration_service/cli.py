@@ -283,9 +283,7 @@ def _run_export(args: argparse.Namespace) -> int:
             store.seed_from_registry(registry)
             device_count = store.device_count()
             if args.format == "bits":
-                text = yaml.safe_dump(
-                    store.export_bits(), default_flow_style=False, sort_keys=True
-                )
+                text = yaml.safe_dump(store.export_bits(), default_flow_style=False, sort_keys=True)
             else:
                 text = json.dumps(store.export_happi(), indent=2, sort_keys=True) + "\n"
         except Exception as e:
