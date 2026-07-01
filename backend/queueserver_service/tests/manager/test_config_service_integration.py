@@ -466,35 +466,34 @@ async def test_lock_unknown_device_404s(cs_client: ConfigServiceClient):
 # ----- Manager-flow tests: the real helpers on a minimal stub -----
 
 
-def _manager_stub(client, *, lock_scope="plan", existing_devices=None):
-    """Minimal object exposing exactly the attributes the manager's lock
-    helpers use, with the REAL (unbound) methods attached — so these tests
-    exercise the production lock/release/leftover logic without booting a
-    full RunEngineManager."""
+def _coordinator(client, *, lock_scope="plan", existing_devices=None):
+    """Build a ConfigServiceCoordinator wired to the real in-process client.
+
+    Post-refactor, the per-plan lock / release / restart-recovery helpers live
+    on ``ConfigServiceCoordinator`` (extracted from ``RunEngineManager``). These
+    integration tests drive that coordinator directly against the real
+    config-service app, injecting the test's ASGI-backed client so the
+    coordinator never lazily constructs one from settings."""
     import dataclasses as _dc
-    from types import SimpleNamespace
 
-    from queueserver_service.manager.manager import RunEngineManager
-
-    stub = SimpleNamespace(
-        _config_service_settings=_dc.replace(_cs_settings(), lock_scope=lock_scope),
-        _config_service_locked_devices=[],
-        _config_service_locked_item_id="",
-        _existing_devices=existing_devices if existing_devices is not None else {},
+    from queueserver_service.manager.config_service_coordinator import (
+        ConfigServiceCoordinator,
     )
 
-    async def _get_client():
-        return client
+    class _Host:
+        def __init__(self, devices: Dict[str, Any]):
+            self.existing_devices = devices or {}
 
-    stub._get_config_service_client = _get_client
-    stub._lock_config_service_devices_for_plan = (
-        RunEngineManager._lock_config_service_devices_for_plan.__get__(stub)
-    )
-    stub._unlock_config_service_devices = (
-        RunEngineManager._unlock_config_service_devices.__get__(stub)
-    )
-    stub._release_plan_scope_lock = RunEngineManager._release_plan_scope_lock.__get__(stub)
-    return stub
+        async def worker_update_device_overlay(self, *args, **kwargs):
+            return None
+
+        async def reload_lists_from_worker(self) -> bool:
+            return False
+
+    settings = _dc.replace(_cs_settings(), lock_scope=lock_scope)
+    coord = ConfigServiceCoordinator(settings, host=_Host(existing_devices or {}))
+    coord._client = client
+    return coord
 
 
 def _plan_item(uid: str, name: str, *args, **kwargs):
@@ -506,13 +505,11 @@ async def test_manager_per_plan_lock_and_release(
     cs_client: ConfigServiceClient, raw_http: httpx.AsyncClient
 ):
     await _upsert(cs_client, "m1", "m2")
-    stub = _manager_stub(cs_client, existing_devices={"m1": {}, "m2": {}})
+    coord = _coordinator(cs_client, existing_devices={"m1": {}, "m2": {}})
 
-    await stub._lock_config_service_devices_for_plan(
-        _plan_item("uid-1", "count", ["m1"], num=3)
-    )
-    assert stub._config_service_locked_devices == ["m1"]
-    assert stub._config_service_locked_item_id == "uid-1"
+    await coord.lock_devices_for_plan(_plan_item("uid-1", "count", ["m1"], num=3))
+    assert coord._locked_devices == ["m1"]
+    assert coord._locked_item_id == "uid-1"
     status = (await raw_http.get("/api/v1/devices/m1/status")).json()
     assert status["lock_status"] == "locked"
     assert status["locked_by_item"] == "uid-1"
@@ -520,9 +517,9 @@ async def test_manager_per_plan_lock_and_release(
     status = (await raw_http.get("/api/v1/devices/m2/status")).json()
     assert status["available"] is True
 
-    assert await stub._release_plan_scope_lock(suppress_errors=False) is True
-    assert stub._config_service_locked_devices == []
-    assert stub._config_service_locked_item_id == ""
+    assert await coord.release_plan_scope_lock(suppress_errors=False) is True
+    assert coord._locked_devices == []
+    assert coord._locked_item_id == ""
     status = (await raw_http.get("/api/v1/devices/m1/status")).json()
     assert status["available"] is True
 
@@ -536,18 +533,18 @@ async def test_manager_per_plan_lock_settles_leftover_debt(
     a permanent 409 (the lock-reconciliation regression contract, per-plan
     flavor)."""
     await _upsert(cs_client, "m1")
-    stub = _manager_stub(cs_client, existing_devices={"m1": {}})
+    coord = _coordinator(cs_client, existing_devices={"m1": {}})
 
     # Simulate: previous plan locked m1, its unlock failed, manager kept
     # the bookkeeping as a debt.
     await cs_client.lock_devices(["m1"], item_id="uid-old", plan_name="count")
-    stub._config_service_locked_devices = ["m1"]
-    stub._config_service_locked_item_id = "uid-old"
+    coord._locked_devices = ["m1"]
+    coord._locked_item_id = "uid-old"
 
-    await stub._lock_config_service_devices_for_plan(
+    await coord.lock_devices_for_plan(
         _plan_item("uid-new", "scan", ["m1"], "m1", -1, 1, 5)
     )
-    assert stub._config_service_locked_item_id == "uid-new"
+    assert coord._locked_item_id == "uid-new"
     status = (await raw_http.get("/api/v1/devices/m1/status")).json()
     assert status["locked_by_item"] == "uid-new"
 
@@ -557,13 +554,11 @@ async def test_manager_per_plan_lock_no_registered_devices_is_noop(
     cs_client: ConfigServiceClient,
 ):
     await _upsert(cs_client, "m1")
-    stub = _manager_stub(cs_client, existing_devices={"m1": {}})
+    coord = _coordinator(cs_client, existing_devices={"m1": {}})
 
-    await stub._lock_config_service_devices_for_plan(
-        _plan_item("uid-1", "sleepy", 5.0)
-    )
-    assert stub._config_service_locked_devices == []
-    assert stub._config_service_locked_item_id == ""
+    await coord.lock_devices_for_plan(_plan_item("uid-1", "sleepy", 5.0))
+    assert coord._locked_devices == []
+    assert coord._locked_item_id == ""
 
 
 @pytest.mark.asyncio
@@ -574,14 +569,12 @@ async def test_manager_per_plan_lock_conflict_raises_and_keeps_books_clean(
     loudly; the manager must not record a lock it did not get."""
     await _upsert(cs_client, "m1")
     await cs_client.lock_devices(["m1"], item_id="foreign", plan_name="other")
-    stub = _manager_stub(cs_client, existing_devices={"m1": {}})
+    coord = _coordinator(cs_client, existing_devices={"m1": {}})
 
     with pytest.raises(ConfigServiceConflict):
-        await stub._lock_config_service_devices_for_plan(
-            _plan_item("uid-1", "count", ["m1"])
-        )
-    assert stub._config_service_locked_devices == []
-    assert stub._config_service_locked_item_id == ""
+        await coord.lock_devices_for_plan(_plan_item("uid-1", "count", ["m1"]))
+    assert coord._locked_devices == []
+    assert coord._locked_item_id == ""
     # The foreign lock is untouched.
     status = (await raw_http.get("/api/v1/devices/m1/status")).json()
     assert status["locked_by_item"] == "foreign"
@@ -596,18 +589,18 @@ async def test_manager_release_keeps_books_when_unlock_fails(cs_app):
         transport = httpx.ASGITransport(app=cs_app)
         client = ConfigServiceClient(_cs_settings(), transport=transport)
         try:
-            stub = _manager_stub(client, existing_devices={"m1": {}})
-            stub._config_service_locked_devices = ["m1"]
-            stub._config_service_locked_item_id = "uid-1"
+            coord = _coordinator(client, existing_devices={"m1": {}})
+            coord._locked_devices = ["m1"]
+            coord._locked_item_id = "uid-1"
 
             # Closing the underlying client makes every request fail.
             await client.aclose()
 
-            assert await stub._release_plan_scope_lock(suppress_errors=False) is False
-            assert stub._config_service_locked_devices == ["m1"]
-            assert stub._config_service_locked_item_id == "uid-1"
-            assert await stub._release_plan_scope_lock(suppress_errors=True) is True
-            assert stub._config_service_locked_devices == ["m1"]
+            assert await coord.release_plan_scope_lock(suppress_errors=False) is False
+            assert coord._locked_devices == ["m1"]
+            assert coord._locked_item_id == "uid-1"
+            assert await coord.release_plan_scope_lock(suppress_errors=True) is True
+            assert coord._locked_devices == ["m1"]
         finally:
             await client.aclose()
 
@@ -622,9 +615,6 @@ async def test_env_open_recovers_from_orphaned_restart_locks(
     in a watchdog crash loop; now the new manager force-unlocks the orphans
     and re-locks under its own UID.
     """
-    from queueserver_service.manager.manager import RunEngineManager
-    from types import SimpleNamespace
-
     await _upsert(cs_client, "m1", "m2")
     # Previous incarnation: lock both devices under the dead UID.
     await cs_client.lock_devices(
@@ -638,14 +628,11 @@ async def test_env_open_recovers_from_orphaned_restart_locks(
             ["m1", "m2"], item_id="env:fresh-incarnation", plan_name="__environment__"
         )
 
-    # Bind the new recovery helper as an unbound method on a minimal stub.
-    stub = SimpleNamespace()
-    stub._lock_with_restart_recovery = (
-        RunEngineManager._lock_with_restart_recovery.__get__(stub)
-    )
+    # Drive the extracted coordinator's recovery helper directly.
+    coord = _coordinator(cs_client)
 
     new_uid = "env:fresh-incarnation"
-    await stub._lock_with_restart_recovery(
+    await coord._lock_with_restart_recovery(
         cs_client, ["m1", "m2"], item_id=new_uid, plan_name="__environment__"
     )
 

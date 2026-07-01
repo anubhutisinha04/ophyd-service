@@ -27,7 +27,6 @@ from .plan_queue_ops import PlanQueueOperations
 from .queue_store import create_queue_store
 from .profile_ops import (
     check_if_function_allowed,
-    extract_device_names_from_plan,
     load_allowed_plans_and_devices,
     load_existing_plans_and_devices,
     load_user_group_permissions,
@@ -386,43 +385,20 @@ class RunEngineManager(Process):
         self._config_dict = config or {}
         self._user_group_permissions = {}
         self._existing_plans, self._existing_devices = {}, {}
-        self._config_service_device_data: dict = {}
 
-        from .config_service import ConfigServiceSettings, ConfigServiceState
+        from .config_service import ConfigServiceSettings
+        from .config_service_coordinator import ConfigServiceCoordinator
 
-        self._config_service_settings = ConfigServiceSettings.from_config_dict(
-            self._config_dict.get("config_service")
+        # All configuration-service state + orchestration (registry sync, device
+        # locking, the pre-plan staleness check, and the diff/sync endpoints)
+        # lives on this collaborator, which calls back into the manager through
+        # the ``ConfigServiceHost`` methods below. Constructed here in the parent
+        # process; its httpx client / asyncio locks are created lazily on the
+        # manager's loop.
+        self._config_service = ConfigServiceCoordinator(
+            ConfigServiceSettings.from_config_dict(self._config_dict.get("config_service")),
+            host=self,
         )
-        self._config_service_state = ConfigServiceState()
-        # UID that identifies this manager as the lock owner in config-service
-        # for environment-scope locks. Regenerated on every env-open so a
-        # leftover lock from a previous environment (failed unlock at close)
-        # is distinguishable from "already locked for this environment".
-        self._config_service_lock_item_id = f"env:{_generate_uid()}"
-        # Best knowledge of server-side lock state: the device list and the
-        # item_id actually on the wire ("" == no lock known). Set together on
-        # successful lock, cleared together only after successful unlock.
-        # NEVER used as a precondition to skip locking — only as a debt to
-        # settle (release-before-relock), so an unlock failure cannot latch
-        # locking off.
-        self._config_service_locked_devices: list = []
-        self._config_service_locked_item_id: str = ""
-        # Registry snapshot (``{name: spec}``) fetched at the start of env-open.
-        # ``None`` means "not fetched this env-cycle" and is distinct from the
-        # known-empty ``{}`` case — so a disabled/errored prefetch does not
-        # make the post-spawn sync skip its emptiness probe.
-        self._config_service_prefetched_info = None
-        # Long-lived ConfigServiceClient shared across prefetch / env-open
-        # sync / staleness check / unlock. Lazy-init via
-        # ``_get_config_service_client`` because httpx.AsyncClient binds to
-        # the event loop at construction time and ``__init__`` runs in the
-        # parent Process before the manager's loop starts. Closed in the
-        # shutdown path of ``zmq_server_comm``.
-        self._config_service_client = None
-        # asyncio.Lock serializing config-service sync runs (awaited env-open
-        # call vs. the periodic poll's update task). Lazy-init for the same
-        # event-loop reason as the client above.
-        self._config_service_sync_alock = None
 
         from .http_server import HttpServerSettings
 
@@ -653,50 +629,24 @@ class RunEngineManager(Process):
 
         return accepted, msg
 
-    async def _get_config_service_client(self):
-        """Return the manager's long-lived ConfigServiceClient.
+    # ------------------------------------------------------------------
+    # ConfigServiceHost: the manager-side surface the ConfigServiceCoordinator
+    # calls back into (see config_service_coordinator.ConfigServiceHost). These
+    # are thin adapters over existing manager internals so the coordinator stays
+    # decoupled from the manager's private names.
+    # ------------------------------------------------------------------
 
-        Lazy-initialized on first call so ``httpx.AsyncClient`` binds to the
-        manager's event loop (not the parent Process's). All config-service
-        call sites (prefetch, env-open sync, staleness check, unlock) share
-        this one client so httpx keep-alive / TLS session reuse amortize
-        across the manager's lifetime. Callers must gate on
-        ``self._config_service_settings.enabled`` (ConfigServiceClient's
-        constructor rejects disabled settings on purpose).
-        """
-        if self._config_service_client is None:
-            from .config_service import ConfigServiceClient
+    @property
+    def existing_devices(self) -> dict:
+        return self._existing_devices
 
-            self._config_service_client = ConfigServiceClient(
-                self._config_service_settings
-            )
-        return self._config_service_client
-
-    async def _prefetch_config_service_registry(self) -> dict:
-        """Fetch the config-service registry before spawning the worker.
-
-        Returns the ``{name: spec}`` dict that should be forwarded to the
-        worker (empty dict if consume-mode does not apply). Stores the same
-        dict on ``self._config_service_prefetched_info`` so the post-spawn
-        sync can skip its redundant emptiness probe.
-
-        Any failure propagates — env-open fails loudly when config-service
-        is enabled (see feedback_backwards_compat memory).
-        """
-        self._config_service_prefetched_info = None
-        if not self._config_service_settings.enabled:
-            return {}
-
-        client = await self._get_config_service_client()
-        specs = await client.get_instantiation_specs()
-        self._config_service_prefetched_info = specs
-        if not specs:
-            return {}
-        logger.info(
-            "config-service consume-mode: prefetched %d device spec(s) for worker injection",
-            len(specs),
+    async def worker_update_device_overlay(self, upserts, deletes, *, replace):
+        return await self._worker_command_update_device_overlay(
+            upserts, deletes, replace=replace
         )
-        return dict(specs)
+
+    async def reload_lists_from_worker(self) -> bool:
+        return await self._load_existing_plans_and_devices_from_worker()
 
     async def _start_re_worker_task(self):
         """
@@ -714,11 +664,11 @@ class RunEngineManager(Process):
         # Fresh lock-owner id for this environment. A leftover lock recorded
         # under a previous id (unlock failed at the last env-close) is then
         # recognizable as a debt and released before any new lock is taken.
-        if self._config_service_settings.enabled:
-            self._config_service_lock_item_id = f"env:{_generate_uid()}"
+        if self._config_service.enabled:
+            self._config_service.new_env_lock_item_id()
 
         try:
-            device_specs = await self._prefetch_config_service_registry()
+            device_specs = await self._config_service.prefetch_registry()
             success = await self._watchdog_start_re_worker(device_specs=device_specs)
             if not success:
                 raise RuntimeError("Failed to create Worker process")
@@ -728,7 +678,7 @@ class RunEngineManager(Process):
                 self._environment_exists = True
                 self._re_pause_pending = False
                 logger.info("Worker started successfully.")
-                if self._config_service_settings.enabled:
+                if self._config_service.enabled:
                     # Await the first list-download + config-service sync
                     # (bootstrap-if-empty, env lock, version cursor) so env-open
                     # reports failure when the sync fails, instead of the sync
@@ -830,9 +780,9 @@ class RunEngineManager(Process):
                 err_msg = "Failed to confirm closing of RE Worker thread"
             else:
                 await self._task_results.clear_running_tasks()
-                if self._config_service_settings.enabled:
+                if self._config_service.enabled:
                     try:
-                        await self._unlock_config_service_devices()
+                        await self._config_service.unlock_devices()
                     except Exception as ex:
                         success = False
                         err_msg = f"Worker closed but config-service unlock failed: {ex}"
@@ -882,8 +832,8 @@ class RunEngineManager(Process):
         self._environment_exists = False
         self._worker_state_info = None
 
-        if self._config_service_settings.enabled:
-            await self._unlock_config_service_devices(suppress_errors=True)
+        if self._config_service.enabled:
+            await self._config_service.unlock_devices(suppress_errors=True)
 
         # If a plan is running, it needs to be pushed back into the queue
         await self._plan_queue.set_processed_item_as_stopped(
@@ -1007,8 +957,8 @@ class RunEngineManager(Process):
         logged, not raised, and stay on the books for the next acquisition.
         """
         await self._confirm_re_worker_exit()
-        if self._config_service_settings.enabled:
-            await self._unlock_config_service_devices(suppress_errors=True)
+        if self._config_service.enabled:
+            await self._config_service.unlock_devices(suppress_errors=True)
 
     async def _process_plan_report(self):
         """
@@ -1029,7 +979,7 @@ class RunEngineManager(Process):
                 err_msg="Internal RE Manager error occurred. Report the error to the development team",
                 err_tb="",
             )
-            await self._release_plan_scope_lock(suppress_errors=True)
+            await self._config_service.release_plan_scope_lock(suppress_errors=True)
             self._manager_state = MState.IDLE
             self._re_pause_pending = False
         else:
@@ -1069,8 +1019,8 @@ class RunEngineManager(Process):
                 # the next plan's lock would otherwise conflict on overlapping
                 # devices. If the release fails, stop the queue instead of
                 # chaining: restarting the queue retries the release (leftover
-                # settling in _lock_config_service_devices_for_plan).
-                if not await self._release_plan_scope_lock(suppress_errors=False):
+                # settling in ConfigServiceCoordinator.lock_devices_for_plan).
+                if not await self._config_service.release_plan_scope_lock(suppress_errors=False):
                     self._loop.create_task(self._set_manager_state(MState.IDLE, autostart_disable=True))
                 else:
                     await self._start_plan_task(stop_queue=stop_queue or bool(immediate_execution))
@@ -1079,7 +1029,7 @@ class RunEngineManager(Process):
                 await self._plan_queue.set_processed_item_as_stopped(
                     exit_status=plan_state, run_uids=uids, scan_ids=scan_ids, err_msg=err_msg, err_tb=err_tb
                 )
-                await self._release_plan_scope_lock(suppress_errors=True)
+                await self._config_service.release_plan_scope_lock(suppress_errors=True)
                 self._loop.create_task(self._set_manager_state(MState.IDLE, autostart_disable=True))
             elif plan_state == "paused":
                 # The plan was paused (nothing should be done).
@@ -1180,8 +1130,8 @@ class RunEngineManager(Process):
                 existing_plans=plan_and_devices_list["existing_plans"],
                 existing_devices=plan_and_devices_list["existing_devices"],
             )
-            self._config_service_device_data = plan_and_devices_list.get(
-                "config_service_device_data", {}
+            self._config_service.set_device_data(
+                plan_and_devices_list.get("config_service_device_data", {})
             )
 
             try:
@@ -1189,298 +1139,11 @@ class RunEngineManager(Process):
             except Exception as ex:
                 logger.exception("Failed to compute the list of allowed plans and devices: %s", ex)
 
-            if self._config_service_settings.enabled:
-                await self._sync_config_service_on_env_open()
+            if self._config_service.enabled:
+                await self._config_service.sync_on_env_open()
 
             self._status_update()
         return True
-
-    async def _sync_config_service_on_env_open(self) -> None:
-        """Bootstrap the config-service registry if empty, capture the version
-        cursor used by the pre-plan staleness check (Layer 2.7), and — in
-        "environment" lock scope — lock the environment's devices so other
-        services are blocked from using them. In "plan" lock scope no
-        environment lock is taken; locks are acquired per plan in
-        ``_lock_config_service_devices_for_plan``.
-
-        The environment lock is acquired once per env (owner id is regenerated
-        on every env-open). A leftover lock recorded under a different owner id
-        (unlock failed at the last env-close/destroy, or a crashed plan-scope
-        lock) is released first, loudly — never silently skipped. If the device
-        list later changes via environment_update, the lock set does NOT
-        currently follow — see Layer 2.5 memory for the deferred relock story.
-
-        Errors propagate to the caller so env-open fails loudly when
-        config-service is enabled but something went wrong. Serialized via
-        ``_get_config_service_sync_alock`` because the awaited env-open call
-        and the periodic poll's update task can otherwise run concurrently.
-        """
-        from .config_service import sync_devices_on_env_open
-
-        async with self._get_config_service_sync_alock():
-            device_names = list(self._existing_devices.keys())
-            client = await self._get_config_service_client()
-            state = await sync_devices_on_env_open(
-                client,
-                expected_device_names=device_names,
-                device_data=self._config_service_device_data,
-                prefetched_info=self._config_service_prefetched_info,
-            )
-            if self._config_service_settings.lock_scope == "environment":
-                if self._config_service_locked_item_id == self._config_service_lock_item_id:
-                    pass  # already locked for THIS environment (sync re-runs on list updates)
-                else:
-                    if self._config_service_locked_item_id:
-                        # Leftover from a previous environment or crashed plan.
-                        # Release loudly before taking the new lock; raising here
-                        # fails the env-open sync visibly rather than locking on
-                        # top of (or skipping because of) stale state.
-                        await self._unlock_config_service_devices()
-                    if device_names:
-                        await self._lock_with_restart_recovery(
-                            client,
-                            device_names,
-                            item_id=self._config_service_lock_item_id,
-                            plan_name="__environment__",
-                        )
-                        self._config_service_locked_devices = list(device_names)
-                        self._config_service_locked_item_id = self._config_service_lock_item_id
-                        logger.info(
-                            "config-service locked %d device(s) under item_id=%s",
-                            len(device_names), self._config_service_lock_item_id,
-                        )
-            else:
-                # "plan" scope: no env lock. Leftover debts are settled at the
-                # next per-plan acquisition (release-before-relock) and at
-                # env-close — NOT here: this sync re-runs whenever the worker
-                # lists update, which happens mid-queue (e.g. after an overlay
-                # refresh), and releasing here would drop a RUNNING plan's lock.
-                pass
-            self._config_service_state = state
-            logger.info(
-                "config-service cursor=%d epoch=%s", state.cursor, state.epoch
-            )
-
-    def _get_config_service_sync_alock(self):
-        """Lazily create the asyncio.Lock serializing config-service sync runs.
-
-        Created on first use (not in ``__init__``) so the lock binds to the
-        manager's event loop, mirroring ``_get_config_service_client``.
-        """
-        if self._config_service_sync_alock is None:
-            self._config_service_sync_alock = asyncio.Lock()
-        return self._config_service_sync_alock
-
-    async def _check_staleness_before_plan(self) -> None:
-        """Layer 2.7 pre-plan staleness check.
-
-        No-op when config-service is disabled, keeping legacy deployments
-        byte-identical to today. When enabled, calls /devices/changes with
-        the saved cursor; on reset_occurred or service_epoch mismatch,
-        fetches the full /devices/instantiation registry; applies the
-        resulting upserts + deletes to the worker's overlay via the new
-        ``command_update_device_overlay`` RPC; commits the advanced cursor.
-
-        Raises if config-service is unreachable or the worker rejects the
-        overlay update — plan start aborts loudly per the no-silent-fallback
-        rule (see feedback_backwards_compat).
-        """
-        if not self._config_service_settings.enabled:
-            return
-
-        from .config_service import fetch_staleness_plan
-
-        client = await self._get_config_service_client()
-        plan = await fetch_staleness_plan(client, self._config_service_state)
-
-        if plan.is_noop:
-            return
-
-        logger.info(
-            "config-service staleness check: replace=%s upserts=%d deletes=%d",
-            plan.replace_overlay,
-            len(plan.upserts),
-            len(plan.deletes),
-        )
-        success, err_msg = await self._worker_command_update_device_overlay(
-            plan.upserts, plan.deletes, replace=plan.replace_overlay
-        )
-        if not success:
-            raise RuntimeError(
-                f"config-service overlay update rejected by worker: {err_msg}"
-            )
-        self._config_service_state = plan.new_state
-        # The worker recomputed its plan/device lists as part of the overlay
-        # update; pull them now (instead of waiting for the periodic poll) so
-        # this plan's per-plan device extraction and permission filtering see
-        # the devices that just arrived from the registry.
-        if not await self._load_existing_plans_and_devices_from_worker():
-            raise RuntimeError(
-                "worker accepted the device overlay but the updated lists of "
-                "plans and devices could not be downloaded"
-            )
-
-    async def _unlock_config_service_devices(self, *, suppress_errors: bool = False) -> None:
-        """Release the lock this manager knows it holds in config-service
-        (environment lock or per-plan lock — whatever is recorded in
-        ``_config_service_locked_devices`` / ``_config_service_locked_item_id``).
-
-        On success the bookkeeping is cleared. On failure it is KEPT — it is
-        the manager's knowledge of an outstanding server-side lock, and the
-        next lock attempt (env-open sync or per-plan acquisition) settles the
-        debt by retrying the release first. It is never consulted as a reason
-        to skip locking, so a failed unlock cannot latch locking off.
-
-        With ``suppress_errors=True`` (recovery paths: env-destroy, post-plan
-        cleanup where the queue is already stopping), failures are logged at
-        ERROR level instead of raised — so that a dead config-service doesn't
-        prevent queueserver from killing a hung worker. These are the only
-        exceptions to the hard-fail rule and are scoped tightly to recovery.
-        """
-        if not self._config_service_settings.enabled:
-            return
-        devices = self._config_service_locked_devices
-        item_id = self._config_service_locked_item_id
-        if not devices:
-            return
-
-        try:
-            client = await self._get_config_service_client()
-            await client.unlock_devices(devices, item_id=item_id)
-        except Exception:
-            if not suppress_errors:
-                raise
-            logger.exception(
-                "config-service unlock failed; locks for item_id=%s are kept on "
-                "the books and will be released before the next lock acquisition",
-                item_id,
-            )
-            return
-        self._config_service_locked_devices = []
-        self._config_service_locked_item_id = ""
-
-    async def _lock_config_service_devices_for_plan(self, item: dict) -> None:
-        """Acquire config-service locks for exactly the registered devices
-        referenced by the plan item's args/kwargs (lock scope "plan" only).
-
-        Raises on ANY failure — lock conflict (409), unknown device (404),
-        config-service unreachable, or a leftover release that won't go away —
-        and the plan must then NOT start (caller aborts the plan start the same
-        way as a failed staleness check). No silent fallback.
-        """
-        # Settle outstanding debt first: a previous plan whose unlock failed,
-        # or an env-scope leftover. Also required for correctness — the lock
-        # endpoint conflicts even when the same owner re-locks an overlapping
-        # device set.
-        if self._config_service_locked_item_id:
-            await self._unlock_config_service_devices()
-
-        device_names = extract_device_names_from_plan(
-            item, existing_devices=self._existing_devices
-        )
-        if not device_names:
-            logger.info(
-                "Plan %r references no registered devices; no config-service locks taken",
-                item.get("name"),
-            )
-            return
-
-        client = await self._get_config_service_client()
-        await client.lock_devices(
-            device_names, item_id=item["item_uid"], plan_name=item["name"]
-        )
-        self._config_service_locked_devices = list(device_names)
-        self._config_service_locked_item_id = item["item_uid"]
-        logger.info(
-            "config-service locked %d device(s) for plan %r (item_uid=%s): %s",
-            len(device_names), item["name"], item["item_uid"], device_names,
-        )
-
-    async def _lock_with_restart_recovery(
-        self,
-        client,
-        device_names: list,
-        *,
-        item_id: str,
-        plan_name: str,
-    ) -> None:
-        """Env-scope lock with restart-orphan recovery.
-
-        Without this, a manager restart while the worker is alive
-        generates a fresh ``_config_service_lock_item_id`` (manager.py
-        ``__init__``, stable for the manager's lifetime) and re-enters
-        env-open. The lock attempt then 409s against the dead instance's
-        locks (held in config-service under the old UID); the exception
-        escapes ``zmq_server_comm``; watchdog restarts the manager; the new
-        manager hits the same 409. The loop never converges and orphaned
-        locks are never released.
-
-        Recovery is force-unlock + retry exactly once. Queueserver runs a
-        single manager process per deployment (watchdog enforces), so any
-        409 seen here on env-open cannot mean "a peer queueserver is racing
-        us" — it can only be a previous incarnation's leftover. The
-        force-unlock takes the entire env's device set, which also clears
-        any orphaned PER-PLAN locks from the dead incarnation (a plan
-        running at crash time), so the per-plan acquisition path does NOT
-        need its own recovery: by the time it runs the env is clean.
-
-        The retry is bounded: if the second lock attempt still 409s,
-        something genuinely external is wrong and the exception is raised
-        so env-open fails loudly per the no-silent-fallback rule.
-
-        Intentionally NOT used by the per-plan lock path: a 409 there can
-        legitimately mean "another plan in this same env still holds the
-        lock" and must surface; the env-scope sweep at env-open is where
-        restart leftovers are reaped.
-        """
-        from .config_service import ConfigServiceConflict
-
-        try:
-            await client.lock_devices(
-                device_names, item_id=item_id, plan_name=plan_name
-            )
-            return
-        except ConfigServiceConflict as conflict:
-            logger.warning(
-                "config-service lock conflict for item_id=%s plan=%r "
-                "(likely orphaned locks from a previous manager incarnation); "
-                "force-unlocking %d device(s) and retrying once: %s",
-                item_id, plan_name, len(device_names), conflict,
-            )
-            await client.force_unlock_devices(
-                device_names,
-                reason=(
-                    f"queueserver manager restart recovery "
-                    f"(new item_id={item_id}, plan={plan_name})"
-                ),
-            )
-        await client.lock_devices(
-            device_names, item_id=item_id, plan_name=plan_name
-        )
-
-    async def _release_plan_scope_lock(self, *, suppress_errors: bool) -> bool:
-        """Release the per-plan lock if one is held (lock scope "plan" only;
-        no-op otherwise so environment scope stays byte-identical to legacy
-        behavior mid-queue). Returns True on success or no-op.
-
-        With ``suppress_errors=False`` a failure returns False instead of
-        raising — callers in the plan-report path must decide what to do
-        (e.g. stop the queue instead of chaining the next plan) without an
-        exception escaping into the report-processing task.
-        """
-        if not self._config_service_settings.enabled:
-            return True
-        if self._config_service_settings.lock_scope != "plan":
-            return True
-        try:
-            await self._unlock_config_service_devices()
-            return True
-        except Exception as ex:
-            logger.error(
-                "config-service per-plan unlock failed (item_id=%s): %s",
-                self._config_service_locked_item_id, ex,
-            )
-            return suppress_errors
 
     async def _load_task_results_from_worker(self):
         """
@@ -1640,7 +1303,7 @@ class RunEngineManager(Process):
                 # disabled. On failure the queue item stays put, matching the
                 # reset-failure path below.
                 try:
-                    await self._check_staleness_before_plan()
+                    await self._config_service.check_staleness_before_plan()
                 except (ConfigServiceError, CommTimeoutError, RuntimeError) as ex:
                     self._manager_state = MState.IDLE
                     err_msg = f"config-service staleness check failed: {ex}"
@@ -1651,9 +1314,9 @@ class RunEngineManager(Process):
                 # Per-plan device locking (lock scope "plan"). On failure the
                 # queue item stays at the front and the plan does not start —
                 # same contract as the staleness check above.
-                if self._config_service_settings.enabled and self._config_service_settings.lock_scope == "plan":
+                if self._config_service.enabled and self._config_service.lock_scope == "plan":
                     try:
-                        await self._lock_config_service_devices_for_plan(next_item)
+                        await self._config_service.lock_devices_for_plan(next_item)
                     except (ConfigServiceError, RuntimeError) as ex:
                         self._manager_state = MState.IDLE
                         err_msg = f"config-service per-plan device lock failed: {ex}"
@@ -1664,7 +1327,7 @@ class RunEngineManager(Process):
                 # Reset RE environment (worker)
                 success, err_msg = await self._worker_command_reset_worker()
                 if not success:
-                    await self._release_plan_scope_lock(suppress_errors=True)
+                    await self._config_service.release_plan_scope_lock(suppress_errors=True)
                     self._manager_state = MState.IDLE
                     err_msg = f"Failed to reset RE Worker: {err_msg}"
                     logger.error(err_msg)
@@ -1700,7 +1363,7 @@ class RunEngineManager(Process):
                     await self._plan_queue.set_processed_item_as_stopped(
                         exit_status="failed", run_uids=[], scan_ids=[], err_msg=err_msg, err_tb=""
                     )
-                    await self._release_plan_scope_lock(suppress_errors=True)
+                    await self._config_service.release_plan_scope_lock(suppress_errors=True)
                     self._manager_state = MState.IDLE
                     logger.error("Failed to start the plan %s.\nError: %s", ppfl(plan_info), err_msg)
                     err_msg = f"Failed to start the plan: {err_msg}"
@@ -3539,17 +3202,17 @@ class RunEngineManager(Process):
 
         Rejects with ``success=False`` (the HTTP router maps this to 409)
         when config-service is disabled or no RE environment is open. The
-        device-data the worker last reported is read directly from
-        ``self._config_service_device_data`` — the same snapshot
-        ``_sync_config_service_on_env_open`` consumes — so this endpoint
-        sees exactly what the registry would receive on the next env-open.
+        device-data the worker last reported is read from the coordinator's
+        ``device_data`` snapshot — the same one env-open sync consumes — so this
+        endpoint sees exactly what the registry would receive on the next
+        env-open.
         """
         try:
             self._check_request_for_unsupported_params(
                 request=request, param_names=[]
             )
 
-            if not self._config_service_settings.enabled:
+            if not self._config_service.enabled:
                 return {
                     "success": False,
                     "msg": "configuration-service feature is disabled on this manager",
@@ -3562,11 +3225,7 @@ class RunEngineManager(Process):
                     "diff": None,
                 }
 
-            from .config_service import compute_diff
-
-            client = await self._get_config_service_client()
-            registry_specs = await client.get_instantiation_specs()
-            diff = compute_diff(self._config_service_device_data, registry_specs)
+            diff = await self._config_service.compute_diff_against_registry()
             return {"success": True, "msg": "", "diff": diff.to_dict()}
         except ConfigServiceUnreachable as ex:
             logger.exception("config-service unreachable during device diff: %s", ex)
@@ -3611,7 +3270,7 @@ class RunEngineManager(Process):
             strategy = request.get("strategy", "all")
             selected = request.get("devices")
 
-            from .config_service import APPLY_STRATEGIES, apply_diff, compute_diff
+            from .config_service import APPLY_STRATEGIES
 
             if strategy not in APPLY_STRATEGIES:
                 return {
@@ -3630,7 +3289,7 @@ class RunEngineManager(Process):
                     "applied": None,
                     "diff_after": None,
                 }
-            if not self._config_service_settings.enabled:
+            if not self._config_service.enabled:
                 return {
                     "success": False,
                     "msg": "configuration-service feature is disabled on this manager",
@@ -3645,29 +3304,15 @@ class RunEngineManager(Process):
                     "diff_after": None,
                 }
 
-            async with self._get_config_service_sync_alock():
-                client = await self._get_config_service_client()
-                registry_specs = await client.get_instantiation_specs()
-                diff_before = compute_diff(
-                    self._config_service_device_data, registry_specs
-                )
-                applied = await apply_diff(
-                    client,
-                    diff_before,
-                    self._config_service_device_data,
-                    strategy=strategy,
-                    selected=selected,
-                )
-                registry_after = await client.get_instantiation_specs()
-                diff_after = compute_diff(
-                    self._config_service_device_data, registry_after
-                )
+            result = await self._config_service.apply_sync(
+                strategy=strategy, selected=selected
+            )
 
             return {
                 "success": True,
                 "msg": "",
-                "applied": applied,
-                "diff_after": diff_after.to_dict(),
+                "applied": result["applied"],
+                "diff_after": result["diff_after"],
             }
         except ConfigServiceUnreachable as ex:
             logger.exception("config-service unreachable during device sync: %s", ex)
@@ -4730,9 +4375,7 @@ class RunEngineManager(Process):
                 self._comm_to_watchdog.stop()
                 self._comm_to_worker.stop()
                 await self._plan_queue.stop()
-                if self._config_service_client is not None:
-                    await self._config_service_client.aclose()
-                    self._config_service_client = None
+                await self._config_service.close()
                 self._zmq_socket.close()
                 logger.info("RE Manager was stopped by ZMQ command.")
                 break
