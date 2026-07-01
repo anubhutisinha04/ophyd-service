@@ -103,18 +103,6 @@ app.use(async (req, res) => {
     /** @type {import('./src/entry-server.tsx').render | undefined} */
     let render;
 
-    if (isProduction) {
-      // Use pre-built template and server entry in production
-      template = templateHtml;
-      render = (await import('./dist/server/entry-server.js')).render;
-    } else {
-      // Always read fresh template in development
-      template = await fs.readFile('./index.html', 'utf-8');
-      template = await vite.transformIndexHtml(url, template);
-      // Load SSR entry point in dev to enable SSR during development
-      render = (await vite.ssrLoadModule('/src/entry-server.tsx')).render;
-    }
-
     // Extract Entra ID auth headers from HAProxy
     const rolesHeader = getHeader(req, 'access-token-roles');
     let authData = {
@@ -134,15 +122,31 @@ app.use(async (req, res) => {
       console.log(`[${req.correlationId()}] Auth: ${authData.upn || 'none'} - Roles: ${authData.roles.join(', ') || 'none'}`);
     }
 
-    const rendered = render
-      ? await render(url, authData)
-      : { html: '', head: renderAuthScript(authData) };
-
-    const html = template
-      .replace(`<!--app-head-->`, rendered.head ?? '')
-      .replace(`<!--app-html-->`, rendered.html ?? '');
-
-    res.status(200).set({ 'Content-Type': 'text/html' }).send(html);
+    if (isProduction) {
+      // Production: Use pre-built SSR bundle for fast server-side rendering
+      template = templateHtml;
+      render = (await import('./dist/server/entry-server.js')).render;
+      const rendered = await render(url, authData);
+      
+      const html = template
+        .replace(`<!--app-head-->`, rendered.head ?? '')
+        .replace(`<!--app-html-->`, rendered.html ?? '');
+      
+      res.status(authData.upn && authData.roles.length > 0 ? 200 : 401).set({ 'Content-Type': 'text/html' }).send(html);
+    } else {
+      // Development: Use Vite's SSR module loading with HMR
+      template = await fs.readFile('./index.html', 'utf-8');
+      template = await vite.transformIndexHtml(url, template);
+      render = (await vite.ssrLoadModule('/src/entry-server.tsx')).render;
+      
+      const rendered = await render(url, authData);
+      
+      const html = template
+        .replace(`<!--app-head-->`, rendered.head ?? '')
+        .replace(`<!--app-html-->`, rendered.html ?? '');
+      
+      res.status(authData.upn && authData.roles.length > 0 ? 200 : 401).set({ 'Content-Type': 'text/html' }).send(html);
+    }
   } catch (e) {
     vite?.ssrFixStacktrace(e);
     console.error(e.stack);
