@@ -148,6 +148,11 @@ class RunEngineWorker(Process):
         # Report (dict) generated after execution of a command. The report can be downloaded
         #   by RE Manager.
         self._re_report = None
+        # True once the current report has been handed to the manager at least once.
+        # The report is NOT cleared on read (so a lost pipe response can be re-fetched);
+        # instead this flag gates 're_report_available' to avoid re-processing, and is
+        # reset whenever a new report is generated or the worker is reset for a new plan.
+        self._re_report_delivered = False
         self._re_report_lock = None  # threading.Lock
 
         # Class that supports communication over the pipe
@@ -307,6 +312,8 @@ class RunEngineWorker(Process):
             uids, scan_ids = self._active_run_list.get_uids(), self._active_run_list.get_scan_ids()
 
             with self._re_report_lock:
+                # New report generated — allow the manager to fetch it again.
+                self._re_report_delivered = False
                 self._re_report = {
                     "action": "plan_exit",
                     "success": True,
@@ -338,6 +345,8 @@ class RunEngineWorker(Process):
             uids, scan_ids = self._active_run_list.get_uids(), self._active_run_list.get_scan_ids()
 
             with self._re_report_lock:
+                # New report generated — allow the manager to fetch it again.
+                self._re_report_delivered = False
                 self._re_report = {
                     "action": "plan_exit",
                     "uids": uids,
@@ -395,6 +404,8 @@ class RunEngineWorker(Process):
         uids, scan_ids = self._active_run_list.get_uids(), self._active_run_list.get_scan_ids()
 
         with self._re_report_lock:
+            # New report generated — allow the manager to fetch it again.
+            self._re_report_delivered = False
             self._re_report = {
                 "action": "plan_exit",
                 "success": plan_state == "success",
@@ -911,7 +922,11 @@ class RunEngineWorker(Process):
         re_state = self.re_state
         re_deferred_pause_requested = self.re_deferred_pause_requested
         env_state_str = self._env_state.value
-        re_report_available = self._re_report is not None
+        with self._re_report_lock:
+            # A report already delivered to the manager is not re-advertised
+            # (avoids re-processing), but it is kept until the next worker reset so
+            # a lost pipe response can be re-fetched by the manager's retry.
+            re_report_available = self._re_report is not None and not self._re_report_delivered
         run_list_updated = self._active_run_list.is_changed()  # True - updates are available
         plans_and_devices_list_updated = self._existing_plans_and_devices_changed
         completed_tasks_available = bool(self._completed_tasks)
@@ -950,13 +965,17 @@ class RunEngineWorker(Process):
         """
         Returns the report on recently completed plan. Note that the report is `None` if
         plan execution was not completed. The report should be requested only after
-        `re_report_available` is set in RE Worker state. The report is cleared once
-        it is read.
+        `re_report_available` is set in RE Worker state.
+
+        The report is intentionally NOT cleared on read — it is retained until the
+        next `command_reset_worker` (or until a new report is generated). This makes
+        the fetch idempotent so a lost pipe response can be safely re-requested by
+        the manager. The `_re_report_delivered` flag stops `re_report_available`
+        from re-advertising an already-delivered report.
         """
-        # TODO: may be report should be cleared only after the reset? Check the logic.
         with self._re_report_lock:
             msg_out = self._re_report
-            self._re_report = None
+            self._re_report_delivered = True
         return msg_out
 
     def _request_run_list_handler(self):
@@ -1210,6 +1229,7 @@ class RunEngineWorker(Process):
             self._running_plan_exec_state = PlanExecState.RESET
             with self._re_report_lock:
                 self._re_report = None
+                self._re_report_delivered = False
             status = "accepted"
         else:
             status = "rejected"

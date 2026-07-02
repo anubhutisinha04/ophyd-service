@@ -245,7 +245,13 @@ class PipeJsonRpcReceive:
                         msg,
                     )
                 except EOFError:
-                    pass
+                    # Peer closed the pipe. 'poll()' would now report ready
+                    # immediately forever, so the loop must exit instead of
+                    # busy-spinning at 100% CPU. Mark the thread stopped so the
+                    # object doesn't believe a dead thread is still running.
+                    logger.info("Pipe closed by peer. Stopping the receiving thread.")
+                    self._thread_running = False
+                    break
                 except Exception as ex:
                     logger.exception(
                         "Exception occurred while waiting for a message or receiving a message: %s", ex
@@ -538,7 +544,13 @@ class PipeJsonRpcSendAsync:
                     # Messages should be handled in the event loop
                     self._loop.call_soon_threadsafe(self._conn_received, msg)
                 except EOFError:
-                    pass
+                    # Peer closed the pipe. 'poll()' would now report ready
+                    # immediately forever, so the loop must exit instead of
+                    # busy-spinning at 100% CPU. Mark the thread stopped so the
+                    # object doesn't believe a dead thread is still running.
+                    logger.info("Pipe closed by peer. Stopping the receiving thread.")
+                    self._thread_running = False
+                    break
                 except Exception as ex:
                     logger.exception("Exception occurred while waiting for packet: %s", ex)
             if not self._thread_running:  # Exit thread
