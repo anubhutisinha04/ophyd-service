@@ -1,14 +1,14 @@
-"""Regression tests for the manager-worker liveness fixes (2026-07-02 backend
-review, report 07):
+"""Regression tests for manager-worker liveness and pipe robustness.
 
-* H2 — the manager must detect a dead RE Worker process and recover, instead of
-  staying stuck in EXECUTING_QUEUE / CREATING_ENVIRONMENT forever after a worker
-  crash. Detection requires N consecutive ``request_state`` pipe timeouts AND a
-  watchdog confirmation that the process is actually dead (never kills on
-  timeouts alone, so a slow-but-alive env-open is not aborted).
-* M7 — a late/duplicate pipe response arriving after ``wait_for`` cancelled the
-  receive future must not raise ``InvalidStateError`` in the detached
-  ``_response_received`` task.
+* Worker-death detection: the manager must detect a dead RE Worker process and
+  recover, instead of staying stuck in EXECUTING_QUEUE / CREATING_ENVIRONMENT
+  forever after a worker crash. Detection requires several consecutive
+  ``request_state`` pipe timeouts AND a watchdog confirmation that the process is
+  actually dead (it never kills on timeouts alone, so a slow-but-alive env-open
+  is not aborted).
+* Late pipe responses: a late/duplicate response arriving after ``wait_for``
+  cancelled the receive future must not raise ``InvalidStateError`` in the
+  detached ``_response_received`` task.
 
 The manager is built via ``__new__`` (bypassing the multiprocessing-heavy
 ``__init__``); only the attributes each method under test touches are populated.
@@ -248,7 +248,7 @@ async def test_good_state_response_resets_timeout_counter():
 
 
 # ----------------------------------------------------------------------------
-# M7 — late pipe response must not raise on a done/cancelled future
+# Late pipe response must not raise on a done/cancelled future
 # ----------------------------------------------------------------------------
 
 
