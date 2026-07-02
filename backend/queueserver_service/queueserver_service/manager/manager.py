@@ -330,6 +330,12 @@ class RunEngineManager(Process):
         self._worker_state_timeout_limit = 5
         self._worker_death_handled = False
 
+        # Task-result acknowledgement: 'task_uid's received from the worker on the
+        # last successful download, sent as the acknowledgement on the next
+        # download so the worker can drop them. Retained results survive a lost
+        # pipe response until acknowledged.
+        self._task_results_received_uids = []
+
         self.__queue_autostart_enabled = False
         self._queue_autostart_event = None
 
@@ -681,6 +687,9 @@ class RunEngineManager(Process):
         # Fresh env: clear any worker-death-detection state from a previous worker.
         self._worker_state_timeout_count = 0
         self._worker_death_handled = False
+        # A fresh worker starts with no completed tasks, so drop any pending
+        # task-result acknowledgements left over from a previous environment.
+        self._task_results_received_uids = []
 
         # Fresh lock-owner id for this environment. A leftover lock recorded
         # under a previous id (unlock failed at the last env-close) is then
@@ -1278,14 +1287,25 @@ class RunEngineManager(Process):
     async def _load_task_results_from_worker(self):
         """
         Download results of the completed tasks from worker process.
+
+        The worker retains task results until they are acknowledged, so this sends
+        the ``task_uid``s received on the previous successful download as the
+        acknowledgement (the worker then drops them). If a download fails, the
+        pending acknowledgement is kept and retried on the next call, and the
+        worker keeps the results available — so a lost pipe response does not lose
+        task results.
         """
         logger.debug("Downloading the results of completed tasks from the worker environment.")
-        results, err_msg = await self._worker_request_task_results()
+        ack_uids = list(self._task_results_received_uids)
+        results, err_msg = await self._worker_request_task_results(ack_uids=ack_uids)
         if results is None:
-            # TODO: this would typically mean a bug (communication error). Probably more
-            #       complicated processing is needed
+            # Keep '_task_results_received_uids' so the acknowledgement is retried
+            # next time; the worker still holds the results.
             logger.error("Failed to download the results of completed tasks from the worker process: %s", err_msg)
         else:
+            # Download succeeded: the worker dropped the acknowledged results.
+            already_received = set(self._task_results_received_uids)
+            received_now = []
             task_results = results["task_results"]
             for task_res in task_results:
                 if "task_uid" not in task_res:
@@ -1293,6 +1313,12 @@ class RunEngineManager(Process):
                     continue
 
                 task_uid = task_res["task_uid"]
+                received_now.append(task_uid)
+
+                if task_uid in already_received:
+                    # Re-delivered because a previous acknowledgement was lost;
+                    # already processed, so just acknowledge it next time.
+                    continue
 
                 def factory(*, task_uid, task_res):
                     async def inner():
@@ -1309,6 +1335,9 @@ class RunEngineManager(Process):
                     await coro()
 
                 logger.debug("Loaded the results for task '%s': %s", task_uid, ppfl(task_results))
+
+            # Acknowledge everything received this round on the next download.
+            self._task_results_received_uids = received_now
 
     async def _start_plan(self):
         """
@@ -1966,10 +1995,12 @@ class RunEngineManager(Process):
 
         return runengine_metadata, err_msg
 
-    async def _worker_request_task_results(self):
+    async def _worker_request_task_results(self, ack_uids=None):
         try:
             tt = self._comm_to_worker_timeout_long
-            results = await self._comm_to_worker.send_msg("request_task_results", timeout=tt)
+            results = await self._comm_to_worker.send_msg(
+                "request_task_results", {"ack_uids": ack_uids or []}, timeout=tt
+            )
             err_msg = ""
             if results is None:
                 err_msg = "Failed to obtain the results of completed tasks from the worker"

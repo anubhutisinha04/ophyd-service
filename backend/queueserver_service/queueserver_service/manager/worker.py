@@ -988,13 +988,24 @@ class RunEngineWorker(Process):
         msg_out = {"run_list": self._active_run_list.get_run_list(clear_state=True)}
         return msg_out
 
-    def _request_task_results_handler(self):
+    def _request_task_results_handler(self, *, ack_uids=None):
         """
-        Returns the list of results of completed tasks and clears the list.
+        Return the results of completed tasks.
+
+        Results are retained until the manager acknowledges them: the manager
+        passes the ``task_uid``s it has already received in ``ack_uids``, and those
+        are dropped here before the remaining (not-yet-acknowledged) results are
+        returned. This makes the transfer resilient to a lost pipe response — the
+        results stay available for re-fetching until an acknowledgement removes
+        them, instead of being cleared on the first read.
         """
         with self._completed_tasks_lock:
+            if ack_uids:
+                ack_set = set(ack_uids)
+                self._completed_tasks = [
+                    t for t in self._completed_tasks if t.get("task_uid") not in ack_set
+                ]
             msg_out = {"task_results": copy.copy(self._completed_tasks)}
-            self._completed_tasks.clear()
         return msg_out
 
     def _request_plans_and_devices_list_handler(self):
