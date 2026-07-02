@@ -1,0 +1,45 @@
+# Second distribution: bluesky-httpserver.
+#
+# The HTTP/WebSocket API server is implemented in-tree as
+# ``queueserver_service.http`` (see ../pyproject.toml, the ``bluesky-queueserver``
+# distribution). Upstream, that server is the SEPARATE ``bluesky-httpserver``
+# distribution (import package ``bluesky_httpserver``). Because a single wheel can
+# only claim one distribution name -- and the main wheel already claims
+# ``bluesky-queueserver`` -- this thin, standalone distribution exists purely to:
+#
+#   1. provide the ``bluesky_httpserver`` import namespace (it re-exports
+#      ``queueserver_service.http`` -- see bluesky_httpserver/__init__.py), and
+#   2. claim the ``bluesky-httpserver`` DISTRIBUTION NAME so that a third-party
+#      ``Requires-Dist: bluesky-httpserver`` (or an explicit
+#      ``pip install bluesky-httpserver``) resolves to this fork instead of
+#      pulling the upstream distribution in alongside -- which would collide on
+#      the ``bluesky_httpserver`` package and clobber the ``start-bluesky-httpserver``
+#      console script.
+#
+# It depends on ``bluesky-queueserver`` (the main in-tree distribution), which is
+# where the actual implementation and the ``start-bluesky-httpserver`` console
+# script live. The console script is intentionally NOT re-declared here to avoid
+# two of the fork's own distributions providing the same entry point.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bluesky-httpserver"
+version = "1.0.0"
+description = "Compatibility shim providing the bluesky-httpserver distribution name and import namespace for ophyd-service (implemented by queueserver_service.http)."
+license = { text = "BSD (3-clause)" }
+authors = [{ name = "Brookhaven National Laboratory" }]
+requires-python = ">=3.9"
+classifiers = [
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+]
+# Pinned in LOCKSTEP with the implementation: this shim maps the *internal* module
+# layout of ``queueserver_service.http``, so a version-skewed pair must be
+# uninstallable. Bump this exact pin (and the ``version`` above) together with the
+# main distribution whenever it is versioned.
+dependencies = ["bluesky-queueserver==1.0.0"]
+
+[tool.setuptools]
+packages = ["bluesky_httpserver"]

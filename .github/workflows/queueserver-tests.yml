@@ -106,9 +106,12 @@ jobs:
         # numpy is NOT pre-upgraded here: requirements-dev.txt pins it (and
         # bluesky / ophyd-async) to keep the suite's committed expectations
         # stable — see the comment block at the top of that file.
+        # -e ./bluesky-httpserver installs the bluesky-httpserver shim distribution
+        # (its bluesky-queueserver== pin is satisfied by the editable `.` install)
+        # so tests/http/test_bluesky_httpserver_shim.py can import it.
         run: |
           python -m pip install --upgrade pip setuptools
-          pip install -e . -e ../configuration_service -r requirements-dev.txt
+          pip install -e . -e ./bluesky-httpserver -e ../configuration_service -r requirements-dev.txt
 
       - name: Run pytest (group ${{ matrix.group }}/6)
         run: pytest -v --splits 6 --group ${{ matrix.group }}

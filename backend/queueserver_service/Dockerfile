@@ -11,13 +11,18 @@ COPY pyproject.toml README.md ./
 COPY queueserver_service ./queueserver_service/
 # One-module legacy import surface for bluesky-queueserver-api (see its docstring)
 COPY bluesky_queueserver ./bluesky_queueserver/
+# Second distribution: the bluesky-httpserver name + bluesky_httpserver import
+# namespace, re-exporting queueserver_service.http (see its pyproject.toml)
+COPY bluesky-httpserver ./bluesky-httpserver/
 
 # The `all` extra pulls the optional, deployment-specific runtime deps kept out
 # of the base install (see pyproject [project.optional-dependencies]):
 #   pandas     -- manager/conversions.py spreadsheet->plan conversion
 #   matplotlib -- the shipped profile_collection_sim startup (05-run-engine.py)
 #   pyepics    -- ophyd EPICS layer for config-service consume-mode devices
-RUN pip install --no-cache-dir -e ".[all]"
+# The bluesky-httpserver shim is installed alongside (its bluesky-queueserver==
+# pin is satisfied by the editable `.` install in the same command).
+RUN pip install --no-cache-dir -e ".[all]" -e ./bluesky-httpserver
 
 RUN useradd -m -u 1000 qserver && chown -R qserver:qserver /app
 USER qserver
