@@ -533,10 +533,20 @@ class PipeJsonRpcSendAsync:
         else:
             logger.error("Unexpected message received: %s. The message is ignored", ppfl(response))
 
+    def _on_background_task_done(self, task):
+        # Discard the strong reference and retrieve the exception (if any) so a
+        # failure in a detached callback doesn't surface as an unretrieved-task
+        # warning — it is logged here instead.
+        self._background_tasks.discard(task)
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                logger.error("Exception in pipe callback task: %s", exc, exc_info=exc)
+
     def _conn_received(self, response):
         task = asyncio.create_task(self._response_received(response))
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._on_background_task_done)
 
     async def _response_sent(self, response, fut_send):
         if not fut_send.done():
@@ -545,7 +555,7 @@ class PipeJsonRpcSendAsync:
     def _conn_sent(self, response, fut_send):
         task = asyncio.create_task(self._response_sent(response, fut_send))
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(self._on_background_task_done)
 
     def _pipe_receive(self):
         while True:

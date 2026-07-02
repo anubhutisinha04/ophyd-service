@@ -1011,6 +1011,27 @@ class RunEngineManager(Process):
         if fut is not None and not fut.done():
             fut.set_result(result)
 
+    async def _watchdog_confirm_worker_dead(self):
+        """Return ``True`` only if the watchdog *positively* confirms the RE
+        Worker process is gone.
+
+        Unlike ``_watchdog_is_worker_alive`` (which reports ``False`` both for a
+        dead worker and for a watchdog comm timeout), this treats any inability to
+        reach the watchdog — a ``CommTimeoutError`` / any exception from the pipe —
+        as "cannot confirm" and returns ``False`` so callers keep waiting instead
+        of killing a possibly-alive worker on an unconfirmed guess. Also guards
+        against the ``asyncio.TimeoutError`` vs ``TimeoutError`` distinction on
+        Python 3.9/3.10, where ``CommTimeoutError`` would otherwise escape
+        ``_watchdog_is_worker_alive``'s ``except`` and defeat recovery.
+        """
+        try:
+            response = await self._comm_to_watchdog.send_msg("is_worker_alive")
+        except Exception as ex:
+            logger.warning("Could not confirm RE Worker liveness via the watchdog: %s", ex)
+            return False
+        # Default to "alive" on an unexpected response shape (conservative).
+        return not bool(response.get("worker_alive", True))
+
     async def _handle_possible_worker_death(self):
         """Called from the poll loop when a ``request_state`` pipe request times
         out. Detects a dead RE Worker process and runs the recovery path so the
@@ -1019,10 +1040,10 @@ class RunEngineManager(Process):
 
         A single timeout is not enough — a busy-but-alive worker may miss a poll —
         so we require ``_worker_state_timeout_limit`` consecutive timeouts and then
-        confirm with the watchdog, which is the authority on process liveness. We
-        never kill on timeouts alone, so a legitimately slow env-open (a large
-        profile collection, hardware connection) is never aborted: the watchdog
-        keeps reporting the process alive and we keep waiting.
+        require the watchdog to *positively confirm* the process is gone
+        (``_watchdog_confirm_worker_dead``). We never kill on timeouts alone, nor
+        on an inability to reach the watchdog, so a legitimately slow env-open (a
+        large profile collection, hardware connection) is never aborted.
         """
         # Only meaningful while an environment exists or is being created; the
         # destroy path already tears things down.
@@ -1035,9 +1056,10 @@ class RunEngineManager(Process):
         if self._worker_state_timeout_count < self._worker_state_timeout_limit:
             return
 
-        if await self._watchdog_is_worker_alive():
-            # Unresponsive to state requests but the process is alive — likely just
-            # slow (still initializing / busy). Keep waiting.
+        if not await self._watchdog_confirm_worker_dead():
+            # Either the process is still alive (unresponsive but slow) or the
+            # watchdog couldn't be reached to confirm. Don't recover on an
+            # unconfirmed guess — keep waiting and re-check on the next poll.
             return
 
         logger.error(
