@@ -1486,6 +1486,14 @@ class RunEngineWorker(Process):
         self._comm_to_manager.add_method(self._command_load_script, "command_load_script")
         self._comm_to_manager.add_method(self._command_execute_function, "command_execute_function")
 
+        # Create the report lock BEFORE starting the comm threads. The receive
+        # thread dispatches the 'request_state' / 'request_plan_report' handlers,
+        # both of which acquire '_re_report_lock', so it must already exist when
+        # '.start()' launches that thread. (It can't be created in __init__ — a
+        # threading.Lock isn't picklable for the 'spawn' start method — so it is
+        # created here, in the child process, just before comms come up.)
+        self._re_report_lock = threading.Lock()
+
         self._comm_to_manager.start()
 
         self._ip_kernel_captured = False
@@ -1494,7 +1502,6 @@ class RunEngineWorker(Process):
         self._exit_main_loop_event = threading.Event()
         self._exit_event = threading.Event()
         self._exit_confirmed_event = threading.Event()
-        self._re_report_lock = threading.Lock()
 
         self._allowed_items_lock = threading.Lock()
         self._existing_items_lock = threading.Lock()
