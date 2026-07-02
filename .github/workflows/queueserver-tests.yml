@@ -17,7 +17,7 @@
 #     test_authenticators.py.
 #
 # The suite is wall-clock-bound (many tests boot real RE manager processes),
-# so it is split into 3 parallel groups via pytest-split using the committed
+# so it is split into 6 parallel groups via pytest-split using the committed
 # .test_durations file. Regenerate via store_test_durations.sh when the
 # groups drift uneven.
 #
@@ -48,14 +48,14 @@ concurrency:
 
 jobs:
   queueserver-full-suite:
-    name: queueserver_service full pytest (group ${{ matrix.group }}/3)
+    name: queueserver_service full pytest (group ${{ matrix.group }}/6)
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3]
+        group: [1, 2, 3, 4, 5, 6]
 
     services:
       redis:
@@ -110,8 +110,8 @@ jobs:
           python -m pip install --upgrade pip setuptools
           pip install -e . -e ../configuration_service -r requirements-dev.txt
 
-      - name: Run pytest (group ${{ matrix.group }}/3)
-        run: pytest -v --splits 3 --group ${{ matrix.group }}
+      - name: Run pytest (group ${{ matrix.group }}/6)
+        run: pytest -v --splits 6 --group ${{ matrix.group }}
 
   queueserver-ipykernel:
     name: queueserver_service ipykernel-worker pytest
