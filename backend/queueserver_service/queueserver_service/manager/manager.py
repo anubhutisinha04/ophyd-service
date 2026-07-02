@@ -323,6 +323,13 @@ class RunEngineManager(Process):
         self.__queue_autostart_enabled = False
         self._queue_autostart_event = None
 
+        # Serializes command-handler execution across the 0MQ dispatch loop, the
+        # co-hosted HTTP loopback (unified mode) and the autostart-initiated
+        # '_start_plan'. Created lazily via '_get_dispatch_lock' so it binds to the
+        # manager's running event loop. Without it, concurrent HTTP requests race
+        # the check-then-act state transitions the state machine assumes are serial.
+        self._command_dispatch_lock = None
+
         self._exec_loop_deactivated_event = None  # Used to defer manager status change
         self._re_run_list = []
         self._re_run_list_uid = _generate_uid()
@@ -802,8 +809,7 @@ class RunEngineManager(Process):
         if self._environment_exists or (self._manager_state == MState.CREATING_ENVIRONMENT):
             accepted, err_msg = True, ""
             # Cancel any operation of opening/closing the environment
-            if self._fut_manager_task_completed and not self._fut_manager_task_completed.done():
-                self._fut_manager_task_completed.set_result(False)
+            self._complete_manager_task(False)
             asyncio.ensure_future(self._execute_background_task(self._kill_re_worker_task()))
         else:
             accepted = False
@@ -895,60 +901,97 @@ class RunEngineManager(Process):
         """
         t_period = 0.5
         while True:
-            await asyncio.sleep(t_period)
-            if self._environment_exists or (self._manager_state == MState.CREATING_ENVIRONMENT):
-                if self._manager_state == MState.DESTROYING_ENVIRONMENT:
-                    continue
+            try:
+                await asyncio.sleep(t_period)
+                await self._periodic_worker_state_request_once()
+            except asyncio.CancelledError:
+                break
+            except Exception as ex:
+                # Previously an exception here (e.g. a double 'set_result' on
+                # '_fut_manager_task_completed') killed this task permanently.
+                # Heartbeats run in a separate task, so the watchdog stayed
+                # satisfied while the manager silently stopped processing plan
+                # reports, task results and shutdown notifications. Mirror
+                # '_heartbeat_generator': log and keep polling.
+                logger.exception("Exception occurred while requesting RE Worker state: %s", ex)
 
-                ws, _ = await self._worker_request_state()
-                if ws is not None:
-                    # Logic to minimize the number of unnecessary status updates
-                    update_status = False
-                    if self._worker_state_info != ws:
-                        self._worker_state_info = ws
-                        update_status = True
+    async def _periodic_worker_state_request_once(self):
+        """
+        Single iteration of the worker-state poll loop (see
+        ``_periodic_worker_state_request``). Separated out so the loop can wrap it
+        in a blanket try/except without swallowing its own control flow.
+        """
+        if not (self._environment_exists or (self._manager_state == MState.CREATING_ENVIRONMENT)):
+            return
+        if self._manager_state == MState.DESTROYING_ENVIRONMENT:
+            return
 
-                    if ws["re_state"] == "paused":
-                        self._re_pause_pending = False
-                        self._status_update()
-                        update_status = False
+        ws, _ = await self._worker_request_state()
+        if ws is None:
+            return
 
-                    if ws["plans_and_devices_list_updated"]:
-                        self._loop.create_task(self._load_existing_plans_and_devices_from_worker())
+        # Logic to minimize the number of unnecessary status updates
+        update_status = False
+        if self._worker_state_info != ws:
+            self._worker_state_info = ws
+            update_status = True
 
-                    if ws["completed_tasks_available"]:
-                        self._loop.create_task(self._load_task_results_from_worker())
+        if ws["re_state"] == "paused":
+            self._re_pause_pending = False
+            self._status_update()
+            update_status = False
 
-                    if ws["unexpected_shutdown"]:
-                        # Shutdown was not requested by the manager (caused by external client).
-                        self._loop.create_task(self._handle_unexpected_worker_shutdown())
+        if ws["plans_and_devices_list_updated"]:
+            self._loop.create_task(self._load_existing_plans_and_devices_from_worker())
 
-                    if not self._exec_loop_deactivated_event.is_set() and not ws["ip_kernel_captured"]:
-                        # Expected to be used only if IPython kernel is used.
-                        self._exec_loop_deactivated_event.set()
+        if ws["completed_tasks_available"]:
+            self._loop.create_task(self._load_task_results_from_worker())
 
-                    if self._manager_state == MState.CLOSING_ENVIRONMENT:
-                        if ws["environment_state"] == "closing":
-                            self._fut_manager_task_completed.set_result(True)
+        if ws["unexpected_shutdown"]:
+            # Shutdown was not requested by the manager (caused by external client).
+            self._loop.create_task(self._handle_unexpected_worker_shutdown())
 
-                    elif self._manager_state == MState.CREATING_ENVIRONMENT:
-                        # If RE Worker environment fails to open, then it switches to 'closing' state.
-                        #   Closing must be confirmed by Manager before it is closed.
-                        done = not self._use_ipython_kernel or not ws["ip_kernel_captured"]
-                        if done and ws["environment_state"] in ("idle", "executing_plan", "executing_task"):
-                            self._fut_manager_task_completed.set_result(True)
-                        if done and ws["environment_state"] == "closing":
-                            self._fut_manager_task_completed.set_result(False)
+        if not self._exec_loop_deactivated_event.is_set() and not ws["ip_kernel_captured"]:
+            # Expected to be used only if IPython kernel is used.
+            self._exec_loop_deactivated_event.set()
 
-                    elif self._manager_state in (MState.EXECUTING_QUEUE, MState.PAUSED):
-                        if ws["re_report_available"]:
-                            self._loop.create_task(self._process_plan_report())
+        if self._manager_state == MState.CLOSING_ENVIRONMENT:
+            if ws["environment_state"] == "closing":
+                self._complete_manager_task(True)
 
-                        if ws["run_list_updated"]:
-                            self._loop.create_task(self._download_run_list())
+        elif self._manager_state == MState.CREATING_ENVIRONMENT:
+            # If RE Worker environment fails to open, then it switches to 'closing' state.
+            #   Closing must be confirmed by Manager before it is closed.
+            done = not self._use_ipython_kernel or not ws["ip_kernel_captured"]
+            if done and ws["environment_state"] in ("idle", "executing_plan", "executing_task"):
+                self._complete_manager_task(True)
+            if done and ws["environment_state"] == "closing":
+                self._complete_manager_task(False)
 
-                    if update_status:
-                        self._status_update()
+        elif self._manager_state in (MState.EXECUTING_QUEUE, MState.PAUSED):
+            if ws["re_report_available"]:
+                self._loop.create_task(self._process_plan_report())
+
+            if ws["run_list_updated"]:
+                self._loop.create_task(self._download_run_list())
+
+        if update_status:
+            self._status_update()
+
+    def _complete_manager_task(self, result):
+        """Resolve the env open/close completion future
+        ('_fut_manager_task_completed') exactly once.
+
+        The poll loop can re-enter the CREATING/CLOSING_ENVIRONMENT branch after
+        the future has already been resolved (env-open holds the
+        CREATING_ENVIRONMENT state while it runs the plans/devices download plus
+        config-service sync, which can exceed one poll period). A second
+        'set_result' on a done future raises 'InvalidStateError'; guarding here
+        keeps the poll task alive.
+        """
+        fut = self._fut_manager_task_completed
+        if fut is not None and not fut.done():
+            fut.set_result(result)
 
     async def _handle_unexpected_worker_shutdown(self):
         """Confirm the worker exit, then release any config-service lock this
@@ -1488,7 +1531,12 @@ class RunEngineManager(Process):
             if not self.queue_autostart_enabled:
                 break
             if queue_size and self._manager_state == MState.IDLE and self._compute_re_state() is not None:
-                success, err_msg = await self._start_plan()
+                # Hold the dispatch lock so autostart can't race a concurrent
+                # 'queue_start' / 'queue_item_execute' (both run under the same
+                # lock via _dispatch_command). '_start_plan' re-checks the manager
+                # state under the lock, so a state change here is handled safely.
+                async with self._get_dispatch_lock():
+                    success, err_msg = await self._start_plan()
                 if not success:
                     logger.debug("Autostart: failed to start a plan: %s", err_msg)
 
@@ -1778,14 +1826,26 @@ class RunEngineManager(Process):
         return ip_connect_info, err_msg
 
     async def _worker_request_plan_report(self):
-        try:
-            plan_report = await self._comm_to_worker.send_msg("request_plan_report")
-            err_msg = ""
-            if plan_report is None:
-                err_msg = "Report is not available at RE Worker"
-        except CommTimeoutError:
-            plan_report, err_msg = None, "Timeout occurred while processing the request"
-        return plan_report, err_msg
+        # Use the long timeout (matching '_worker_request_task_results') and retry
+        # once on timeout before giving up. The pipe round-trip for a report can
+        # exceed the default 0.5 s timeout; a single lost report used to mark a
+        # *completed* plan as failed and re-queue it (duplicate execution). The
+        # worker keeps the report until the next 'command_reset_worker' (see
+        # 'worker._request_plan_report_handler'), so the retry re-fetches the same
+        # report if the first response was lost.
+        tt = self._comm_to_worker_timeout_long
+        err_msg = ""
+        for attempt in range(2):
+            try:
+                plan_report = await self._comm_to_worker.send_msg("request_plan_report", timeout=tt)
+                if plan_report is None:
+                    return None, "Report is not available at RE Worker"
+                return plan_report, ""
+            except CommTimeoutError:
+                err_msg = "Timeout occurred while processing the request"
+                if attempt == 0:
+                    logger.warning("Timeout while requesting the plan report from the worker; retrying")
+        return None, err_msg
 
     async def _worker_request_run_list(self):
         try:
@@ -4076,6 +4136,23 @@ class RunEngineManager(Process):
 
         return {"success": success, "msg": msg}
 
+    def _get_dispatch_lock(self):
+        """Return the command-dispatch serialization lock, creating it lazily on
+        first use so it binds to the running event loop.
+
+        Serializes every command-handler invocation — the 0MQ dispatch loop
+        (``_zmq_execute``), the co-hosted HTTP loopback (``send_request`` in
+        unified mode) and the autostart-initiated ``_start_plan`` — so the
+        check-then-act state transitions in handlers such as ``_start_plan`` can't
+        interleave. Upstream relied on the single 0MQ REP recv/send loop for this;
+        unified mode runs handlers concurrently, so the lock is required.
+        Creation is race-free: the check-and-assign has no ``await`` between the
+        two statements, so it is atomic on the single-threaded event loop.
+        """
+        if self._command_dispatch_lock is None:
+            self._command_dispatch_lock = asyncio.Lock()
+        return self._command_dispatch_lock
+
     async def _dispatch_command(self, method, params):
         """Look up and run a registered command handler.
 
@@ -4086,20 +4163,25 @@ class RunEngineManager(Process):
         / raising handlers. Handler success/failure is carried inside
         the returned dict — exceptions are surfaced as ``success: False``
         responses, not raised past this method.
+
+        Handler execution is serialized by ``_get_dispatch_lock`` so 0MQ and
+        HTTP-loopback requests can't interleave their check-then-act state
+        transitions.
         """
         try:
             handler = self._command_handlers[method]
         except KeyError:
             return {"success": False, "msg": f"Unknown method {method!r}"}
-        try:
-            return await handler(self, params)
-        except AttributeError:
-            return {
-                "success": False,
-                "msg": f"Handler for the command {method!r} is not implemented",
-            }
-        except Exception as ex:
-            return {"success": False, "msg": str(ex)}
+        async with self._get_dispatch_lock():
+            try:
+                return await handler(self, params)
+            except AttributeError:
+                return {
+                    "success": False,
+                    "msg": f"Handler for the command {method!r} is not implemented",
+                }
+            except Exception as ex:
+                return {"success": False, "msg": str(ex)}
 
     async def _zmq_execute(self, msg):
         try:
