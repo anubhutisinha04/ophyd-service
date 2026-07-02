@@ -41,6 +41,20 @@ the console scripts), and a one-module `bluesky_queueserver` package re-exports
 the legacy top-level names the client imports. The import namespace for all code
 in this repo is `queueserver_service`.
 
+For the same reason, a second thin distribution — `bluesky-httpserver`, under
+`bluesky-httpserver/` (see its `pyproject.toml` and `bluesky_httpserver/__init__.py`)
+— claims the upstream `bluesky-httpserver` distribution name and provides the
+`bluesky_httpserver` import namespace, lazily aliasing every submodule onto
+`queueserver_service.http` (so e.g. `from bluesky_httpserver.server import start_server`
+or a uvicorn `--factory bluesky_httpserver.server:app_factory` keep working). This
+stops a third-party `Requires-Dist: bluesky-httpserver` from pulling upstream
+httpserver in alongside and clobbering the `start-bluesky-httpserver` console script
+(which the `bluesky-queueserver` dist above already owns — the shim deliberately does
+NOT re-declare it). The shim pins `bluesky-queueserver==<same version>` so a
+version-skewed pair is uninstallable. It is installed alongside the main package
+(`pip install -e . -e ./bluesky-httpserver`), which the Dockerfile and the
+queueserver-tests CI job both do.
+
 Enforced in CI: the `with-queueserver` integration job installs
 `bluesky-queueserver-api` from PyPI and drives the running service over both
 transports (`integration/exercise/queueserver_api_compat.py`).
