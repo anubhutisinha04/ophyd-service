@@ -95,11 +95,25 @@ class ConfigServiceSettings:
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     backoff_ms: Tuple[int, ...] = DEFAULT_BACKOFF_MS
     service_name: str = DEFAULT_SERVICE_NAME
+    # Lock scope — which devices queueserver locks in configuration_service and
+    # for how long. Default is "plan".
+    #
+    # "plan" (default): no environment lock; before each plan starts, lock
+    #   exactly the registered devices referenced by the plan's args/kwargs,
+    #   release when the plan reaches a terminal state. Devices are therefore
+    #   free for direct control whenever no plan is running (idle env → free).
+    #   Combine with configuration_service's lock_all policy to choose between
+    #   the two operator-facing variants:
+    #     - lock_all=False → only the plan's devices are locked (variant 2);
+    #     - lock_all=True  → while a plan runs, EVERY registered device reports
+    #       locked, even ones the plan doesn't use (variant 1). Availability is
+    #       widened on the config-service side; queueserver still only acquires
+    #       the plan's devices, so idle → free still holds.
     # "environment": one lock over every registry device for the lifetime of
-    # the worker environment (legacy behavior). "plan": no environment lock;
-    # before each plan starts, lock exactly the registered devices referenced
-    # by the plan's args/kwargs, release when the plan reaches a terminal state.
-    lock_scope: str = "environment"
+    #   the worker environment (devices stay locked even when idle). Kept for
+    #   deployments that want the beamline fully owned by queueserver whenever
+    #   an environment is open.
+    lock_scope: str = "plan"
 
     @classmethod
     def from_config_dict(cls, section: Optional[Dict[str, Any]]) -> "ConfigServiceSettings":
@@ -133,7 +147,7 @@ class ConfigServiceSettings:
 
         service_name = str(section.get("service_name", DEFAULT_SERVICE_NAME))
 
-        lock_scope = str(section.get("lock_scope", "environment"))
+        lock_scope = str(section.get("lock_scope", "plan"))
         if lock_scope not in _VALID_LOCK_SCOPES:
             raise ValueError(
                 f"config_service.lock_scope must be one of "
@@ -298,6 +312,25 @@ class ConfigServiceClient:
             "item_id": item_id,
         }
         return await self._request("POST", "/api/v1/devices/unlock", json=payload)
+
+    async def renew_locks(
+        self,
+        device_names: List[str],
+        *,
+        item_id: str,
+    ) -> Dict[str, Any]:
+        """Extend the lease on locks held by ``item_id`` (heartbeat).
+
+        Returns the parsed renew response: ``renewed_devices``, ``lost_devices``,
+        ``conflict_devices``, ``lock_epoch`` and ``expires_at``. A ``lost``
+        device (or a changed ``lock_epoch``) tells the caller the authority
+        dropped the lock and it must be re-acquired.
+        """
+        payload = {
+            "device_names": list(device_names),
+            "item_id": item_id,
+        }
+        return await self._request("POST", "/api/v1/devices/lock/renew", json=payload)
 
     # Internals ----------------------------------------------------------
 

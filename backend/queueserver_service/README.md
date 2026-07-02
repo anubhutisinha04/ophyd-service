@@ -80,6 +80,29 @@ a manager-config YAML pointing `config_service.url` at the configuration_service
 See `integration/pods/with-queueserver/` for the full pod (redis + the three backends + an IOC)
 and the manager-config YAML.
 
+### Device locking (config_service integration)
+
+When `config_service.enabled` is set, queueserver locks devices in
+configuration_service around plan execution so Direct Control cannot command
+them concurrently. Two settings shape this:
+
+- `config_service.lock_scope` (default **`plan`**): lock exactly the registered
+  devices a plan references, acquired at plan start and released when the plan
+  ends — so an idle environment leaves devices free. The alternative
+  `environment` locks the whole device set for the environment's lifetime
+  (including while idle).
+- Whether *other* (unused) devices are also blocked while a plan runs is chosen
+  on the configuration_service side by its `CONFIG_LOCK_ALL` policy: `true`
+  blocks every device while any plan-lock is held (Variant 1); `false` blocks
+  only the plan's devices (Variant 2). Queueserver's acquisition is identical
+  either way.
+
+If configuration_service enables lock leases (`CONFIG_LOCK_LEASE_TTL_SECONDS`
+> 0), the coordinator renews held locks on a timer and re-acquires them if the
+authority reports the lease lost or its `lock_epoch` changed (a
+configuration_service restart) — so a mid-plan restart doesn't leave devices
+unprotected.
+
 **Queue storage** is pluggable (`queueserver_service/manager/queue_store.py`). Redis
 is the default; the queue is stored in Redis at `--redis-addr` unless
 `--queue-store-uri` (or `QSERVER_QUEUE_STORE_URI`, or the `network/queue_store_uri`

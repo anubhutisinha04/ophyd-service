@@ -18,21 +18,26 @@ The Configuration Service holds the lock state because it is the shared registry
 
 **Force-unlock**: An admin endpoint that clears locks regardless of ownership. Used when Experiment Execution crashes mid-plan and leaves orphaned locks.
 
-**Ephemeral state**: Locks are in-memory only (`DeviceLockManager`). On service restart, all locks are cleared. This is intentional — a restart means no plan is running, so no locks should exist.
+**Ephemeral state**: Locks are in-memory only (`DeviceLockManager`). On service restart, all locks are cleared. A restart usually means no plan is running — but it can also happen *mid-plan*, which would silently drop a running plan's locks. Two mechanisms bound that exposure: **lock leases** and the **lock-authority epoch** (below).
+
+## Two lock variants
+
+There are two operator-facing ways to answer "what does a running plan lock?":
+
+1. **Lock everything (Variant 1)** — while *any* plan is running, *no* device is commandable out of band, even devices the plan doesn't touch. Enabled by the **lock_all** policy below.
+2. **Lock only what's used (Variant 2, default)** — a plan using devices A and B leaves C and D available to Direct Control.
+
+Both are *plan-scoped*: queueserver acquires the lock when a plan starts and releases it when the plan ends, so an idle environment leaves every device free. (Queueserver's `lock_scope` defaults to `plan`; an alternative `environment` scope locks the whole device set for the environment's lifetime, including while idle.)
 
 ## The lock_all policy
 
-By default, a lock request only locks the devices it names: a plan using
-device A leaves B and C available to Direct Control. Some facilities want the
-opposite — while *any* plan is running, *nothing* should be commandable out
-of band.
-
-The **lock_all** availability policy provides that. When enabled, the moment
+The **lock_all** availability policy selects Variant 1. When enabled, the moment
 any lock is held, every registered device reports locked/unavailable, with
 `locked_by_plan` attributed to the plan holding the (earliest) lock.
 Acquisition and release semantics are unchanged — this is purely a change in
 how availability is derived from lock state, so the lock writer (queueserver
-/ Experiment Execution) needs no changes.
+/ Experiment Execution) needs no changes: it still acquires only the plan's
+devices, and the policy widens availability.
 
 Configuration:
 
@@ -44,6 +49,32 @@ Configuration:
 
 Standalone PVs are not affected (see below) — they have no device-level
 lock concept.
+
+## Lock leases and heartbeat
+
+By default locks are held until explicitly released (or force-unlocked). A lock
+holder that crashes without releasing therefore blocks its devices until an
+admin force-unlocks or the service restarts. **Lock leases** bound that: when
+`CONFIG_LOCK_LEASE_TTL_SECONDS` > 0, every acquired lock carries an `expires_at`
+and lapses if not renewed. The holder must heartbeat via
+`POST /api/v1/devices/lock/renew` before the lease elapses; a crashed holder's
+lock then self-heals after at most the TTL.
+
+Leases default to disabled (`0`) because they are only safe when the holder is
+heartbeat-capable — otherwise a long plan would lose its lock mid-run.
+Queueserver's coordinator renews on a timer (~1/3 of the TTL) and re-acquires
+if a renew reports the lock lost.
+
+## The lock-authority epoch
+
+Because lock state is in-memory, a configuration_service restart rebuilds an
+empty lock table. The DB-backed registry `service_epoch` does *not* change on a
+plain restart, so it cannot signal this. The **lock-authority epoch** — a fresh
+id generated every process start — does: it is returned on lock / unlock /
+renew responses and on `GET /.../status` as `lock_epoch`. A holder that sees the
+epoch change re-acquires its locks; a reader (Direct Control) that sees it
+change logs that the lock table was reset (every device briefly reports
+available until holders re-acquire).
 
 ## PV-level resolution
 

@@ -116,6 +116,73 @@ async def test_get_owning_device_5xx_raises_instead_of_none():
         await client.cleanup()
 
 
+async def test_get_owning_device_404_invalidates_stale_pv_existence():
+    """A PV deleted from the registry must not keep passing validate_pv from a
+    stale existence cache. A 404 owner lookup drops the cached existence/owner
+    entries so the next validate_pv re-queries and 404s (deleted-device write
+    bypass, fix #3)."""
+    import time
+
+    handler, _ = _status_handler(404)
+    client = _client_with(handler)
+    try:
+        # Simulate a prior validate_pv having cached this PV as existing, while
+        # the owner cache is cold so get_owning_device actually queries and 404s.
+        client._pv_cache["X:PV"] = (True, time.monotonic())
+
+        assert await client.get_owning_device("X:PV") is None
+        # Stale existence entry dropped so the deletion is caught next time.
+        assert "X:PV" not in client._pv_cache
+        with pytest.raises(RegistryValidationError):
+            await client.validate_pv("X:PV")
+    finally:
+        await client.cleanup()
+
+
+# ===== coordination: lock-authority epoch reset detection (fix #2) ===========
+
+
+def _coord_with(handler):
+    from direct_control.coordination_client import CoordinationClient
+
+    client = CoordinationClient(Settings(coordination_check_enabled=True))
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://stub"
+    )
+    return client
+
+
+async def test_coordination_records_and_detects_lock_epoch_reset(capsys):
+    """A changed lock_epoch on /status (configuration_service restart) is
+    surfaced as a lock_authority_reset warning; a stable epoch stays quiet."""
+    epochs = ["epoch-1", "epoch-1", "epoch-2"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "available": True,
+                "enabled": True,
+                "lock_status": "unlocked",
+                "lock_epoch": epochs.pop(0),
+            },
+        )
+
+    client = _coord_with(handler)
+    try:
+        await client.check_device_available("dev")  # first observation
+        assert client._last_lock_epoch == "epoch-1"
+
+        await client.check_device_available("dev")  # same epoch, no warning
+        assert "lock_authority_reset" not in capsys.readouterr().out
+
+        await client.check_device_available("dev")  # epoch changed → warn
+        assert client._last_lock_epoch == "epoch-2"
+        assert "lock_authority_reset" in capsys.readouterr().out
+    finally:
+        await client.cleanup()
+
+
 # ===== set_pv: lock gate fails closed, no EPICS write issued =================
 
 

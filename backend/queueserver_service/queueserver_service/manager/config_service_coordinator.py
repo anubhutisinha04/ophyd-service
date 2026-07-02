@@ -85,6 +85,16 @@ class ConfigServiceCoordinator:
         # (release-before-relock), so an unlock failure cannot latch locking off.
         self._locked_devices: List[str] = []
         self._locked_item_id: str = ""
+        # Lease/epoch bookkeeping for the heartbeat (fix #1). ``_lock_epoch`` is
+        # the config-service lock-authority generation id observed on the last
+        # lock/renew; a change means the authority restarted and dropped our
+        # locks. ``_lease_ttl_seconds`` > 0 means leases are active and we must
+        # renew before ``_locked_plan_name``'s lock lapses. ``_locked_plan_name``
+        # is kept so a re-acquire after a restart can reuse the same plan label.
+        self._lock_epoch: str = ""
+        self._lease_ttl_seconds: float = 0.0
+        self._locked_plan_name: str = ""
+        self._heartbeat_task: Optional[asyncio.Task] = None
         # Registry snapshot (``{name: spec}``) fetched at the start of env-open.
         # ``None`` means "not fetched this env-cycle" and is distinct from the
         # known-empty ``{}`` case.
@@ -152,6 +162,7 @@ class ConfigServiceCoordinator:
 
     async def close(self) -> None:
         """Close the long-lived client (called on manager shutdown)."""
+        await self._stop_heartbeat()
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -211,7 +222,7 @@ class ConfigServiceCoordinator:
                         # top of (or skipping because of) stale state.
                         await self.unlock_devices()
                     if device_names:
-                        await self._lock_with_restart_recovery(
+                        resp = await self._lock_with_restart_recovery(
                             client,
                             device_names,
                             item_id=self._lock_item_id,
@@ -219,6 +230,9 @@ class ConfigServiceCoordinator:
                         )
                         self._locked_devices = list(device_names)
                         self._locked_item_id = self._lock_item_id
+                        self._locked_plan_name = "__environment__"
+                        self._record_lock_epoch_and_lease(resp)
+                        self._ensure_heartbeat()
                         logger.info(
                             "config-service locked %d device(s) under item_id=%s",
                             len(device_names), self._lock_item_id,
@@ -243,6 +257,15 @@ class ConfigServiceCoordinator:
         resulting upserts + deletes to the worker's overlay; commits the advanced
         cursor. Raises if config-service is unreachable or the worker rejects the
         overlay update — plan start aborts loudly (no silent fallback).
+
+        Propagation model (intentional; there is no config→queueserver push):
+        registry edits made in configuration_service reach the *running worker*
+        lazily, at the next plan start, via this check — plus at env-open. A
+        device added or edited mid-queue is therefore not usable by the worker
+        until the next plan begins. This is a latency property, not a
+        correctness gap: each plan starts against a registry snapshot that is
+        current as of that plan's start. A push/subscribe channel (or a periodic
+        pull between plans) would shorten the window if a use case needs it.
         """
         if not self._settings.enabled:
             return
@@ -312,6 +335,7 @@ class ConfigServiceCoordinator:
             return
         self._locked_devices = []
         self._locked_item_id = ""
+        self._locked_plan_name = ""
 
     async def lock_devices_for_plan(self, item: dict) -> None:
         """Acquire per-plan locks for exactly the registered devices the plan
@@ -335,11 +359,14 @@ class ConfigServiceCoordinator:
             return
 
         client = await self.get_client()
-        await client.lock_devices(
+        resp = await client.lock_devices(
             device_names, item_id=item["item_uid"], plan_name=item["name"]
         )
         self._locked_devices = list(device_names)
         self._locked_item_id = item["item_uid"]
+        self._locked_plan_name = item["name"]
+        self._record_lock_epoch_and_lease(resp)
+        self._ensure_heartbeat()
         logger.info(
             "config-service locked %d device(s) for plan %r (item_uid=%s): %s",
             len(device_names), item["name"], item["item_uid"], device_names,
@@ -352,18 +379,19 @@ class ConfigServiceCoordinator:
         *,
         item_id: str,
         plan_name: str,
-    ) -> None:
+    ) -> dict:
         """Env-scope lock with restart-orphan recovery: force-unlock + retry once
         on a 409, since a single-manager deployment can only 409 on a previous
         incarnation's leftover locks. Bounded retry; a second 409 raises so
         env-open fails loudly. Intentionally NOT used by the per-plan path, where
         a 409 can legitimately mean another plan in this env still holds the lock.
+
+        Returns the config-service lock response (used to capture the lease/epoch).
         """
         try:
-            await client.lock_devices(
+            return await client.lock_devices(
                 device_names, item_id=item_id, plan_name=plan_name
             )
-            return
         except ConfigServiceConflict as conflict:
             logger.warning(
                 "config-service lock conflict for item_id=%s plan=%r "
@@ -378,7 +406,7 @@ class ConfigServiceCoordinator:
                     f"(new item_id={item_id}, plan={plan_name})"
                 ),
             )
-        await client.lock_devices(
+        return await client.lock_devices(
             device_names, item_id=item_id, plan_name=plan_name
         )
 
@@ -402,7 +430,147 @@ class ConfigServiceCoordinator:
             )
             return suppress_errors
 
-    # -- device diff / sync endpoints (core; the manager handler wraps these) --
+    # -- lock lease heartbeat (fix #1) ---------------------------------------
+
+    def _record_lock_epoch_and_lease(self, resp: Optional[Dict[str, Any]]) -> None:
+        """Capture the lock-authority epoch and lease TTL from a lock/renew
+        response so the heartbeat knows whether leases are active and can
+        detect an authority reset."""
+        if not isinstance(resp, dict):
+            return
+        epoch = resp.get("lock_epoch")
+        if epoch:
+            self._lock_epoch = str(epoch)
+        ttl = resp.get("lease_ttl_seconds")
+        if ttl is not None:
+            try:
+                self._lease_ttl_seconds = float(ttl)
+            except (TypeError, ValueError):
+                pass
+
+    def _heartbeat_interval(self) -> float:
+        """Renew at ~1/3 of the lease so two missed ticks still don't lapse it,
+        but never at or beyond the lease itself — a tiny TTL must still renew
+        before it expires (a fixed 1s floor could exceed a sub-3s lease and
+        cause avoidable lock loss). Capped at ttl/2 to guarantee that."""
+        ttl = self._lease_ttl_seconds
+        return min(max(ttl / 3.0, 0.5), ttl / 2.0)
+
+    def _ensure_heartbeat(self) -> None:
+        """Start the lease heartbeat loop if leases are active and it isn't
+        already running. No-op when leases are disabled (lease_ttl == 0), so
+        deployments that don't set a TTL pay nothing."""
+        if self._lease_ttl_seconds <= 0:
+            return
+        if self._heartbeat_task is not None and not self._heartbeat_task.done():
+            return
+        self._heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
+
+    async def _stop_heartbeat(self) -> None:
+        task = self._heartbeat_task
+        self._heartbeat_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 — best-effort stop
+            pass
+
+    async def _heartbeat_loop(self) -> None:
+        """Periodically renew the lease on the lock we hold; re-acquire if the
+        authority reports it lost or its epoch changed (a config-service
+        restart). Never raises into the loop — a transient renew failure is
+        logged and retried on the next tick; the lease TTL is the backstop."""
+        while True:
+            try:
+                await asyncio.sleep(self._heartbeat_interval())
+                await self._heartbeat_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — heartbeat must not die
+                logger.exception("config-service lock heartbeat tick failed")
+
+    async def _heartbeat_once(self) -> None:
+        """One renew tick. Uses a snapshot + compare-after-await so a plan
+        lifecycle transition that changes our lock while we're awaiting simply
+        makes this tick abandon its work rather than corrupting bookkeeping —
+        no shared lock needed on the single manager event loop."""
+        if not self._settings.enabled or self._lease_ttl_seconds <= 0:
+            return
+        devices = list(self._locked_devices)
+        item_id = self._locked_item_id
+        plan_name = self._locked_plan_name
+        prev_epoch = self._lock_epoch
+        if not devices or not item_id:
+            return
+
+        client = await self.get_client()
+        resp = await client.renew_locks(devices, item_id=item_id)
+
+        # A plan lock/unlock ran under our await — this tick is stale, drop it.
+        if self._locked_item_id != item_id:
+            return
+
+        new_epoch = str(resp.get("lock_epoch") or "")
+        lost = list(resp.get("lost_devices") or [])
+        conflicts = list(resp.get("conflict_devices") or [])
+        epoch_changed = bool(new_epoch) and bool(prev_epoch) and new_epoch != prev_epoch
+
+        if conflicts:
+            # Our lease lapsed and another owner acquired these devices. A
+            # re-acquire would (correctly) 409; surface it loudly rather than
+            # keep believing we hold the lock, and drop our bookkeeping so we
+            # don't later "release" a lock we no longer own.
+            logger.error(
+                "config-service lease lost to another owner for item_id=%s plan=%r: "
+                "conflict on %s — our plan no longer holds these device(s)",
+                item_id, plan_name, conflicts,
+            )
+            await self._reacquire_after_loss(devices, item_id, plan_name)
+        elif epoch_changed or lost:
+            logger.warning(
+                "config-service lock authority reset or lease lost "
+                "(epoch %s->%s, lost=%s); re-acquiring %d device(s) for %r",
+                prev_epoch, new_epoch, lost, len(devices), plan_name,
+            )
+            await self._reacquire_after_loss(devices, item_id, plan_name)
+        elif new_epoch:
+            self._lock_epoch = new_epoch
+
+    async def _reacquire_after_loss(
+        self, devices: List[str], item_id: str, plan_name: str
+    ) -> None:
+        """Re-take a lock the authority dropped (restart / lapsed lease). The old
+        lock is gone server-side, so a fresh acquire should not conflict; a
+        conflict here means something external holds it, which we surface by
+        logging (the lease TTL still bounds the exposure)."""
+        client = await self.get_client()
+        try:
+            resp = await client.lock_devices(
+                devices, item_id=item_id, plan_name=plan_name or "__reacquired__"
+            )
+        except ConfigServiceConflict as conflict:
+            # Another owner holds these devices now (our lease lapsed and was
+            # taken). We genuinely don't hold the lock — drop our bookkeeping
+            # (only if a concurrent plan transition hasn't already replaced it)
+            # so we don't later try to release a lock we don't own, and so the
+            # coordinator stops believing it's protected.
+            logger.error(
+                "config-service re-acquire conflicted for item_id=%s (%s); another "
+                "owner holds these device(s) — releasing our stale bookkeeping",
+                item_id, conflict,
+            )
+            if self._locked_item_id == item_id:
+                self._locked_devices = []
+                self._locked_item_id = ""
+                self._locked_plan_name = ""
+            return
+        # Only commit if a concurrent transition didn't supersede us.
+        if self._locked_item_id == item_id:
+            self._record_lock_epoch_and_lease(resp)
+
+
 
     async def compute_diff_against_registry(self) -> DeviceDiff:
         """Diff the worker's introspected devices against the registry (pure read)."""

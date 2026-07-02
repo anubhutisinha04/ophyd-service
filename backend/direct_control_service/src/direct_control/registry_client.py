@@ -201,9 +201,15 @@ class RegistryClient:
             raise RuntimeError("Configuration service unavailable") from e
 
         if response.status_code == 404:
-            # PV not in registry — caller will hit the validate_pv gate
-            # separately. Don't cache as None here: that would shadow a real
-            # owner once the PV gets registered.
+            # PV not in registry — either it never was, or it was just deleted.
+            # If a stale existence entry says it exists, drop it so the next
+            # validate_pv re-checks and returns 404 instead of serving the
+            # deleted PV for the rest of the TTL window (closes the
+            # deleted-device write-bypass, fix #3). Don't cache None as the
+            # owner here: that would shadow a real owner once the PV is
+            # (re)registered.
+            self._pv_cache.pop(pv_name, None)
+            self._pv_owner_cache.pop(pv_name, None)
             return None
         if response.status_code != 200:
             # FAIL CLOSED: a 5xx must not be read as "standalone PV, no lock

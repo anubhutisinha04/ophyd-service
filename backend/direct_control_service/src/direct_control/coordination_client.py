@@ -55,6 +55,14 @@ class CoordinationClient:
         self.settings = settings
         self.base_url = settings.configuration_service_url
         self._client: httpx.AsyncClient | None = None
+        # Last lock-authority epoch seen on /status. A change means
+        # configuration_service restarted and rebuilt its (in-memory) lock
+        # table — every device momentarily reports unlocked until the lock
+        # holder (queueserver) re-acquires. We can't fail closed here (we
+        # don't know which devices a plan held), but we surface the reset
+        # loudly so operators/monitoring can correlate a transient
+        # "everything available" window with the restart.
+        self._last_lock_epoch: str | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -63,6 +71,31 @@ class CoordinationClient:
                 timeout=self.settings.coordination_timeout,
             )
         return self._client
+
+    def _note_lock_epoch(self, lock_epoch: str | None, device_name: str) -> None:
+        """Detect a lock-authority reset from the epoch on /status.
+
+        The first observation just records the epoch. A subsequent change
+        means configuration_service restarted and dropped its in-memory
+        locks; we log a warning so a window where locked devices briefly
+        report available is attributable, not silent.
+        """
+        if not lock_epoch:
+            return
+        previous = self._last_lock_epoch
+        self._last_lock_epoch = lock_epoch
+        if previous is not None and previous != lock_epoch:
+            logger.warning(
+                "lock_authority_reset",
+                device_name=device_name,
+                previous_epoch=previous,
+                current_epoch=lock_epoch,
+                note=(
+                    "configuration_service rebuilt its lock table (restart); "
+                    "locks held before the reset are gone until the plan owner "
+                    "re-acquires them — treat availability as provisional briefly"
+                ),
+            )
 
     async def check_device_available(self, device_name: str) -> CoordinationStatus:
         """
@@ -122,6 +155,8 @@ class CoordinationClient:
 
             response.raise_for_status()
             data = response.json()
+
+            self._note_lock_epoch(data.get("lock_epoch"), device_name)
 
             available = bool(data.get("available", False))
             enabled = bool(data.get("enabled", True))

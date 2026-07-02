@@ -827,6 +827,25 @@ class DeviceLockResponse(BaseModel):
     locked_pvs: list[str] = Field(default_factory=list, description="PVs implicitly locked")
     lock_id: str | None = Field(default=None, description="Lock group identifier")
     registry_version: int = Field(description="Lock version counter")
+    lock_epoch: str = Field(
+        description=(
+            "Lock-authority generation id. Changes when configuration_service "
+            "restarts (in-memory lock state is rebuilt). Holders compare this "
+            "across calls to detect that their locks were dropped and must be "
+            "re-acquired."
+        ),
+    )
+    expires_at: str | None = Field(
+        default=None,
+        description=(
+            "ISO timestamp when the lease lapses if not renewed, or null when "
+            "leases are disabled (CONFIG_LOCK_LEASE_TTL_SECONDS=0)."
+        ),
+    )
+    lease_ttl_seconds: float = Field(
+        default=0.0,
+        description="Configured lease TTL in seconds (0 = leases disabled).",
+    )
 
 
 class DeviceLockConflictResponse(BaseModel):
@@ -846,6 +865,48 @@ class DeviceUnlockRequest(BaseModel):
     item_id: str = Field(description="Queue item ID that holds the lock")
 
 
+class DeviceLockRenewRequest(BaseModel):
+    """Request model for renewing (heartbeating) held device locks."""
+
+    device_names: list[str] = Field(description="Devices whose lease to extend")
+    item_id: str = Field(description="Queue item ID that holds the lock")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "device_names": ["sample_x", "det1"],
+                "item_id": "550e8400-e29b-41d4-a716-446655440000",
+            }
+        }
+
+
+class DeviceLockRenewResponse(BaseModel):
+    """Response model for a lock-renewal (heartbeat).
+
+    ``success`` is True only when every requested device was renewed. When
+    ``lost`` is non-empty the holder no longer owns those locks here (they
+    expired, were released, or the authority restarted) and must re-acquire;
+    ``lock_epoch`` lets the holder confirm an authority reset.
+    """
+
+    success: bool = Field(description="True only if every device was renewed")
+    renewed_devices: list[str] = Field(
+        default_factory=list, description="Devices whose lease was extended"
+    )
+    lost_devices: list[str] = Field(
+        default_factory=list,
+        description="Requested devices no longer held here — re-acquire needed",
+    )
+    conflict_devices: list[str] = Field(
+        default_factory=list,
+        description="Requested devices currently held by a different item_id",
+    )
+    lock_epoch: str = Field(description="Lock-authority generation id")
+    expires_at: str | None = Field(
+        default=None, description="New lease expiry (null when leases disabled)"
+    )
+
+
 class DeviceUnlockResponse(BaseModel):
     """Response model for unlock operations."""
 
@@ -854,6 +915,7 @@ class DeviceUnlockResponse(BaseModel):
         default_factory=list, description="Devices that were unlocked"
     )
     registry_version: int = Field(description="Lock version counter")
+    lock_epoch: str = Field(description="Lock-authority generation id")
 
 
 class DeviceForceUnlockRequest(BaseModel):
@@ -881,6 +943,21 @@ class DeviceStatusResponse(BaseModel):
     locked_by_plan: str | None = Field(default=None, description="Plan holding the lock")
     locked_by_item: str | None = Field(default=None, description="Queue item ID holding the lock")
     locked_at: str | None = Field(default=None, description="ISO timestamp of lock acquisition")
+    locked_until: str | None = Field(
+        default=None,
+        description=(
+            "ISO timestamp when the current lock's lease lapses if not "
+            "renewed, or null when unlocked or leases are disabled."
+        ),
+    )
+    lock_epoch: str = Field(
+        description=(
+            "Lock-authority generation id. Changes on a configuration_service "
+            "restart (in-memory lock state is rebuilt). Readers (direct-control) "
+            "can detect that the lock table was reset — every device will report "
+            "unlocked until holders re-acquire."
+        ),
+    )
     pv_health: dict[str, "PVHealthRecord"] = Field(
         default_factory=dict,
         description=(

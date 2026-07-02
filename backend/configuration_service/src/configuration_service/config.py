@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     # have no device-level lock concept and are not affected.
     lock_all: bool = False
 
+    # Device-lock lease TTL in seconds. 0 (default) disables lease expiry —
+    # locks are held until explicitly released or force-unlocked (historical
+    # behavior). When > 0, every acquired lock carries an expires_at and the
+    # holder must renew it (POST /api/v1/devices/lock/renew) before it lapses;
+    # a holder that crashes without releasing therefore only blocks the device
+    # for up to this many seconds instead of forever. Only enable this when
+    # the lock holder (queueserver) is heartbeat-capable, otherwise long plans
+    # would lose their locks mid-run.
+    lock_lease_ttl_seconds: float = 0.0
+
     # Live-enrichment fallback for the path resolver.
     # When the resolver returns ``needs_enrichment`` (typically a classic
     # ophyd FormattedComponent with a {placeholder}), configuration_service

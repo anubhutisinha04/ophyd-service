@@ -51,6 +51,8 @@ from .models import (
     DeviceLabel,
     DeviceLockConflict,
     DeviceLockConflictResponse,
+    DeviceLockRenewRequest,
+    DeviceLockRenewResponse,
     DeviceLockRequest,
     DeviceLockResponse,
     DeviceMetadata,
@@ -335,9 +337,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # Initialize device lock manager (in-memory, ephemeral). lock_all is
         # the boot default for the availability policy; runtime-changeable
-        # via PUT /api/v1/devices/lock/policy.
-        lock_manager_container["manager"] = DeviceLockManager(lock_all=settings.lock_all)
-        logger.info("device_lock_manager_initialized", lock_all=settings.lock_all)
+        # via PUT /api/v1/devices/lock/policy. lease_ttl bounds orphaned locks
+        # (0 = disabled, historical behavior).
+        lock_manager_container["manager"] = DeviceLockManager(
+            lock_all=settings.lock_all,
+            lease_ttl=settings.lock_lease_ttl_seconds,
+        )
+        logger.info(
+            "device_lock_manager_initialized",
+            lock_all=settings.lock_all,
+            lease_ttl_seconds=settings.lock_lease_ttl_seconds,
+            lock_epoch=lock_manager_container["manager"].epoch,
+        )
 
         # Initialize PV health manager (in-memory, ephemeral).
         pv_health_container["manager"] = PVHealthManager()
@@ -834,6 +845,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             locked_pvs=result.locked_pvs,
             lock_id=result.lock_id,
             registry_version=lock_manager.version,
+            lock_epoch=lock_manager.epoch,
+            expires_at=result.expires_at.isoformat() if result.expires_at else None,
+            lease_ttl_seconds=lock_manager.lease_ttl,
         )
 
     @app.post(
@@ -882,6 +896,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             success=True,
             unlocked_devices=unlocked,
             registry_version=lock_manager.version,
+            lock_epoch=lock_manager.epoch,
+        )
+
+    @app.post(
+        "/api/v1/devices/lock/renew",
+        response_model=DeviceLockRenewResponse,
+        summary="Renew Device Locks (Heartbeat)",
+        tags=["Device Locking"],
+    )
+    async def renew_device_locks(
+        request: DeviceLockRenewRequest,
+        lock_manager: LockManagerDep,
+    ) -> DeviceLockRenewResponse:
+        """Extend the lease on locks held by ``item_id`` (heartbeat).
+
+        Called periodically by the lock holder while it still needs the
+        devices. Only meaningful when leases are enabled
+        (CONFIG_LOCK_LEASE_TTL_SECONDS > 0); with leases disabled every held
+        lock is renewed as a no-op. ``lost_devices`` tells the holder which
+        locks it must re-acquire (expired, released, or dropped by a restart),
+        and ``lock_epoch`` confirms whether the authority itself reset.
+
+        This route is registered before the ``{device_name}`` wildcard so
+        ``renew`` is never matched as a device name.
+        """
+        result = await lock_manager.renew_locks(
+            device_names=request.device_names,
+            item_id=request.item_id,
+        )
+        return DeviceLockRenewResponse(
+            success=result.success,
+            renewed_devices=result.renewed,
+            lost_devices=result.lost,
+            conflict_devices=result.conflicts,
+            lock_epoch=lock_manager.epoch,
+            expires_at=result.expires_at.isoformat() if result.expires_at else None,
         )
 
     @app.post(
@@ -932,6 +982,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             success=True,
             unlocked_devices=unlocked,
             registry_version=lock_manager.version,
+            lock_epoch=lock_manager.epoch,
         )
 
     # ===== Lock Policy =====
@@ -1018,6 +1069,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             locked_by_plan=lock_state.locked_by_plan if lock_state else None,
             locked_by_item=lock_state.locked_by_item if lock_state else None,
             locked_at=lock_state.locked_at.isoformat() if lock_state else None,
+            locked_until=(
+                lock_state.expires_at.isoformat() if lock_state and lock_state.expires_at else None
+            ),
+            lock_epoch=lock_manager.epoch,
             pv_health=pv_health_rollup,
         )
 

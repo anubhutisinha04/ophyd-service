@@ -47,6 +47,24 @@ class DeviceController:
     coordination with active plan execution (A4 requirement).
 
     Implements: DeviceControl protocol
+
+    Coordination is a check-then-act sequence: ``check_device_available``
+    reads the device's live lock state from configuration_service, then the
+    write is issued. This is inherently TOCTOU — a plan could acquire the
+    lock in the window between the check and the caput landing on the IOC.
+    The design accepts that narrow race rather than adding a distributed
+    reservation, because the exposure is bounded on both ends:
+
+    - configuration_service is authoritative at check time (no local lock
+      cache — every check is a live GET /status), so the window is one
+      request round-trip, not a TTL;
+    - when lock leases are enabled (CONFIG_LOCK_LEASE_TTL_SECONDS), the plan
+      owner (queueserver) re-acquires on lease loss / authority reset, and a
+      crashed owner's lock lapses on its own — so the coordination state a
+      write races against is never stale for longer than the lease.
+
+    A robust closure of the race would require a short-lived write
+    reservation on configuration_service; tracked as future work.
     """
 
     def __init__(

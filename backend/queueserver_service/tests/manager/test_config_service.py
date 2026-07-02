@@ -135,18 +135,18 @@ def test_disabled_settings_reject_client_construction():
         ConfigServiceClient(ConfigServiceSettings(enabled=False))
 
 
-def test_settings_lock_scope_defaults_to_environment():
+def test_settings_lock_scope_defaults_to_plan():
     s = ConfigServiceSettings.from_config_dict(
         {"enabled": True, "url": "http://cs.test"}
     )
-    assert s.lock_scope == "environment"
-
-
-def test_settings_lock_scope_plan():
-    s = ConfigServiceSettings.from_config_dict(
-        {"enabled": True, "url": "http://cs.test", "lock_scope": "plan"}
-    )
     assert s.lock_scope == "plan"
+
+
+def test_settings_lock_scope_environment():
+    s = ConfigServiceSettings.from_config_dict(
+        {"enabled": True, "url": "http://cs.test", "lock_scope": "environment"}
+    )
+    assert s.lock_scope == "environment"
 
 
 def test_settings_lock_scope_invalid_raises():
@@ -163,7 +163,7 @@ def test_settings_lock_scope_ignored_when_disabled():
         {"enabled": False, "lock_scope": "device"}
     )
     assert s.enabled is False
-    assert s.lock_scope == "environment"
+    assert s.lock_scope == "plan"
 
 
 # ===== Happy-path wrappers =====

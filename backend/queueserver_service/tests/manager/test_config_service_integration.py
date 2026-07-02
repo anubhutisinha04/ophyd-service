@@ -550,6 +550,46 @@ async def test_manager_per_plan_lock_settles_leftover_debt(
 
 
 @pytest.mark.asyncio
+async def test_manager_heartbeat_reacquires_after_lock_loss(tmp_path):
+    """With a real config-service lease, the coordinator heartbeat re-acquires a
+    lock the authority dropped. A force-unlock out of band clears the in-memory
+    lock exactly as a config-service restart would; the next heartbeat tick sees
+    the device as lost and re-acquires it under the same item id (fix #1)."""
+    settings = Settings(
+        load_strategy="empty",
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'cs.db'}",
+        lock_lease_ttl_seconds=30.0,
+    )
+    app = create_app(settings)
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        cs_client = ConfigServiceClient(_cs_settings(), transport=transport)
+        raw = httpx.AsyncClient(transport=transport, base_url="http://testserver")
+        try:
+            await _upsert(cs_client, "m1")
+            coord = _coordinator(cs_client, existing_devices={"m1": {}})
+
+            await coord.lock_devices_for_plan(_plan_item("uid-1", "count", ["m1"]))
+            assert coord._lease_ttl_seconds == 30.0
+            # Drive heartbeat ticks manually rather than via the background loop.
+            await coord._stop_heartbeat()
+
+            # Simulate the authority dropping the lock (restart / lapsed lease).
+            await cs_client.force_unlock_devices(["m1"], reason="simulated restart")
+            assert (await raw.get("/api/v1/devices/m1/status")).json()["available"] is True
+
+            # One heartbeat tick: renew reports it lost → re-acquire.
+            await coord._heartbeat_once()
+            status = (await raw.get("/api/v1/devices/m1/status")).json()
+            assert status["lock_status"] == "locked"
+            assert status["locked_by_item"] == "uid-1"
+        finally:
+            await coord._stop_heartbeat()
+            await raw.aclose()
+            await cs_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_manager_per_plan_lock_no_registered_devices_is_noop(
     cs_client: ConfigServiceClient,
 ):

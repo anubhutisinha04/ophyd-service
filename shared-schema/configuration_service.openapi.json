@@ -581,6 +581,48 @@
         }
       }
     },
+    "/api/v1/devices/lock/renew": {
+      "post": {
+        "tags": [
+          "Device Locking"
+        ],
+        "summary": "Renew Device Locks (Heartbeat)",
+        "description": "Extend the lease on locks held by ``item_id`` (heartbeat).\n\nCalled periodically by the lock holder while it still needs the\ndevices. Only meaningful when leases are enabled\n(CONFIG_LOCK_LEASE_TTL_SECONDS > 0); with leases disabled every held\nlock is renewed as a no-op. ``lost_devices`` tells the holder which\nlocks it must re-acquire (expired, released, or dropped by a restart),\nand ``lock_epoch`` confirms whether the authority itself reset.\n\nThis route is registered before the ``{device_name}`` wildcard so\n``renew`` is never matched as a device name.",
+        "operationId": "renew_device_locks_api_v1_devices_lock_renew_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceLockRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceLockRenewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/devices/force-unlock": {
       "post": {
         "tags": [
@@ -2386,6 +2428,94 @@
         "title": "DeviceLockConflictResponse",
         "description": "Response model for lock conflict (409/404/422)."
       },
+      "DeviceLockRenewRequest": {
+        "properties": {
+          "device_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Device Names",
+            "description": "Devices whose lease to extend"
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id",
+            "description": "Queue item ID that holds the lock"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_names",
+          "item_id"
+        ],
+        "title": "DeviceLockRenewRequest",
+        "description": "Request model for renewing (heartbeating) held device locks.",
+        "example": {
+          "device_names": [
+            "sample_x",
+            "det1"
+          ],
+          "item_id": "550e8400-e29b-41d4-a716-446655440000"
+        }
+      },
+      "DeviceLockRenewResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "description": "True only if every device was renewed"
+          },
+          "renewed_devices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Renewed Devices",
+            "description": "Devices whose lease was extended"
+          },
+          "lost_devices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Lost Devices",
+            "description": "Requested devices no longer held here \u2014 re-acquire needed"
+          },
+          "conflict_devices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Conflict Devices",
+            "description": "Requested devices currently held by a different item_id"
+          },
+          "lock_epoch": {
+            "type": "string",
+            "title": "Lock Epoch",
+            "description": "Lock-authority generation id"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At",
+            "description": "New lease expiry (null when leases disabled)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "lock_epoch"
+        ],
+        "title": "DeviceLockRenewResponse",
+        "description": "Response model for a lock-renewal (heartbeat).\n\n``success`` is True only when every requested device was renewed. When\n``lost`` is non-empty the holder no longer owns those locks here (they\nexpired, were released, or the authority restarted) and must re-acquire;\n``lock_epoch`` lets the holder confirm an authority reset."
+      },
       "DeviceLockRequest": {
         "properties": {
           "device_names": {
@@ -2470,12 +2600,36 @@
             "type": "integer",
             "title": "Registry Version",
             "description": "Lock version counter"
+          },
+          "lock_epoch": {
+            "type": "string",
+            "title": "Lock Epoch",
+            "description": "Lock-authority generation id. Changes when configuration_service restarts (in-memory lock state is rebuilt). Holders compare this across calls to detect that their locks were dropped and must be re-acquired."
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At",
+            "description": "ISO timestamp when the lease lapses if not renewed, or null when leases are disabled (CONFIG_LOCK_LEASE_TTL_SECONDS=0)."
+          },
+          "lease_ttl_seconds": {
+            "type": "number",
+            "title": "Lease Ttl Seconds",
+            "description": "Configured lease TTL in seconds (0 = leases disabled).",
+            "default": 0.0
           }
         },
         "type": "object",
         "required": [
           "success",
-          "registry_version"
+          "registry_version",
+          "lock_epoch"
         ],
         "title": "DeviceLockResponse",
         "description": "Response model for successful lock acquisition."
@@ -3101,6 +3255,23 @@
             "title": "Locked At",
             "description": "ISO timestamp of lock acquisition"
           },
+          "locked_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked Until",
+            "description": "ISO timestamp when the current lock's lease lapses if not renewed, or null when unlocked or leases are disabled."
+          },
+          "lock_epoch": {
+            "type": "string",
+            "title": "Lock Epoch",
+            "description": "Lock-authority generation id. Changes on a configuration_service restart (in-memory lock state is rebuilt). Readers (direct-control) can detect that the lock table was reset \u2014 every device will report unlocked until holders re-acquire."
+          },
           "pv_health": {
             "additionalProperties": {
               "$ref": "#/components/schemas/PVHealthRecord"
@@ -3115,7 +3286,8 @@
           "device_name",
           "available",
           "enabled",
-          "lock_status"
+          "lock_status",
+          "lock_epoch"
         ],
         "title": "DeviceStatusResponse",
         "description": "Combined device availability check (lock + enabled state + PV health)."
@@ -3163,12 +3335,18 @@
             "type": "integer",
             "title": "Registry Version",
             "description": "Lock version counter"
+          },
+          "lock_epoch": {
+            "type": "string",
+            "title": "Lock Epoch",
+            "description": "Lock-authority generation id"
           }
         },
         "type": "object",
         "required": [
           "success",
-          "registry_version"
+          "registry_version",
+          "lock_epoch"
         ],
         "title": "DeviceUnlockResponse",
         "description": "Response model for unlock operations."
