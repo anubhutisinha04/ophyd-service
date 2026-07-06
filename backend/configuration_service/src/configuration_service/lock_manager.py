@@ -437,21 +437,22 @@ class DeviceLockManager:
         Returns (unlocked_devices, not_found_devices).
         """
         async with self._lock:
+            # Validate first: if any requested device is unknown, change nothing
+            # and report them all. This keeps force-unlock all-or-nothing, so the
+            # caller never gets a "not found" error after some locks were already
+            # cleared (and the audit log skipped).
+            names = list(dict.fromkeys(device_names))  # de-duplicate, preserve order
+            not_found = [name for name in names if registry.get_device(name) is None]
+            if not_found:
+                return [], not_found
+
             unlocked = []
-            not_found = []
-
-            for name in device_names:
-                device = registry.get_device(name)
-                if device is None:
-                    not_found.append(name)
-                    continue
-
+            for name in names:
                 if name in self._locks and self._locks[name].locked:
                     del self._locks[name]
-                    unlocked.append(name)
-                else:
-                    # Device exists but wasn't locked — still report as unlocked
-                    unlocked.append(name)
+                # Device exists (validated above); report it as unlocked whether
+                # or not it currently held a lock.
+                unlocked.append(name)
 
             if unlocked:
                 self._version += 1

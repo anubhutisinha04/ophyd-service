@@ -128,6 +128,53 @@ class TestSharedPVOwnership:
         assert client.delete("/api/v1/devices/solo").status_code == 200
         assert _pv_status(client, pv).status_code == 404
 
+    def test_updating_device_to_drop_shared_pv_rehomes_it(self, client):
+        shared = "BL:UPD:SHARED"
+        assert (
+            client.post("/api/v1/devices", json=_device_body("upd_a", {"val": shared})).status_code
+            == 201
+        )
+        assert (
+            client.post("/api/v1/devices", json=_device_body("upd_b", {"val": shared})).status_code
+            == 201
+        )
+
+        # upd_b registered last and owns the index entry. Updating upd_b to drop
+        # the shared PV must re-home it to upd_a, not destroy the entry.
+        resp = client.put(
+            "/api/v1/devices/upd_b",
+            json={"metadata": {"pvs": {"other": "BL:UPD_B:OTHER"}}},
+        )
+        assert resp.status_code == 200, resp.text
+
+        r = _pv_status(client, shared)
+        assert r.status_code == 200, r.text
+        assert r.json()["device_name"] == "upd_a"
+
+    def test_updating_device_to_drop_standalone_pv_reverts_it(self, client):
+        pv = "BL:UPD:STANDALONE"
+        assert client.post("/api/v1/pvs", json={"pv_name": pv}).status_code == 201
+        assert (
+            client.post(
+                "/api/v1/devices", json=_device_body("upd_claimer", {"val": pv})
+            ).status_code
+            == 201
+        )
+
+        # Updating the device to drop the PV must revert it to standalone, not
+        # destroy the entry.
+        resp = client.put(
+            "/api/v1/devices/upd_claimer",
+            json={"metadata": {"pvs": {"other": "BL:UPD_C:OTHER"}}},
+        )
+        assert resp.status_code == 200, resp.text
+
+        r = _pv_status(client, pv)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["device_name"] is None
+        assert body["available"] is True
+
 
 # ===== Persist-before-mutate =================================================
 
@@ -186,3 +233,45 @@ class TestPersistBeforeMutate:
         assert resp.status_code == 500
 
         assert _pv_status(client, "BL:P:PV").status_code == 404
+
+    def test_disable_failure_keeps_device_enabled(self, client, monkeypatch):
+        from configuration_service.device_registry_store import DeviceRegistryStore
+
+        assert (
+            client.post(
+                "/api/v1/devices", json=_device_body("togg", {"val": "BL:TG:PV"})
+            ).status_code
+            == 201
+        )
+        assert client.get("/api/v1/devices/togg/instantiation").json()["active"] is True
+
+        def _boom(self, *args, **kwargs):
+            raise RuntimeError("simulated DB outage")
+
+        monkeypatch.setattr(DeviceRegistryStore, "save_device", _boom)
+        assert client.patch("/api/v1/devices/togg/disable").status_code == 500
+
+        # Memory must be unchanged: the device stays enabled (pre-fix it was
+        # flipped to disabled in memory before the failed write).
+        assert client.get("/api/v1/devices/togg/instantiation").json()["active"] is True
+
+    def test_enable_failure_keeps_device_disabled(self, client, monkeypatch):
+        from configuration_service.device_registry_store import DeviceRegistryStore
+
+        assert (
+            client.post(
+                "/api/v1/devices", json=_device_body("togg2", {"val": "BL:TG2:PV"})
+            ).status_code
+            == 201
+        )
+        assert client.patch("/api/v1/devices/togg2/disable").status_code == 200
+        assert client.get("/api/v1/devices/togg2/instantiation").json()["active"] is False
+
+        def _boom(self, *args, **kwargs):
+            raise RuntimeError("simulated DB outage")
+
+        monkeypatch.setattr(DeviceRegistryStore, "save_device", _boom)
+        assert client.patch("/api/v1/devices/togg2/enable").status_code == 500
+
+        # Memory must be unchanged: the device stays disabled.
+        assert client.get("/api/v1/devices/togg2/instantiation").json()["active"] is False

@@ -275,6 +275,36 @@ class TestForceUnlock:
         assert resp.status_code == 200
         assert "sample_x" in resp.json()["unlocked_devices"]
 
+    def test_force_unlock_mixed_valid_and_missing_is_atomic(self, client):
+        """If any named device is unknown, force-unlock must change nothing:
+        no partial unlock of the valid devices and no audit entry, just a 404.
+        """
+        client.post(
+            "/api/v1/devices/lock",
+            json={
+                "device_names": ["sample_x"],
+                "item_id": "item-001",
+                "plan_name": "count",
+            },
+        )
+
+        resp = client.post(
+            "/api/v1/devices/force-unlock",
+            json={
+                "device_names": ["sample_x", "nonexistent_motor"],
+                "reason": "mixed request",
+            },
+        )
+        assert resp.status_code == 404
+
+        # sample_x must still be locked — nothing was cleared.
+        status_resp = client.get("/api/v1/devices/sample_x/status")
+        assert status_resp.json()["lock_status"] == "locked"
+
+        # No force_unlock audit entry should have been written for this attempt.
+        history = client.get("/api/v1/devices/history", params={"device_name": "sample_x"}).json()
+        assert not any(e["operation"] == "force_unlock" for e in history)
+
 
 class TestDeviceStatus:
     """GET /api/v1/devices/{device_name}/status"""

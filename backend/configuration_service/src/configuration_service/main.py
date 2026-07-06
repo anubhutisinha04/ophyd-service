@@ -1281,16 +1281,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 message=f"Device '{device_name}' is already enabled",
             )
 
-        spec.active = True
-        state.registry.update_device(existing, spec)
+        # Persist first, then mutate memory (matching create/update/delete) so a
+        # failed DB write can't leave the in-memory registry enabled while the
+        # database still says disabled. Use a copy — 'spec' is the live registry
+        # object, so mutating it in place would change memory before the write.
+        updated_spec = spec.model_copy(update={"active": True})
         await asyncio.to_thread(
             registry_store.save_device,
             name=device_name,
             metadata=existing,
-            spec=spec,
+            spec=updated_spec,
             operation="enable",
             details={"field": "active", "old": False, "new": True},
         )
+        state.registry.update_device(existing, updated_spec)
 
         logger.info("device_enabled", device_name=device_name)
 
@@ -1342,16 +1346,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 message=f"Device '{device_name}' is already disabled",
             )
 
-        spec.active = False
-        state.registry.update_device(existing, spec)
+        # Persist first, then mutate memory (matching create/update/delete) so a
+        # failed DB write can't leave the in-memory registry disabled while the
+        # database still says enabled. Use a copy — 'spec' is the live registry
+        # object, so mutating it in place would change memory before the write.
+        updated_spec = spec.model_copy(update={"active": False})
         await asyncio.to_thread(
             registry_store.save_device,
             name=device_name,
             metadata=existing,
-            spec=spec,
+            spec=updated_spec,
             operation="disable",
             details={"field": "active", "old": True, "new": False},
         )
+        state.registry.update_device(existing, updated_spec)
 
         logger.info("device_disabled", device_name=device_name)
 

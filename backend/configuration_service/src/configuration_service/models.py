@@ -384,23 +384,16 @@ class DeviceRegistry(BaseModel):
         if meta is not None and meta.device_name is None:
             del self.pvs[pv_name]
 
-    def remove_device(self, name: str) -> bool:
-        """Remove device from registry including its instantiation spec and indexed PVs.
+    def _release_pv_ownership(self, name: str) -> None:
+        """Release the PVs owned by ``name`` in the index without destroying
+        entries that other devices or standalone registrations still need.
 
-        Args:
-            name: Device name to remove
-
-        Returns:
-            True if device was found and removed, False if not found
+        A PV another device also lists is REASSIGNED to that device; a PV
+        registered as standalone reverts to standalone (unowned); only PVs that
+        nobody else claims are dropped. Shared by ``remove_device`` and
+        ``update_device`` so that updating a device which drops a shared or
+        standalone PV re-homes that PV instead of deleting the surviving entry.
         """
-        if name not in self.devices:
-            return False
-
-        # Re-home or drop the PVs this device owns in the index. A PV that
-        # another device also lists is REASSIGNED to that device (pre-fix it
-        # was deleted, destroying the surviving owner's registry entry); a PV
-        # registered as standalone reverts to standalone; only PVs nobody
-        # else claims are dropped.
         owned = [pv_name for pv_name, pv_meta in self.pvs.items() if pv_meta.device_name == name]
         for pv_name in owned:
             new_owner = None
@@ -422,6 +415,21 @@ class DeviceRegistry(BaseModel):
             else:
                 del self.pvs[pv_name]
 
+    def remove_device(self, name: str) -> bool:
+        """Remove device from registry including its instantiation spec and indexed PVs.
+
+        Args:
+            name: Device name to remove
+
+        Returns:
+            True if device was found and removed, False if not found
+        """
+        if name not in self.devices:
+            return False
+
+        # Re-home or drop the PVs this device owns before removing it.
+        self._release_pv_ownership(name)
+
         # Remove instantiation spec
         self.instantiation_specs.pop(name, None)
 
@@ -433,7 +441,7 @@ class DeviceRegistry(BaseModel):
     def update_device(
         self, device: DeviceMetadata, instantiation_spec: DeviceInstantiationSpec | None = None
     ) -> bool:
-        """Update an existing device by removing old PV indexes and re-adding.
+        """Update an existing device by re-homing old PV indexes and re-adding.
 
         Args:
             device: Updated device metadata
@@ -445,12 +453,11 @@ class DeviceRegistry(BaseModel):
         if device.name not in self.devices:
             return False
 
-        # Remove old PV indexes for this device
-        pv_names_to_remove = [
-            pv_name for pv_name, pv_meta in self.pvs.items() if pv_meta.device_name == device.name
-        ]
-        for pv_name in pv_names_to_remove:
-            del self.pvs[pv_name]
+        # Release the device's current PV ownership (re-homing shared/standalone
+        # entries rather than destroying them), then re-add. add_device re-claims
+        # the PVs this device still lists; any PV dropped by the update stays with
+        # its surviving owner or reverts to standalone.
+        self._release_pv_ownership(device.name)
 
         # Re-add with updated data
         self.add_device(device, instantiation_spec)
