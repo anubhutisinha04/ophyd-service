@@ -368,16 +368,44 @@ class DeviceWebSocketManager:
             # clients still subscribed to the device need to see recoveries
             # in _device_pvs (so eventual teardown unsubscribes them) and out
             # of _device_pv_failures (so they don't keep being retried).
+            stale_teardowns: list[tuple[str, Callable[[PVUpdate], None]]] = []
+            device_abandoned = False
             async with self._lock:
-                device_pvs = self._device_pvs.setdefault(device_name, {})
-                failures = self._device_pv_failures.setdefault(device_name, {})
-                for component, pv_name, _callback in succeeded:
-                    device_pvs[component] = pv_name
-                    failures.pop(component, None)
-                for entry in failed:
-                    failures[entry.signal] = entry
-                    self._pv_callbacks.pop((device_name, entry.pv), None)
-                currently_failed = list(failures.values())
+                if device_name not in self._device_clients:
+                    # Every client of this device disconnected while the
+                    # (blocking) EPICS subscribes were in flight — the
+                    # per-device lock serializes subscribers, but disconnect()
+                    # only takes self._lock, so it can drain _device_clients
+                    # during the gather. The CA monitors we just registered are
+                    # now unreferenced; tear the succeeded ones down and drop
+                    # the device's bookkeeping so nothing leaks. disconnect()
+                    # already released any PVs that were live before this
+                    # attempt (they were in _device_pvs); these are disjoint.
+                    device_abandoned = True
+                    for _component, pv_name, callback in succeeded:
+                        self._pv_callbacks.pop((device_name, pv_name), None)
+                        stale_teardowns.append((pv_name, callback))
+                    for failed_entry in failed:
+                        self._pv_callbacks.pop((device_name, failed_entry.pv), None)
+                    self._device_pvs.pop(device_name, None)
+                    self._device_pv_failures.pop(device_name, None)
+                else:
+                    device_pvs = self._device_pvs.setdefault(device_name, {})
+                    failures = self._device_pv_failures.setdefault(device_name, {})
+                    for component, pv_name, _callback in succeeded:
+                        device_pvs[component] = pv_name
+                        failures.pop(component, None)
+                    for entry in failed:
+                        failures[entry.signal] = entry
+                        self._pv_callbacks.pop((device_name, entry.pv), None)
+                    currently_failed = list(failures.values())
+
+            if device_abandoned:
+                # unsubscribe does blocking CA teardown; run off-loop, outside
+                # the per-device lock.
+                for pv_name, callback in stale_teardowns:
+                    await asyncio.to_thread(self.pv_monitor.unsubscribe, pv_name, callback)
+                return SubscribeOutcome(ok=False, reason="unknown_client")
 
             if failed and require_connection:
                 # require_connection means this client only wants the device

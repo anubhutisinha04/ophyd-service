@@ -152,29 +152,68 @@ class WebSocketManager:
                     new_pvs.append((pv_name, callback, on_error))
                 self._pv_clients[pv_name].add(client_id)
 
-        # Run blocking EPICS subscribes outside the asyncio lock.
-        for pv_name, callback, on_error in new_pvs:
-            try:
-                await asyncio.to_thread(
-                    self.pv_monitor.subscribe, pv_name, callback, on_error=on_error
-                )
-                logger.info("subscribed_to_pv", pv_name=pv_name, client_id=client_id)
-            except Exception as e:  # noqa: BLE001
-                logger.error("pv_subscription_failed", pv_name=pv_name, error=str(e))
-                async with self._lock:
+        # Run blocking EPICS subscribes concurrently, outside the asyncio lock,
+        # so N new PVs pay connection latency in parallel instead of serially.
+        results = await asyncio.gather(
+            *(
+                asyncio.to_thread(self.pv_monitor.subscribe, pv_name, callback, on_error=on_error)
+                for pv_name, callback, on_error in new_pvs
+            ),
+            return_exceptions=True,
+        )
+
+        # Reconcile bookkeeping under the lock now that the (blocking) EPICS
+        # subscribes have returned. Two things can have happened while they
+        # were in flight — both handled here so no live CA monitor is orphaned:
+        #   * the subscribe failed → roll back every client that piggybacked
+        #     on this attempt (see the wholesale-rollback note below);
+        #   * every client that wanted this PV disconnected, or a later
+        #     subscriber took over the PV's callback slot → our just-registered
+        #     CA monitor is unreferenced and must be torn down immediately.
+        stale_teardowns: list[tuple[str, Callable[[PVUpdate], None]]] = []
+        async with self._lock:
+            for (pv_name, callback, _on_error), result in zip(new_pvs, results, strict=True):
+                still_ours = self._pv_callbacks.get(pv_name) is callback
+
+                if isinstance(result, BaseException):
+                    logger.error("pv_subscription_failed", pv_name=pv_name, error=str(result))
+                    # subscribe() tore down its own signal before raising, so
+                    # there is no CA monitor to release here. Only roll back if
+                    # this PV's slot is still ours: if a later subscriber took
+                    # it over (a disconnect + resubscribe that raced this
+                    # failing attempt), our bookkeeping is already gone — don't
+                    # disturb theirs. When it is ours, roll back EVERY client in
+                    # the set, not just the initiator: a second client that
+                    # joined while the subscribe was in flight piggybacked on
+                    # this attempt, and leaving its _subscriptions entry would
+                    # give it a phantom subscription (counted toward its cap,
+                    # never delivered, never torn down). Cleared everywhere, a
+                    # later resubscribe retries the EPICS connection cleanly.
+                    if still_ours:
+                        self._pv_callbacks.pop(pv_name, None)
+                        affected = self._pv_clients.pop(pv_name, set())
+                        for affected_id in affected:
+                            if affected_id in self._subscriptions:
+                                self._subscriptions[affected_id].discard(pv_name)
+                    continue
+
+                if still_ours and self._pv_clients.get(pv_name):
+                    logger.info("subscribed_to_pv", pv_name=pv_name)
+                    continue
+
+                # Nobody references the monitor we just registered: either the
+                # PV lost all its clients (disconnect raced the subscribe), or a
+                # later subscriber replaced the callback slot (which would
+                # orphan ours forever, since teardown matches callbacks by
+                # identity). Only drop the bookkeeping if it is still ours.
+                if still_ours:
                     self._pv_callbacks.pop(pv_name, None)
-                    # Roll back EVERY client in this PV's set — not just the
-                    # one that initiated the EPICS subscribe. A second client
-                    # that joined while the subscribe was in flight piggybacks
-                    # on this attempt; popping only the set while leaving its
-                    # _subscriptions entry gave it a phantom subscription
-                    # (counted toward its cap, never delivered, never torn
-                    # down). Cleared everywhere, a later resubscribe retries
-                    # the EPICS connection cleanly for any of them.
-                    affected = self._pv_clients.pop(pv_name, set())
-                    for affected_id in affected:
-                        if affected_id in self._subscriptions:
-                            self._subscriptions[affected_id].discard(pv_name)
+                    self._pv_clients.pop(pv_name, None)
+                stale_teardowns.append((pv_name, callback))
+
+        # unsubscribe does blocking CA teardown; run off-loop, outside the lock.
+        for pv_name, callback in stale_teardowns:
+            await asyncio.to_thread(self.pv_monitor.unsubscribe, pv_name, callback)
 
         # Send current values in parallel. Read the connection once so the
         # per-PV value+meta sends don't reacquire the manager lock 2N times.

@@ -73,6 +73,11 @@ class PVMonitorManager:
         self._connection_status: dict[str, bool] = {}
         self._latest_values: dict[str, PVValue] = {}
         self._lock = threading.RLock()
+        # Per-PV lock serializing the (blocking) first connect for a PV so two
+        # concurrent first-touches don't open two CA connections. Held only
+        # around the connect + initial read, NOT ``self._lock`` — so a dead
+        # PV's connection timeout can't stall value/meta fan-out for others.
+        self._connect_locks: dict[str, threading.Lock] = {}
 
         logger.info(
             "ophyd_pv_monitor_initialized",
@@ -86,70 +91,135 @@ class PVMonitorManager:
         read_only: bool = False,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
+        # Fast path: already connected — just register the callback. Avoids
+        # taking the per-PV connect lock for the common repeat-subscribe case.
         with self._lock:
-            if pv_name not in self._signals:
-                logger.info("subscribing_to_pv", pv_name=pv_name)
+            if pv_name in self._signals:
+                if callback:
+                    self._callbacks[pv_name].append(_Subscriber(callback, on_error))
+                return
 
-                signal = None
-                try:
-                    signal = (
-                        EpicsSignalRO(pv_name, name=pv_name)
-                        if read_only
-                        else EpicsSignal(pv_name, name=pv_name)
-                    )
-                    signal.wait_for_connection(timeout=5.0)
+        # Slow path: the blocking CA work — EpicsSignal construction,
+        # wait_for_connection (up to 5 s for a dead PV), and the initial read
+        # in _signal_to_pv_value — runs OUTSIDE self._lock. Holding self._lock
+        # across it would stall every PV's value/meta fan-out, which reacquires
+        # the same lock on the CA dispatch thread. A per-PV connect lock keeps
+        # concurrent first-touches on the same PV from opening two connections
+        # (mirrors OphydDeviceCache's per-key locking).
+        connect_lock = self._get_connect_lock(pv_name)
+        with connect_lock:
+            with self._lock:
+                if pv_name in self._signals:
+                    if callback:
+                        self._callbacks[pv_name].append(_Subscriber(callback, on_error))
+                    return
 
-                    if not signal.connected:
-                        logger.error("pv_connection_failed", pv_name=pv_name)
-                        raise PVNotFoundError(f"PV {pv_name} connection timeout")
+            logger.info("subscribing_to_pv", pv_name=pv_name)
+            signal = None
+            try:
+                signal = (
+                    EpicsSignalRO(pv_name, name=pv_name)
+                    if read_only
+                    else EpicsSignal(pv_name, name=pv_name)
+                )
+                signal.wait_for_connection(timeout=5.0)
 
-                    # Read initial value FIRST. If this fails (e.g. dtype
-                    # mismatch in _signal_to_pv_value), bail before
-                    # registering — leaving _signals populated with no
-                    # buffer would silently break later get_value() calls.
-                    initial_value = self._signal_to_pv_value(pv_name, signal)
+                if not signal.connected:
+                    logger.error("pv_connection_failed", pv_name=pv_name)
+                    raise PVNotFoundError(f"PV {pv_name} connection timeout")
 
+                # Read initial value FIRST. If this fails (e.g. dtype
+                # mismatch in _signal_to_pv_value), bail before registering —
+                # a signal left in _signals with no buffer would silently
+                # break later get_value() calls.
+                initial_value = self._signal_to_pv_value(pv_name, signal)
+            except Exception as e:
+                logger.error("pv_subscription_error", pv_name=pv_name, error=str(e))
+                if signal is not None:
+                    self._destroy_signal_quietly(signal, pv_name)
+                # Drop the connect lock for a PV that never established a
+                # subscription. No unsubscribe path reaches a failed PV, so
+                # without this a repeatedly-failing PV would leave its entry in
+                # _connect_locks forever. Guarded on _signals so we never remove
+                # the lock for a live subscription a racing subscriber committed.
+                with self._lock:
+                    if pv_name not in self._signals:
+                        self._connect_locks.pop(pv_name, None)
+                raise PVNotFoundError(f"PV {pv_name} subscription failed: {e}") from e
+
+            # Commit the connected signal + initial value under the lock. If a
+            # racing subscriber already committed one (possible if an
+            # interleaved unsubscribe recycled the connect lock), keep theirs
+            # and destroy ours — overwriting _signals would orphan a live CA
+            # connection with a callback that nothing can ever tear down.
+            stale_signal = None
+            with self._lock:
+                if pv_name in self._signals:
+                    stale_signal = signal
+                else:
                     self._signals[pv_name] = signal
                     self._connection_status[pv_name] = True
                     self._latest_values[pv_name] = initial_value
                     self._buffers[pv_name].append(initial_value)
 
-                    signal.subscribe(
-                        lambda value, timestamp=None, **kwargs: self._handle_value_update(
-                            pv_name, value, timestamp
-                        ),
-                        event_type="value",
-                    )
-                    signal.subscribe(
-                        lambda **kwargs: self._handle_meta_update(pv_name, **kwargs),
-                        event_type="meta",
-                    )
+                    # Registering the CA monitors is a local (non-blocking)
+                    # operation, so it's fine under the lock — but it can still
+                    # fail (e.g. the channel dropped between connect and
+                    # subscribe). Roll the commit back if it does: a signal left
+                    # in _signals with no live monitor would serve a frozen
+                    # cached value forever.
+                    try:
+                        signal.subscribe(
+                            lambda value, timestamp=None, **kwargs: self._handle_value_update(
+                                pv_name, value, timestamp
+                            ),
+                            event_type="value",
+                        )
+                        signal.subscribe(
+                            lambda **kwargs: self._handle_meta_update(pv_name, **kwargs),
+                            event_type="meta",
+                        )
+                    except Exception as e:
+                        logger.error("pv_subscription_error", pv_name=pv_name, error=str(e))
+                        self._signals.pop(pv_name, None)
+                        self._connection_status.pop(pv_name, None)
+                        self._latest_values.pop(pv_name, None)
+                        self._buffers.pop(pv_name, None)
+                        # PV never subscribed — drop its connect lock too (see
+                        # the connect-failure path above for the rationale).
+                        self._connect_locks.pop(pv_name, None)
+                        self._destroy_signal_quietly(signal, pv_name)
+                        raise PVNotFoundError(f"PV {pv_name} subscription failed: {e}") from e
 
                     logger.info("pv_connected", pv_name=pv_name, connected=True)
 
-                except Exception as e:
-                    logger.error("pv_subscription_error", pv_name=pv_name, error=str(e))
-                    # Drop any bookkeeping registered before the failure — a
-                    # destroyed signal left in _signals would make every later
-                    # subscribe() for this PV attach callbacks to a dead
-                    # object and serve the stale cached value forever.
-                    self._signals.pop(pv_name, None)
-                    self._connection_status.pop(pv_name, None)
-                    self._latest_values.pop(pv_name, None)
-                    self._buffers.pop(pv_name, None)
-                    if signal is not None:
-                        try:
-                            signal.destroy()
-                        except Exception as destroy_err:  # noqa: BLE001
-                            logger.warning(
-                                "pv_signal_destroy_failed_on_subscribe_error",
-                                pv_name=pv_name,
-                                error=str(destroy_err),
-                            )
-                    raise PVNotFoundError(f"PV {pv_name} subscription failed: {e}") from e
+                if callback:
+                    self._callbacks[pv_name].append(_Subscriber(callback, on_error))
 
-            if callback:
-                self._callbacks[pv_name].append(_Subscriber(callback, on_error))
+        if stale_signal is not None:
+            self._destroy_signal_quietly(stale_signal, pv_name)
+
+    @staticmethod
+    def _destroy_signal_quietly(signal: EpicsSignal, pv_name: str) -> None:
+        """Best-effort CA teardown of a signal, logging (not raising) on error."""
+        try:
+            signal.destroy()
+        except Exception as destroy_err:  # noqa: BLE001
+            logger.warning("pv_signal_destroy_failed", pv_name=pv_name, error=str(destroy_err))
+
+    def _get_connect_lock(self, pv_name: str) -> threading.Lock:
+        """Return the per-PV connect lock, creating it on first use.
+
+        Guarded by ``self._lock`` only for the O(1) dict access — the actual
+        blocking connect runs under the returned lock, never under
+        ``self._lock``.
+        """
+        with self._lock:
+            lock = self._connect_locks.get(pv_name)
+            if lock is None:
+                lock = threading.Lock()
+                self._connect_locks[pv_name] = lock
+            return lock
 
     def _dispatch_subscriber(
         self,
@@ -398,6 +468,11 @@ class PVMonitorManager:
                 self._connection_status.pop(pv_name, None)
                 self._buffers.pop(pv_name, None)
                 self._latest_values.pop(pv_name, None)
+                # Drop the connect lock too so it doesn't accumulate one entry
+                # per distinct PV ever seen. A concurrent re-subscribe simply
+                # recreates it; correctness there rests on the commit-time
+                # re-check in subscribe(), not on the lock's identity.
+                self._connect_locks.pop(pv_name, None)
 
         # destroy() does CA TCP teardown + drops pyepics _PVcache_ entry via
         # ophyd finalizers; run outside self._lock so concurrent subscribers
@@ -449,6 +524,7 @@ class PVMonitorManager:
             self._connection_status.clear()
             self._buffers.clear()
             self._latest_values.clear()
+            self._connect_locks.clear()
 
         for signal in signals:
             try:
