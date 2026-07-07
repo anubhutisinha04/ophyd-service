@@ -5,11 +5,12 @@ These models represent the core entities for the device/PV registry.
 """
 
 import logging
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 # Re-exported so the path-resolver response model has a single source of
 # truth for outcome values. Lazy to avoid pulling path_resolver's optional
@@ -17,6 +18,40 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 from .path_resolver import Outcome as PathResolveOutcome
 
 logger = logging.getLogger(__name__)
+
+# Printable ASCII with no whitespace, control chars, NUL, or high-bit
+# Unicode. Mirrors the standalone ``pv_name`` guard (see
+# StandalonePVCreateRequest) so device names and device-owned PV names are
+# held to the same standard: the alternatives (empty/whitespace names, NUL,
+# zero-width Unicode) all create registry entries that can't be addressed or
+# removed again.
+_PRINTABLE_ASCII_RE = re.compile(r"^[\x21-\x7e]+$")
+
+
+def _validate_device_name(value: str) -> str:
+    """Reject device names that create unaddressable registry entries.
+
+    ``/`` is disallowed in addition to the printable-ASCII rule because the
+    device routes use a plain ``{device_name}`` path param — a name with a
+    ``/`` could never be fetched, updated, or deleted again.
+    """
+    if not _PRINTABLE_ASCII_RE.match(value) or "/" in value:
+        raise ValueError(
+            "device name must be non-empty printable ASCII with no whitespace "
+            "or '/' (other values create registry entries that cannot be "
+            "addressed via /api/v1/devices/{device_name})"
+        )
+    return value
+
+
+def _validate_pv_value(value: str) -> str:
+    """Reject a device-owned PV name with the standalone-PV constraint."""
+    if not _PRINTABLE_ASCII_RE.match(value):
+        raise ValueError(
+            "PV name must be non-empty printable ASCII with no whitespace "
+            "(matches the standalone-PV constraint)"
+        )
+    return value
 
 
 class DeviceLabel(str, Enum):
@@ -66,6 +101,11 @@ class DeviceInstantiationSpec(BaseModel):
         description="Keyword arguments for device constructor (e.g., {'name': 'det1'})",
     )
     active: bool = Field(default=True, description="Whether this device should be instantiated")
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        return _validate_device_name(v)
 
     class Config:
         json_schema_extra = {
@@ -147,6 +187,18 @@ class DeviceMetadata(BaseModel):
         default=None, description="Functional grouping (from happi)"
     )
     documentation: str | None = Field(default=None, description="Device documentation/description")
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        return _validate_device_name(v)
+
+    @field_validator("pvs")
+    @classmethod
+    def _check_pvs(cls, v: dict[str, str]) -> dict[str, str]:
+        for pv in v.values():
+            _validate_pv_value(pv)
+        return v
 
     class Config:
         json_schema_extra = {
@@ -591,6 +643,14 @@ class DeviceMetadataUpdate(BaseModel):
     location_group: str | None = _partial_field(DeviceMetadata, "location_group")
     functional_group: str | None = _partial_field(DeviceMetadata, "functional_group")
     documentation: str | None = _partial_field(DeviceMetadata, "documentation")
+
+    @field_validator("pvs")
+    @classmethod
+    def _check_pvs(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is not None:
+            for pv in v.values():
+                _validate_pv_value(pv)
+        return v
 
 
 class DeviceUpdateRequest(BaseModel):

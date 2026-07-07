@@ -118,6 +118,17 @@ class Settings(BaseSettings):
     direct_control_url: str | None = None
     direct_control_timeout: float = 30.0
 
+    # Allowlist of import-path prefixes that a device's ``device_class`` may
+    # use. The path resolver imports ``device_class`` and, for ophyd-async
+    # subclasses, instantiates it — so an unrestricted value is a code-import
+    # surface. When this list is non-empty, a ``device_class`` is accepted
+    # (at device create/update time) and imported (in the resolver) only if it
+    # starts with one of these prefixes; otherwise it is rejected.
+    # Empty (default) disables the check and preserves the historical
+    # allow-anything behavior — set it in production to lock the resolver down,
+    # e.g. CONFIG_DEVICE_CLASS_ALLOWLIST=["ophyd.","ophyd_async.","mybeamline."].
+    device_class_allowlist: list[str] = []
+
     model_config = SettingsConfigDict(
         env_prefix="CONFIG_",
         env_file=".env",

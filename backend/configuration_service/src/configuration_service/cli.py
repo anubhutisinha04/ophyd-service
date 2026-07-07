@@ -157,6 +157,20 @@ def main() -> None:
     if getattr(args, "command", None) == "export":
         sys.exit(_run_export(args))
 
+    # The service keeps all lock state, PV health, the enrichment cache, and
+    # the device registry in per-process memory, so multiple workers would each
+    # hold an independent, diverging copy (a lock acquired via one worker is
+    # invisible to the others) and would race to seed the database on first
+    # boot. Reject it explicitly instead of starting a silently-inconsistent
+    # cluster.
+    if args.workers is not None and args.workers > 1:
+        parser.error(
+            "--workers must be 1: the configuration service keeps lock state, "
+            "PV health, and the device registry in per-process memory, so "
+            "multiple workers would diverge. Run a single worker (scale with "
+            "separate replicas behind a shared database if needed)."
+        )
+
     # Strategies that read from disk require a profile path. Fail at parse
     # rather than letting it propagate to a late RuntimeError in loader.py.
     effective_strategy = "mock" if args.use_mock_data else args.load_strategy

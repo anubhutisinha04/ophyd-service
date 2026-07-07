@@ -510,7 +510,10 @@ class TestHealthEndpointDbProbe:
             assert resp.status_code == 503
             data = resp.json()
             assert data["status"] == "unhealthy"
-            assert "disk I/O error" in data["detail"]
+            # The 503 body must NOT echo the raw DB exception (which can leak
+            # DSN/host/user detail); it returns a generic message instead.
+            assert data["detail"] == "registry store unreachable"
+            assert "disk I/O error" not in data["detail"]
         finally:
             container["store"] = original_store
 

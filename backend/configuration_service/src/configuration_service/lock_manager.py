@@ -437,12 +437,20 @@ class DeviceLockManager:
         Returns (unlocked_devices, not_found_devices).
         """
         async with self._lock:
-            # Validate first: if any requested device is unknown, change nothing
-            # and report them all. This keeps force-unlock all-or-nothing, so the
-            # caller never gets a "not found" error after some locks were already
-            # cleared (and the audit log skipped).
+            # Validate first: if any requested name is neither a registered
+            # device nor a currently-held lock, change nothing and report them
+            # all. This keeps force-unlock all-or-nothing, so the caller never
+            # gets a "not found" error after some locks were already cleared
+            # (and the audit log skipped). A name that holds a lock but is no
+            # longer in the registry (its device was deleted while locked) is
+            # NOT "not found" — clearing that orphaned lock is exactly what
+            # force-unlock is for.
             names = list(dict.fromkeys(device_names))  # de-duplicate, preserve order
-            not_found = [name for name in names if registry.get_device(name) is None]
+            not_found = [
+                name
+                for name in names
+                if registry.get_device(name) is None and name not in self._locks
+            ]
             if not_found:
                 return [], not_found
 
@@ -450,8 +458,9 @@ class DeviceLockManager:
             for name in names:
                 if name in self._locks and self._locks[name].locked:
                     del self._locks[name]
-                # Device exists (validated above); report it as unlocked whether
-                # or not it currently held a lock.
+                # Name is a live device or held an (orphaned) lock (validated
+                # above); report it as unlocked whether or not it currently
+                # held a lock.
                 unlocked.append(name)
 
             if unlocked:
@@ -459,6 +468,22 @@ class DeviceLockManager:
                 logger.info("locks_force_cleared devices=%s", unlocked)
 
             return unlocked, not_found
+
+    async def clear_all(self) -> list[str]:
+        """Drop every held lock (used when the registry is reset/cleared).
+
+        Returns the names that were holding a lock. Resetting or clearing the
+        registry removes the devices those locks referred to, so leaving the
+        locks behind would orphan them — and under the lock_all policy a single
+        orphan reports the whole beamline as locked until restart.
+        """
+        async with self._lock:
+            cleared = [name for name, state in self._locks.items() if state.locked]
+            self._locks.clear()
+            if cleared:
+                self._version += 1
+                logger.info("locks_cleared_all devices=%s", cleared)
+            return cleared
 
     def is_device_locked(self, device_name: str) -> bool:
         """Check if a device is currently locked (and lease not lapsed)."""
