@@ -11,6 +11,18 @@ build-backend = "setuptools.build_meta"
 # silently shadow the qserver/start-re-manager console scripts with the
 # upstream implementation.
 name = "bluesky-queueserver"
+# VERSION story — the dist-name trick above only holds if the resolver actually
+# picks THIS distribution over the upstream one. Upstream bluesky-queueserver
+# ships 0.0.x releases; this fork is 1.0.0 precisely so it sorts newest and wins
+# by default. The hazard: a dependency or startup-script pin that EXCLUDES 1.0.0
+# — e.g. `bluesky-queueserver<1.0` or `bluesky-queueserver==0.0.21` — makes the
+# resolver reject this fork and pull the real upstream 0.0.x dist instead,
+# silently shadowing the qserver/start-re-manager console scripts and the manager
+# implementation. Don't pin below 1.0 against this fork. If you MUST satisfy such
+# a `<1.0` pin, re-version this fork as a post-release of the highest upstream
+# tag (e.g. `0.0.24.post1`, incrementing the `.postN` number as needed) so it
+# both satisfies the pin and still sorts newest;
+# that is a deliberate release decision, not the default.
 version = "1.0.0"
 description = "Plan queueing and HTTP API backend for ophyd-service (based on bluesky-queueserver and bluesky-httpserver)"
 readme = "README.md"
