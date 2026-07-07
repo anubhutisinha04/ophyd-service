@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # Command timeout
     command_timeout: float = 30.0
 
+    # When an awaited device method (set/trigger/...) exceeds its timeout, issue
+    # stop() on the target to halt hardware that is likely still in motion. On by
+    # default for beamline safety; set false to opt out (the timeout is still
+    # reported, with a note that the device may still be moving).
+    stop_on_command_timeout: bool = True
+
     # Connection timeout for instantiating a live device for device-level
     # control (DeviceManager). Covers classic-ophyd wait_for_connection and
     # ophyd-async Device.connect across all the device's signals.

@@ -9,14 +9,19 @@ ophyd-async coverage uses soft signals. The live-IOC end-to-end paths are in
 
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pytest
+from ophyd.status import Status
 
 from direct_control.config import Settings
 from direct_control.device_manager import DeviceManager
 from direct_control.drivers import (
     FRAMEWORK_ASYNC,
     FRAMEWORK_SYNC,
+    ClassicOphydDriver,
+    OphydAsyncDriver,
     check_method_allowed,
     detect_framework,
     import_device_class,
@@ -351,3 +356,169 @@ async def test_registry_client_spec_fetch_and_404(monkeypatch):
             await client.get_instantiation_spec("erroring")
     finally:
         await client.cleanup()
+
+
+# ===== stop-on-timeout: a timed-out move must not leave hardware in motion =====
+
+
+class _ClassicTarget:
+    """A classic-ophyd-shaped target whose ``set`` returns a Status that never
+    finishes on its own, so the driver's wait times out."""
+
+    name = "fake_motor"
+
+    def __init__(self, *, stop_raises: bool = False):
+        self.status = Status()
+        self.stop_calls = 0
+        self._stop_raises = stop_raises
+
+    def set(self, *args, **kwargs):
+        return self.status
+
+    def stop(self, *args, **kwargs):
+        self.stop_calls += 1
+        if self._stop_raises:
+            raise RuntimeError("stop rejected by hardware")
+        self.status.set_finished()
+
+
+def _finish(status: Status) -> None:
+    if not status.done:
+        status.set_finished()
+
+
+async def test_classic_invoke_stops_hardware_on_timeout():
+    driver = ClassicOphydDriver()
+    target = _ClassicTarget()
+    try:
+        with pytest.raises(ControlError) as excinfo:
+            await driver.invoke(target, "set", [1.0], {}, timeout=0.2)
+        msg = str(excinfo.value)
+        assert "did not complete within 0.2s" in msg
+        assert "stop() was issued" in msg
+        assert target.stop_calls == 1
+    finally:
+        _finish(target.status)
+
+
+async def test_classic_invoke_no_stop_when_opted_out():
+    driver = ClassicOphydDriver()
+    target = _ClassicTarget()
+    try:
+        with pytest.raises(ControlError) as excinfo:
+            await driver.invoke(target, "set", [1.0], {}, timeout=0.2, stop_on_timeout=False)
+        assert "stop-on-timeout disabled" in str(excinfo.value)
+        assert target.stop_calls == 0
+    finally:
+        _finish(target.status)
+
+
+async def test_classic_invoke_reports_stop_failure():
+    driver = ClassicOphydDriver()
+    target = _ClassicTarget(stop_raises=True)
+    try:
+        with pytest.raises(ControlError) as excinfo:
+            await driver.invoke(target, "set", [1.0], {}, timeout=0.2)
+        assert "stop() was attempted but failed" in str(excinfo.value)
+        assert target.stop_calls == 1
+    finally:
+        _finish(target.status)
+
+
+async def test_classic_invoke_target_without_stop():
+    driver = ClassicOphydDriver()
+    status = Status()
+
+    class _NoStop:
+        name = "readonly_signal"
+
+        def set(self, *args, **kwargs):
+            return status
+
+    try:
+        with pytest.raises(ControlError) as excinfo:
+            await driver.invoke(_NoStop(), "set", [1.0], {}, timeout=0.2)
+        assert "exposes no stop()" in str(excinfo.value)
+    finally:
+        _finish(status)
+
+
+async def test_classic_invoke_genuine_failure_propagates_without_stop():
+    """A Status that finishes with an error is a real failure, not a timeout:
+    the original exception must propagate and stop() must NOT be called."""
+    driver = ClassicOphydDriver()
+
+    class _FailingTarget:
+        name = "fault_motor"
+
+        def __init__(self):
+            self.status = Status()
+            self.stop_calls = 0
+
+        def set(self, *args, **kwargs):
+            self.status.set_exception(RuntimeError("move faulted"))
+            return self.status
+
+        def stop(self, *args, **kwargs):
+            self.stop_calls += 1
+
+    target = _FailingTarget()
+    with pytest.raises(RuntimeError, match="move faulted"):
+        await driver.invoke(target, "set", [1.0], {}, timeout=5.0)
+    assert target.stop_calls == 0
+
+
+class _AsyncStatusStuck:
+    """An AsyncStatus-shaped awaitable that never completes within a test timeout."""
+
+    done = False
+    success = False
+
+    def add_callback(self, cb):
+        pass
+
+    def __await__(self):
+        async def _never():
+            await asyncio.sleep(30)
+
+        return _never().__await__()
+
+
+async def test_async_invoke_stops_hardware_on_timeout():
+    driver = OphydAsyncDriver()
+    stop_calls = []
+
+    class _AsyncTarget:
+        name = "async_motor"
+
+        def set(self, *args, **kwargs):
+            return _AsyncStatusStuck()
+
+        async def stop(self, *args, **kwargs):
+            stop_calls.append(True)
+
+    with pytest.raises(ControlError) as excinfo:
+        await driver.invoke(_AsyncTarget(), "set", [1.0], {}, timeout=0.2)
+    msg = str(excinfo.value)
+    assert "did not complete within 0.2s" in msg
+    assert "stop() was issued" in msg
+    assert stop_calls == [True]
+
+
+async def test_async_invoke_no_stop_when_opted_out():
+    driver = OphydAsyncDriver()
+    stop_calls = []
+
+    class _AsyncTarget:
+        name = "async_motor"
+
+        def set(self, *args, **kwargs):
+            return _AsyncStatusStuck()
+
+        async def stop(self, *args, **kwargs):
+            stop_calls.append(True)
+
+    with pytest.raises(ControlError) as excinfo:
+        await driver.invoke(_AsyncTarget(), "set", [1.0], {}, timeout=0.2, stop_on_timeout=False)
+    assert "stop-on-timeout disabled" in str(excinfo.value)
+    assert stop_calls == []
