@@ -33,8 +33,9 @@ moving to an **HTTP-only** design, so the compatibility surface has two tiers:
   (the manager already serves the control path in-process in unified mode); until
   it is deleted it still functions, but it is not a frozen contract and gets no
   new robustness investment. When it is removed, the api package's **ZMQ**
-  transport, external PUB subscribers, and the `from bluesky_queueserver import
-  ZMQCommSendThreads/zmq_single_request/...` surface stop being supported — the
+  transport, external PUB subscribers, and the legacy top-level
+  `bluesky_queueserver` ZMQ shim names (e.g. `ZMQCommSendThreads`,
+  `ZMQCommSendAsync`) stop being supported — the
   HTTP transport is the supported replacement.
 
 (The http half of this service itself imports `bluesky_queueserver_api`, so
@@ -52,12 +53,13 @@ in this repo is `queueserver_service`.
 
 The dist-name trick only works if the resolver picks this distribution. Upstream
 ships `0.0.x`; this fork is versioned `1.0.0` so it sorts newest and wins by
-default. A pin that excludes `1.0.0` — `bluesky-queueserver<1.0`, `==0.0.x` — makes
+default. A pin that excludes `1.0.0` — `bluesky-queueserver<1.0`, `==0.0.*` — makes
 the resolver take the real upstream dist instead, which shadows the
 `qserver`/`start-re-manager` console scripts and the manager implementation. **Do
 not pin `bluesky-queueserver` below `1.0` against this fork.** If some upstream
 requirement forces a `<1.0` pin, the escape hatch is to re-version this fork as a
-post-release of the newest upstream tag (e.g. `0.0.24.postN`), which satisfies the
+post-release of the newest upstream tag (e.g. `0.0.24.post1`, incrementing the
+`.postN` number as needed), which satisfies the
 pin while still sorting ahead of upstream — a deliberate release decision, noted in
 `pyproject.toml`.
 
@@ -76,7 +78,7 @@ version-skewed pair is uninstallable. It is installed alongside the main package
 queueserver-tests CI job both do.
 
 Enforced in CI: the HTTP contract is exercised by the in-process side-C suite
-(`tests/http/test_side_c_api_client_compat.py` / `test_side_c_auth.py`), which
+(`tests/http/test_side_c_api_client_compat.py` / `tests/http/test_side_c_auth.py`), which
 drives the PyPI `bluesky-queueserver-api` HTTP client against a live
 manager+server, and by the `with-queueserver` integration job that installs the
 api package from PyPI (`integration/exercise/queueserver_api_compat.py`). The

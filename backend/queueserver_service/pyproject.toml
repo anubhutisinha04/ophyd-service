@@ -20,7 +20,8 @@ name = "bluesky-queueserver"
 # silently shadowing the qserver/start-re-manager console scripts and the manager
 # implementation. Don't pin below 1.0 against this fork. If you MUST satisfy such
 # a `<1.0` pin, re-version this fork as a post-release of the highest upstream
-# tag (e.g. `0.0.24.postN`) so it both satisfies the pin and still sorts newest;
+# tag (e.g. `0.0.24.post1`, incrementing the `.postN` number as needed) so it
+# both satisfies the pin and still sorts newest;
 # that is a deliberate release decision, not the default.
 version = "1.0.0"
 description = "Plan queueing and HTTP API backend for ophyd-service (based on bluesky-queueserver and bluesky-httpserver)"
