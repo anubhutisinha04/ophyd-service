@@ -4,6 +4,7 @@ import threading
 import time as ttime
 
 import pytest
+from starlette.websockets import WebSocket
 from tests.manager.common import re_manager, re_manager_cmd, re_manager_factory  # noqa F401
 from websockets.sync.client import connect
 
@@ -173,3 +174,98 @@ def test_websocket_auth_01(
             assert isinstance(msg["msg"], dict)
     else:
         assert False, f"Unknown authentication type: {ws_auth_type!r}"
+
+
+def _make_websocket(app, *, query_string=b"", headers=None):
+    """Build a minimal Starlette WebSocket for a /status/ws handshake scope."""
+    scope = {
+        "type": "websocket",
+        "path": "/api/status/ws",
+        "query_string": query_string,
+        "headers": headers or [],
+        "app": app,
+    }
+    return WebSocket(scope, receive=None, send=None)
+
+
+# fmt: off
+@pytest.mark.parametrize("scheme", ["ApiKey", "Apikey", "apikey", "aPiKeY", "APIKEY"])
+# fmt: on
+def test_websocket_apikey_header_case_insensitive(monkeypatch, scheme):
+    """
+    The API-key scheme name in the WebSocket 'Authorization' header must be accepted
+    case-insensitively, matching the HTTP path — a client's header casing must not
+    decide whether a WebSocket authenticates.
+    """
+    from queueserver_service.http import authentication as auth
+
+    captured = {}
+
+    def _fake_get_current_principal(*, api_key, access_token, **kwargs):
+        captured["api_key"] = api_key
+        captured["access_token"] = access_token
+        return object() if api_key else None
+
+    monkeypatch.setattr(auth, "get_current_principal", _fake_get_current_principal)
+
+    class _App:
+        dependency_overrides = {
+            auth.get_settings: lambda: object(),
+            auth.get_authenticators: lambda: {},
+            auth.get_api_access_manager: lambda: object(),
+        }
+
+    ws = _make_websocket(_App(), headers=[(b"authorization", f"{scheme} SECRET".encode())])
+    principal = auth.get_current_principal_websocket(websocket=ws, scopes=["read:monitor"])
+    assert captured["api_key"] == "SECRET"
+    assert principal is not None
+
+
+def test_websocket_apikey_query_and_precedence(monkeypatch):
+    """
+    The API key may also be supplied as an '?api_key=' query parameter (matching the
+    HTTP path). The 'Authorization' header takes precedence when both are present.
+    A 'Bearer' token is not accepted as an API key.
+    """
+    from queueserver_service.http import authentication as auth
+
+    captured = {}
+
+    def _fake_get_current_principal(*, api_key, access_token, **kwargs):
+        captured["api_key"] = api_key
+        captured["access_token"] = access_token
+        return object() if api_key else None
+
+    monkeypatch.setattr(auth, "get_current_principal", _fake_get_current_principal)
+
+    class _App:
+        dependency_overrides = {
+            auth.get_settings: lambda: object(),
+            auth.get_authenticators: lambda: {},
+            auth.get_api_access_manager: lambda: object(),
+        }
+
+    app = _App()
+
+    # Key from the query parameter (no Authorization header).
+    ws = _make_websocket(app, query_string=b"api_key=QUERYKEY")
+    assert auth.get_current_principal_websocket(websocket=ws, scopes=["read:monitor"]) is not None
+    assert captured["api_key"] == "QUERYKEY"
+
+    # Header wins over query when both are present.
+    ws = _make_websocket(
+        app, query_string=b"api_key=QUERYKEY", headers=[(b"authorization", b"ApiKey HEADERKEY")]
+    )
+    auth.get_current_principal_websocket(websocket=ws, scopes=["read:monitor"])
+    assert captured["api_key"] == "HEADERKEY"
+
+    # A Bearer token is not treated as an API key (bearer auth is unsupported here).
+    ws = _make_websocket(app, headers=[(b"authorization", b"Bearer SOME.JWT.TOKEN")])
+    assert auth.get_current_principal_websocket(websocket=ws, scopes=["read:monitor"]) is None
+    assert captured["api_key"] is None
+    assert captured["access_token"] is None
+
+    # No credentials at all -> no key.
+    ws = _make_websocket(app)
+    assert auth.get_current_principal_websocket(websocket=ws, scopes=["read:monitor"]) is None
+    assert captured["api_key"] is None

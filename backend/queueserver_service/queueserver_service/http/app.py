@@ -278,6 +278,11 @@ def build_app(authentication=None, api_access=None, resource_access=None, server
                 logger.info("Database initialized.")
             else:
                 logger.info(f"Connected to existing database at {redacted_url}.")
+            # Identity-based admin designation (qserver_admins/tiled_admins) is
+            # intentionally not supported: role assignment is delegated to the
+            # api_access policy managers and the admin Role DB table this relied on
+            # was removed. See the note in
+            # config_schemas/service_configuration.yml for the migration path.
             # SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
             # db = SessionLocal()
             # for admin in authentication.get("qserver_admins", []):

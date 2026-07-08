@@ -107,21 +107,25 @@ properties:
                     args:
                       service: "custom_service"
                     ```
-      # qserver_admins:
-      #   type: array
-      #   items:
-      #     type: object
-      #     additionalProperties: false
-      #     required:
-      #       - provider
-      #       - id
-      #     properties:
-      #       provider:
-      #         type: string
-      #       id:
-      #         type: string
-      #   description: |
-      #     Give users with these identities 'admin' Role.
+      # NOTE: identity-based admin designation is intentionally NOT supported here.
+      # Upstream bluesky-httpserver accepts an `authentication.qserver_admins`
+      # (a.k.a. `tiled_admins`) list that grants the DB-backed `admin` role by
+      # identity. This service delegates all role/scope assignment to the
+      # `api_access` policy managers instead, and the `admin` Role DB table that
+      # `qserver_admins` depended on has been removed. Because this block sets
+      # `additionalProperties: false`, a migrated upstream config that still
+      # contains `authentication.qserver_admins` will FAIL validation with a clear
+      # error rather than being silently ignored.
+      #
+      # Migration path — grant admin via the api_access policy instead, e.g.:
+      #
+      #   api_access:
+      #     policy: queueserver_service.http.authorization:DictionaryAPIAccessControl
+      #     args:
+      #       users:
+      #         <username>:
+      #           roles:
+      #             - admin
       secret_keys:
         type: array
         items:

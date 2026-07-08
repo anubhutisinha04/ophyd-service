@@ -168,6 +168,15 @@ class AuthenticationMode(str, enum.Enum):
     external = "external"
 
 
+# NOTE: no route currently serves an "About"/discovery document. Upstream
+# tiled/bluesky-httpserver exposes an API-root "about" endpoint that lists the
+# configured authentication providers and their login endpoints so a generic
+# client can discover how to authenticate. The bluesky-queueserver-api client
+# (the frozen HTTP contract for this service) does NOT use it — it targets the
+# auth endpoints directly (e.g. /api/auth/provider/{provider}/token,
+# /api/auth/apikey), so the missing endpoint does not break the supported client.
+# These models are kept so the endpoint can be wired up (into a router returning
+# `About`) if a discovery-based client is ever needed.
 class AboutAuthenticationProvider(pydantic.BaseModel):
     provider: str
     mode: AuthenticationMode

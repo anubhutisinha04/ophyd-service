@@ -368,10 +368,29 @@ def get_current_principal_websocket(
     auth_header = websocket.headers.get("Authorization", "")
     access_token, api_key = None, None
     # Currently we do not support authentication with tokens
-    # if auth_header.startswith("Bearer "):
-    #     access_token = auth_header[len("Bearer") :].strip()
-    if auth_header.startswith("ApiKey "):
-        api_key = auth_header[len("ApiKey") :].strip()
+    # if scheme.lower() == "bearer":
+    #     access_token = param
+    scheme, param = get_authorization_scheme_param(auth_header)
+    if scheme.lower() == "apikey" and param:
+        # The HTTP path (APIKeyAuthorizationHeader) treats the scheme name
+        # case-insensitively, so "ApiKey"/"Apikey"/"apikey" all work there.
+        # Match that here so a client's header casing doesn't decide whether a
+        # WebSocket authenticates.
+        api_key = param
+    if api_key is None:
+        # Fallback: accept the key as an "api_key" query parameter, mirroring the
+        # HTTP get_api_key dependency, so a client can authenticate a WebSocket the
+        # same way it authenticates its HTTP requests. The "Authorization" header
+        # above is the preferred transport — a query-string key can leak into
+        # access logs and reverse-proxy logs, which commonly record query strings —
+        # so this is intentionally only a compatibility fallback (header wins).
+        #
+        # Cookies are deliberately NOT accepted here: the WebSocket upgrade is not
+        # covered by the CORS middleware and performs no Origin check, so honoring
+        # an ambient session cookie would open a cross-site WebSocket hijacking
+        # (CSWSH) vector. Header/query keys are not sent automatically by browsers,
+        # so they are safe.
+        api_key = websocket.query_params.get("api_key")
 
     principal = None
     try:
