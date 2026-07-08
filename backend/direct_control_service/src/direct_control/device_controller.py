@@ -295,6 +295,7 @@ class DeviceController:
             request.kwargs,
             timeout=timeout,
             use_put=request.use_put,
+            stop_on_timeout=self.settings.stop_on_command_timeout,
         )
         return DeviceCommandResponse(
             device_name=device_name,
@@ -497,5 +498,6 @@ class DeviceController:
             {},
             timeout=timeout or self.settings.command_timeout,
             use_put=(method == "put"),
+            stop_on_timeout=self.settings.stop_on_command_timeout,
         )
         return json_safe(result)
