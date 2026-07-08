@@ -199,69 +199,92 @@ class _DeferredEnrichment(NamedTuple):
     cache_key: tuple[str, str, str]
 
 
-def _resolve_addresses_static(
+def _resolve_prepare(
     addresses: list[str],
     registry: "DeviceRegistry",
-    enrich_cache: dict,
-    enrichment_enabled: bool,
-    allowlist,
-) -> tuple[list["PathResolveResultItem | None"], list[_DeferredEnrichment]]:
-    """First-pass (static) resolution for the resolve endpoint.
+) -> tuple[dict[int, "PathResolveResultItem"], list[tuple[int, str, str, str, str]]]:
+    """Registry-lookup half of the resolve endpoint's first pass.
 
-    Pure/synchronous: imports and (for ophyd-async) instantiates device
-    classes, which is blocking work, so the endpoint runs this in a worker
-    thread to keep the event loop responsive. Slots that need live
-    enrichment get a ``None`` placeholder plus a ``_DeferredEnrichment`` row
-    for the async second pass; everything else is resolved in place.
+    Runs synchronously on the event loop (no awaits), so it can't interleave
+    with a registry mutation — every read is against a consistent snapshot.
+    Returns ``(early_results, to_resolve)``: ``early_results`` maps an address
+    index to a terminal result (device-not-found / no-spec / no-prefix), and
+    ``to_resolve`` carries the captured, immutable
+    ``(index, address, device_class, prefix, sub_path)`` tuples the blocking
+    second half needs — so the worker thread never touches the shared,
+    mutable registry (which a concurrent multi-step update could leave in a
+    transiently inconsistent state).
     """
-    device_cache: dict = {}
-    results: list[PathResolveResultItem | None] = []
-    deferred: list[_DeferredEnrichment] = []
+    early: dict[int, PathResolveResultItem] = {}
+    to_resolve: list[tuple[int, str, str, str, str]] = []
 
-    for address in addresses:
+    for idx, address in enumerate(addresses):
         head, _, sub_path = address.partition(".")
         device = registry.get_device(head)
         if device is None:
-            results.append(
-                PathResolveResultItem(
-                    address=address,
-                    outcome=Outcome.DEVICE_NOT_FOUND,
-                    message=f"no device named '{head}' in registry",
-                )
+            early[idx] = PathResolveResultItem(
+                address=address,
+                outcome=Outcome.DEVICE_NOT_FOUND,
+                message=f"no device named '{head}' in registry",
             )
             continue
 
         spec = registry.get_instantiation_spec(head)
         if spec is None or not spec.device_class:
-            results.append(
-                PathResolveResultItem(
-                    address=address,
-                    outcome=Outcome.IMPORT_FAILED,
-                    message=(
-                        f"device '{head}' has no instantiation spec (can't resolve class to walk)"
-                    ),
-                )
+            early[idx] = PathResolveResultItem(
+                address=address,
+                outcome=Outcome.IMPORT_FAILED,
+                message=(
+                    f"device '{head}' has no instantiation spec (can't resolve class to walk)"
+                ),
             )
             continue
 
         prefix = _get_device_prefix(device, registry)
         if prefix is None:
-            results.append(
-                PathResolveResultItem(
-                    address=address,
-                    outcome=Outcome.IMPORT_FAILED,
-                    message=(
-                        f"device '{head}' has no derivable prefix "
-                        f"(checked pvs['prefix'], spec.args[0], "
-                        f"longest common PV prefix)"
-                    ),
-                )
+            early[idx] = PathResolveResultItem(
+                address=address,
+                outcome=Outcome.IMPORT_FAILED,
+                message=(
+                    f"device '{head}' has no derivable prefix "
+                    f"(checked pvs['prefix'], spec.args[0], longest common PV prefix)"
+                ),
             )
             continue
 
+        to_resolve.append((idx, address, spec.device_class, prefix, sub_path))
+
+    return early, to_resolve
+
+
+def _resolve_execute(
+    total: int,
+    early: dict[int, "PathResolveResultItem"],
+    to_resolve: list[tuple[int, str, str, str, str]],
+    enrich_cache: dict,
+    enrichment_enabled: bool,
+    allowlist,
+) -> tuple[list["PathResolveResultItem | None"], list[_DeferredEnrichment]]:
+    """Blocking half of the resolve endpoint's first pass.
+
+    Runs in a worker thread — imports and (for ophyd-async) instantiates the
+    device class, which is why it's kept off the event loop — using only the
+    immutable values captured by ``_resolve_prepare``. It never reads the
+    shared registry, so it can't observe a mid-mutation view. Slots that need
+    live enrichment get a ``None`` placeholder plus a ``_DeferredEnrichment``
+    row for the async second pass.
+    """
+    results: list[PathResolveResultItem | None] = [None] * total
+    for idx, item in early.items():
+        results[idx] = item
+
+    deferred: list[_DeferredEnrichment] = []
+    device_cache: dict = {}
+
+    for idx, address, device_class, prefix, sub_path in to_resolve:
         resolution = resolve_path(
             address,
-            device_class_path=spec.device_class,
+            device_class_path=device_class,
             prefix=prefix,
             device_cache=device_cache,
             allowlist=allowlist,
@@ -269,34 +292,26 @@ def _resolve_addresses_static(
 
         # Enrichment path: needs_enrichment + client configured.
         if resolution.outcome is Outcome.NEEDS_ENRICHMENT and enrichment_enabled:
-            cache_key = (spec.device_class, prefix, sub_path)
+            cache_key = (device_class, prefix, sub_path)
             cached_pv = enrich_cache.get(cache_key)
             if cached_pv is not None:
-                results.append(
-                    PathResolveResultItem(
-                        address=address,
-                        outcome=Outcome.RESOLVED,
-                        pv_name=cached_pv,
-                    )
+                results[idx] = PathResolveResultItem(
+                    address=address,
+                    outcome=Outcome.RESOLVED,
+                    pv_name=cached_pv,
                 )
                 continue
-            results.append(None)  # placeholder filled in by second pass
+            results[idx] = None  # placeholder filled in by second pass
             deferred.append(
-                _DeferredEnrichment(
-                    result_idx=len(results) - 1,
-                    address=address,
-                    cache_key=cache_key,
-                )
+                _DeferredEnrichment(result_idx=idx, address=address, cache_key=cache_key)
             )
             continue
 
-        results.append(
-            PathResolveResultItem(
-                address=address,
-                outcome=resolution.outcome,
-                pv_name=resolution.pv_name,
-                message=resolution.message,
-            )
+        results[idx] = PathResolveResultItem(
+            address=address,
+            outcome=resolution.outcome,
+            pv_name=resolution.pv_name,
+            message=resolution.message,
         )
 
     return results, deferred
@@ -2574,14 +2589,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dc_client = direct_control_container.get("client")
         enrich_cache = enrichment_cache_container.get("cache", {})
 
-        # First pass: static resolution. Imports (and, for ophyd-async,
-        # instantiates) device classes — blocking work, so run it in a worker
-        # thread instead of stalling the event loop for every other request.
-        # Slots that need enrichment get a placeholder + an entry in `deferred`.
+        # First pass, split so the registry is never read from a worker thread:
+        # (1) look up device/spec/prefix synchronously on the event loop, where
+        # no registry mutation can interleave (a consistent snapshot), then
+        # (2) run the blocking class import/walk in a worker thread using only
+        # the captured immutable values. Slots that need enrichment get a
+        # placeholder + an entry in `deferred`.
+        early, to_resolve = _resolve_prepare(request.addresses, state.registry)
         results, deferred = await asyncio.to_thread(
-            _resolve_addresses_static,
-            request.addresses,
-            state.registry,
+            _resolve_execute,
+            len(request.addresses),
+            early,
+            to_resolve,
             enrich_cache,
             dc_client is not None,
             settings.device_class_allowlist,
