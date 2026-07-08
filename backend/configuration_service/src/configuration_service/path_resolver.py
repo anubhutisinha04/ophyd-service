@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib
 import re
 import string
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -36,6 +37,18 @@ from enum import Enum
 # ophyd-async backends are free to introduce new schemes; matching by shape
 # avoids hard-coding the current set.
 _URI_SCHEME_RE = re.compile(r"^[a-z]+://")
+
+
+def device_class_allowed(device_class_path: str, allowlist: Sequence[str] | None) -> bool:
+    """True if ``device_class_path`` may be imported under ``allowlist``.
+
+    An empty/None allowlist disables the check (allow anything, the historical
+    behavior). Otherwise the path must start with one of the configured
+    import-path prefixes (e.g. ``"ophyd."``, ``"ophyd_async."``).
+    """
+    if not allowlist:
+        return True
+    return any(device_class_path.startswith(prefix) for prefix in allowlist)
 
 
 class Outcome(str, Enum):
@@ -82,12 +95,20 @@ def _split_address(address: str) -> tuple[str, str]:
     return head, tail
 
 
-def _import_class(device_class_path: str):
+def _import_class(device_class_path: str, allowlist: Sequence[str] | None = None):
     """Import ``module.ClassName`` and return the class object.
 
-    Raises ``ImportError`` (or ``AttributeError``) on failure — callers
-    translate those into ``Outcome.IMPORT_FAILED``.
+    When ``allowlist`` is non-empty, the import path must match one of its
+    prefixes — importing (and, for ophyd-async, instantiating) an arbitrary
+    class is a code-execution surface, so a locked-down deploy restricts it to
+    known device packages. Raises ``ImportError`` (or ``AttributeError``) on
+    failure — callers translate those into ``Outcome.IMPORT_FAILED``.
     """
+    if not device_class_allowed(device_class_path, allowlist):
+        raise ImportError(
+            f"device_class '{device_class_path}' is not in the configured "
+            f"allowlist of importable module prefixes"
+        )
     if "." not in device_class_path:
         raise ImportError(f"device_class '{device_class_path}' has no module prefix")
     module_name, class_name = device_class_path.rsplit(".", 1)
@@ -404,6 +425,7 @@ def resolve(
     device_class_path: str,
     prefix: str,
     device_cache: dict | None = None,
+    allowlist: Sequence[str] | None = None,
 ) -> Resolution:
     """Resolve a single dotted address to a PV name.
 
@@ -425,11 +447,15 @@ def resolve(
     path. Pass an empty dict per request to amortize instantiation across
     a batch of sibling addresses; the classic path is purely static and
     already costs nothing.
+
+    ``allowlist`` (optional) restricts which ``device_class_path`` prefixes
+    may be imported; an out-of-allowlist class returns ``IMPORT_FAILED``
+    instead of being imported.
     """
     _, sub_path = _split_address(address)
 
     try:
-        cls = _import_class(device_class_path)
+        cls = _import_class(device_class_path, allowlist)
     except (ImportError, AttributeError) as e:
         return Resolution(
             address=address,
