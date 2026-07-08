@@ -332,3 +332,16 @@ async def test_confirm_pv_subscribe_all_failed_sends_no_subscribed():
 
     assert not any(m["type"] == "subscribed" for m in ws.sent)
     assert any(m["type"] == "error" and m["pv"] == "A:PV" for m in ws.sent)
+
+
+async def test_subscribe_pvs_unknown_client_reports_all_failed():
+    # Client gone (e.g. disconnected at shutdown) before subscribe_pvs took the
+    # lock: every requested PV must come back as failed so the caller never
+    # confirms `subscribed` for a connection that no longer exists.
+    manager = _ws_manager(MockPVMonitor())
+    manager._connections = {}
+    manager._subscriptions = {}
+
+    failed = await manager.subscribe_pvs("gone", ["A:PV", "B:PV"])
+
+    assert [pv for pv, _ in failed] == ["A:PV", "B:PV"]

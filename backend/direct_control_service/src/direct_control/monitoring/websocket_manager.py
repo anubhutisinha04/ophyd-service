@@ -158,7 +158,11 @@ class WebSocketManager:
         async with self._lock:
             if client_id not in self._connections:
                 logger.warning("subscribe_unknown_client", client_id=client_id)
-                return failed_pvs
+                # The client is gone (e.g. it disconnected during shutdown
+                # between validation and here): report every requested PV as
+                # failed so the caller never confirms `subscribed` for a
+                # connection that no longer exists.
+                return [(pv, "client no longer connected") for pv in pv_names]
 
             new_pvs: list[
                 tuple[str, Callable[[PVUpdate], None], Callable[[BaseException], None]]
