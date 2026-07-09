@@ -343,12 +343,15 @@ def test_repeat_subscribe_touches_monitor():
 
 def test_lifespan_starts_sweep_task_and_evicts_idle_monitor(monkeypatch):
     """End-to-end: the lifespan spawns the sweep task with a short interval,
-    and after one sweep cycle an idle callback-less monitor is gone."""
-    monkeypatch.setenv("DIRECT_CONTROL_PV_MONITOR_SWEEP_INTERVAL", "0.05")
+    and after a few sweep cycles an idle callback-less monitor is gone.
+
+    Uses a generous deadline because CI runners are slower than local dev
+    (a tight budget would flake) — correctness of the eviction itself is
+    pinned by the unit tests above; this test's only job is proving the
+    sweep task is actually wired into the lifespan and firing.
+    """
+    monkeypatch.setenv("DIRECT_CONTROL_PV_MONITOR_SWEEP_INTERVAL", "0.1")
     monkeypatch.setenv("DIRECT_CONTROL_PV_MONITOR_IDLE_TTL", "0.01")
-    # Deps that require configuration_service must be silenced in the unit-
-    # test-style lifespan; conftest already stubs registry / coord, but we
-    # need to avoid the startup readiness probe.
     monkeypatch.setenv("DIRECT_CONTROL_CONFIG_SERVICE_STARTUP_PROBE", "false")
 
     from fastapi.testclient import TestClient
@@ -357,19 +360,23 @@ def test_lifespan_starts_sweep_task_and_evicts_idle_monitor(monkeypatch):
 
     with TestClient(app) as client:
         pv_monitor = client.app.state.pv_monitor
-        # Seed a stale callback-less monitor (bypasses CA — same pattern as
-        # the unit tests above).
         signal = _seed_pv(pv_monitor, "BL:SWEEP:ME", touched=time.monotonic() - 10.0)
 
-        # Give the sweep task at least one interval to run.
-        deadline = time.monotonic() + 2.0
+        # Verify the sweep task itself is wired into the lifespan first (this
+        # is the load-bearing assertion; eviction correctness is pinned by
+        # the unit tests). asyncio.all_tasks() runs from the test thread
+        # so it inspects the main loop, but TestClient runs the app in a
+        # background thread with its own loop — instead, verify via the
+        # side effect (the eviction) with a generous deadline.
+        deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
             if "BL:SWEEP:ME" not in pv_monitor._signals:
                 break
-            time.sleep(0.05)
+            time.sleep(0.1)
 
         assert "BL:SWEEP:ME" not in pv_monitor._signals, (
-            "sweep task did not evict the idle monitor within the deadline"
+            "sweep task did not evict the idle monitor within 15 s — is the "
+            "lifespan spawning the sweep? See lifespan() in main.py."
         )
         assert signal.destroyed
 
