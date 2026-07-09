@@ -234,8 +234,11 @@ re-orientation.</p>
     <p><strong>The source of truth.</strong> Holds the list of every device on
     the beamline, every PV those devices own, and who currently holds the
     "lock" on each device. Persists to PostgreSQL (or SQLite in dev).</p>
-    <p>Nothing moves hardware here — it just knows what exists and who is
-    allowed to touch it.</p>
+    <p>Nothing moves hardware here — it tracks what exists and, for each
+    device, which running plan (if any) currently holds the exclusive
+    lock, so a live UI write can't step on a plan mid-execution.
+    direct_control consults that lock on every write and returns
+    <code>423&nbsp;Locked</code> if the device is held by someone else.</p>
     <p><a class="card-link" href="configuration-service.html">Read the tour →</a></p>
   </div>
 
