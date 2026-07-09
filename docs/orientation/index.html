@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orientation to the backend — ophyd-service</title>
+<link rel="stylesheet" href="assets/orientation.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <ul>
+    <li class="home"><a href="index.html" class="here">Orientation</a></li>
+    <li><a href="configuration-service.html">Configuration</a></li>
+    <li><a href="direct-control-service.html">Direct Control</a></li>
+    <li><a href="queueserver-service.html">Queueserver</a></li>
+    <li><a href="side-a.html">Side&nbsp;A</a></li>
+    <li><a href="side-b.html">Side&nbsp;B</a></li>
+    <li><a href="frontend-integration.html">Frontend</a></li>
+    <li><a href="key-updates.html">Key updates</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<h1>Orientation to the backend</h1>
+<p class="subtitle">A plain-English tour of the three services that make up the
+ophyd-service backend, how they talk to each other, and how the React/Finch
+frontend uses them. Reflects the target state after the ongoing backend
+remediation lands.</p>
+
+<div class="callout">
+  <strong>How to read this.</strong> Every page starts with a picture. Read
+  the picture first; the words underneath just explain what you're looking at.
+  Boxes are always coloured the same way:
+  <div class="legend" style="margin-top:0.5em;">
+    <span><span class="swatch config"></span>configuration_service</span>
+    <span><span class="swatch dc"></span>direct_control_service</span>
+    <span><span class="swatch qs"></span>queueserver_service</span>
+    <span><span class="swatch fe"></span>React + Finch frontend</span>
+  </div>
+</div>
+
+<h2>The 30-second picture</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Overview diagram of the three backend services, hardware, and the frontend">
+  <!-- title -->
+  <text x="450" y="26" class="svg-title" text-anchor="middle">One frontend · three backends · one set of hardware</text>
+
+  <!-- Frontend -->
+  <rect x="330" y="55" width="240" height="60" rx="8" class="svg-box-fe"/>
+  <text x="450" y="82" class="svg-title svg-title-fe" text-anchor="middle">React + Finch frontend</text>
+  <text x="450" y="102" class="svg-label-small" text-anchor="middle">browser, port 5173 in dev</text>
+
+  <!-- Config service -->
+  <rect x="30" y="200" width="240" height="90" rx="8" class="svg-box-config"/>
+  <text x="150" y="228" class="svg-title svg-title-config" text-anchor="middle">configuration_service</text>
+  <text x="150" y="250" class="svg-label" text-anchor="middle">"the source of truth"</text>
+  <text x="150" y="270" class="svg-label-small" text-anchor="middle">devices · PVs · locks · registry</text>
+  <text x="150" y="285" class="svg-label-small" text-anchor="middle">REST · port 8004</text>
+
+  <!-- Direct control -->
+  <rect x="330" y="200" width="240" height="90" rx="8" class="svg-box-dc"/>
+  <text x="450" y="228" class="svg-title svg-title-dc" text-anchor="middle">direct_control_service</text>
+  <text x="450" y="250" class="svg-label" text-anchor="middle">"the live wire to hardware"</text>
+  <text x="450" y="270" class="svg-label-small" text-anchor="middle">read/write PVs · run device methods</text>
+  <text x="450" y="285" class="svg-label-small" text-anchor="middle">REST + WebSocket · port 8003</text>
+
+  <!-- Queueserver -->
+  <rect x="630" y="200" width="240" height="90" rx="8" class="svg-box-qs"/>
+  <text x="750" y="228" class="svg-title svg-title-qs" text-anchor="middle">queueserver_service</text>
+  <text x="750" y="250" class="svg-label" text-anchor="middle">"the plan runner"</text>
+  <text x="750" y="270" class="svg-label-small" text-anchor="middle">queue &amp; execute bluesky plans</text>
+  <text x="750" y="285" class="svg-label-small" text-anchor="middle">REST + WebSocket · port 60610</text>
+
+  <!-- Frontend arrows down to each backend -->
+  <path d="M 400 115 L 200 200" class="svg-arrow-hot"/>
+  <path d="M 450 115 L 450 200" class="svg-arrow-hot"/>
+  <path d="M 500 115 L 700 200" class="svg-arrow-hot"/>
+
+  <!-- Side A (config <-> DC), curly arrow between them -->
+  <path d="M 270 235 L 330 235" class="svg-arrow"/>
+  <path d="M 330 255 L 270 255" class="svg-arrow"/>
+  <text x="300" y="200" class="svg-label" text-anchor="middle" fill="var(--fg-soft)">Side A</text>
+
+  <!-- Side B (config <-> QS), long connector under the frontend arrows -->
+  <path d="M 270 375 Q 450 420 630 375" class="svg-arrow"/>
+  <path d="M 630 395 Q 450 440 270 395" class="svg-arrow"/>
+  <text x="450" y="420" class="svg-label" text-anchor="middle" fill="var(--fg-soft)">Side B</text>
+  <path d="M 150 290 L 150 375" class="svg-arrow"/>
+  <path d="M 750 290 L 750 375" class="svg-arrow"/>
+
+  <!-- EPICS hardware layer -->
+  <rect x="330" y="360" width="240" height="60" rx="8" class="svg-box-plain"/>
+  <text x="450" y="386" class="svg-title" text-anchor="middle">Beamline hardware (EPICS IOCs)</text>
+  <text x="450" y="404" class="svg-label-small" text-anchor="middle">motors · detectors · shutters · amplifiers</text>
+
+  <!-- DC to hardware -->
+  <path d="M 450 290 L 450 360" class="svg-arrow-hot"/>
+  <text x="465" y="325" class="svg-label-small">EPICS CA/PVA</text>
+
+  <!-- QS to hardware, via bluesky RunEngine in-process -->
+  <path d="M 700 290 Q 630 340 570 360" class="svg-arrow" stroke-dasharray="4 3"/>
+  <text x="640" y="330" class="svg-label-small">via bluesky RE</text>
+
+  <!-- arrow legend -->
+  <g transform="translate(30,435)">
+    <line x1="0" y1="0" x2="30" y2="0" class="svg-arrow-hot"/>
+    <text x="35" y="4" class="svg-label-small">frontend or hot user path</text>
+    <line x1="240" y1="0" x2="270" y2="0" class="svg-arrow"/>
+    <text x="275" y="4" class="svg-label-small">service-to-service call</text>
+    <line x1="480" y1="0" x2="510" y2="0" class="svg-arrow" stroke-dasharray="4 3"/>
+    <text x="515" y="4" class="svg-label-small">indirect / via ophyd RunEngine</text>
+  </g>
+</svg>
+<figcaption>Figure 1 — The whole backend on one screen.</figcaption>
+</figure>
+
+<p><strong>The one-line summary:</strong> Configuration is the <em>book</em>
+(what devices exist and who is using them), Direct-control is the
+<em>hand</em> (moves one thing right now), Queueserver is the <em>conductor</em>
+(runs a scripted experiment made of many moves). The React frontend talks
+to all three.</p>
+
+<h2>Why "ophyd-service"?</h2>
+
+<p>The project name isn't just decoration. "ophyd-service" is a mental
+model, not a term the code uses, but the code makes the model real in
+exactly one place: <code>direct_control_service</code> is the only
+service in the backend that actually <strong>instantiates ophyd device
+classes and drives them</strong>. Everything else works with metadata,
+PV strings, and lock records.</p>
+
+<p>What that means in practice:</p>
+
+<ul>
+  <li>The other two services never <code>import ophyd</code>.
+  configuration_service stores class paths and constructor kwargs;
+  queueserver_service passes them to a bluesky RunEngine running in a
+  separate worker.</li>
+  <li>direct_control has <em>both</em> device frameworks as declared
+  dependencies (<code>ophyd</code> + <code>ophyd-async[ca]</code>)
+  and drives each with a dedicated driver. Its
+  <code>src/direct_control/drivers.py</code> is the one place that
+  branches on framework — everything above stays
+  framework-agnostic.</li>
+  <li>Verified from the code: a device class that is neither classic
+  ophyd nor ophyd-async is a hard error. There is no PV-gateway
+  fallback at the device-control level. The service means it when it
+  says "device server".</li>
+</ul>
+
+<figure class="figure">
+<svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="What ophyd-service means">
+  <text x="450" y="24" class="svg-title" text-anchor="middle">"ophyd-service" · ophyd itself, exposed over HTTP</text>
+
+  <!-- Traditional: ophyd embedded in every client -->
+  <rect x="30" y="60" width="410" height="250" rx="8" class="svg-box-plain"/>
+  <text x="235" y="86" class="svg-title" text-anchor="middle">Traditional</text>
+  <text x="235" y="104" class="svg-label-small" text-anchor="middle">every client embeds ophyd + EPICS libs</text>
+
+  <rect x="70" y="125" width="150" height="40" rx="4" fill="white" stroke="var(--fg-soft)"/>
+  <text x="145" y="150" class="svg-label-small" text-anchor="middle">notebook + ophyd + pyepics</text>
+  <rect x="70" y="175" width="150" height="40" rx="4" fill="white" stroke="var(--fg-soft)"/>
+  <text x="145" y="200" class="svg-label-small" text-anchor="middle">CLI + ophyd + pyepics</text>
+  <rect x="70" y="225" width="150" height="40" rx="4" fill="white" stroke="var(--fg-soft)"/>
+  <text x="145" y="250" class="svg-label-small" text-anchor="middle">script + ophyd + p4p</text>
+
+  <rect x="250" y="175" width="150" height="40" rx="4" class="svg-box-plain"/>
+  <text x="325" y="200" class="svg-label" text-anchor="middle">EPICS</text>
+
+  <path d="M 220 145 L 250 190" class="svg-arrow"/>
+  <path d="M 220 195 L 250 195" class="svg-arrow"/>
+  <path d="M 220 245 L 250 200" class="svg-arrow"/>
+
+  <text x="235" y="290" class="svg-label-small" text-anchor="middle">Every consumer ships EPICS libraries and ophyd.</text>
+  <text x="235" y="305" class="svg-label-small" text-anchor="middle">Devices are re-implemented in every environment.</text>
+
+  <!-- ophyd-service: one place -->
+  <rect x="470" y="60" width="400" height="250" rx="8" class="svg-box-dc"/>
+  <text x="670" y="86" class="svg-title-dc svg-title" text-anchor="middle">ophyd-service</text>
+  <text x="670" y="104" class="svg-label-small" text-anchor="middle">one process holds ophyd + EPICS · everyone speaks HTTP to it</text>
+
+  <rect x="510" y="125" width="130" height="40" rx="4" class="svg-box-fe"/>
+  <text x="575" y="150" class="svg-label-small" text-anchor="middle">browser (Finch)</text>
+  <rect x="510" y="175" width="130" height="40" rx="4" class="svg-box-plain"/>
+  <text x="575" y="200" class="svg-label-small" text-anchor="middle">CLI / curl</text>
+  <rect x="510" y="225" width="130" height="40" rx="4" class="svg-box-plain"/>
+  <text x="575" y="250" class="svg-label-small" text-anchor="middle">notebook (httpx)</text>
+
+  <rect x="680" y="175" width="170" height="40" rx="4" class="svg-box-dc"/>
+  <text x="765" y="200" class="svg-label-small" text-anchor="middle">direct_control</text>
+  <text x="765" y="215" class="svg-label-small" text-anchor="middle" font-size="9">ophyd + ophyd-async</text>
+
+  <path d="M 640 145 L 680 190" class="svg-arrow-hot"/>
+  <path d="M 640 195 L 680 195" class="svg-arrow-hot"/>
+  <path d="M 640 245 L 680 200" class="svg-arrow-hot"/>
+
+  <text x="670" y="290" class="svg-label-small" text-anchor="middle">One place instantiates ophyd device classes.</text>
+  <text x="670" y="305" class="svg-label-small" text-anchor="middle">Clients need HTTP only — no EPICS libraries.</text>
+</svg>
+<figcaption>Figure 2 — What "ophyd-service" means in one picture.</figcaption>
+</figure>
+
+<h3>Two device frameworks, one HTTP surface</h3>
+
+<p>direct_control drives both device frameworks, and its own source is
+explicit about it — from <code>src/direct_control/drivers.py</code>:</p>
+
+<blockquote style="border-left:3px solid var(--dc-color); padding:0.6em 1em; background:var(--dc-bg); border-radius:0 4px 4px 0; margin:1em 0; font-size:0.95em;">
+<em>"direct_control drives BOTH classic ophyd (pyepics transport) and
+ophyd-async (aioca/p4p transports) devices during the multi-year
+migration between the two frameworks."</em>
+</blockquote>
+
+<p>Two transports, two frameworks, one HTTP request shape. See the
+<a href="direct-control-service.html">direct_control page</a> for the
+verified layer stack, the two-driver dispatch mechanism, and the
+git-history evidence of the "PV wrapper → real device server"
+re-orientation.</p>
+
+<h2>Meet the services</h2>
+
+<div class="card-grid">
+  <div class="card config">
+    <h3>configuration_service</h3>
+    <p><strong>The source of truth.</strong> Holds the list of every device on
+    the beamline, every PV those devices own, and who currently holds the
+    "lock" on each device. Persists to PostgreSQL (or SQLite in dev).</p>
+    <p>Nothing moves hardware here — it just knows what exists and who is
+    allowed to touch it.</p>
+    <p><a class="card-link" href="configuration-service.html">Read the tour →</a></p>
+  </div>
+
+  <div class="card dc">
+    <h3>direct_control_service</h3>
+    <p><strong>The live wire to hardware — where ophyd lives.</strong>
+    Instantiates ophyd (classic and <em>async</em>) device classes
+    on demand, runs their methods, streams live values over
+    WebSockets. Also supports raw PV reads/writes as a lower-level
+    fallback. Every write first checks the lock in configuration.</p>
+    <p>This is what a UI widget talks to when a user drags a slider
+    or clicks a button.</p>
+    <p><a class="card-link" href="direct-control-service.html">Read the tour →</a></p>
+  </div>
+
+  <div class="card qs">
+    <h3>queueserver_service</h3>
+    <p><strong>The plan runner.</strong> Accepts scripted bluesky plans,
+    queues them, and runs them in a dedicated worker process. Streams
+    console output and status updates back over WebSocket.</p>
+    <p>Started as a merge of upstream <code>bluesky-queueserver</code>
+    + <code>bluesky-httpserver</code>; unified into one cohesive
+    package; the target state removes 0MQ entirely, leaving HTTP +
+    WebSocket as the single external contract. Compatibility with the
+    <code>bluesky-queueserver-api</code> HTTP transport is a hard
+    requirement so downstream consumers (e.g. BLOP) keep working.</p>
+    <p><a class="card-link" href="queueserver-service.html">Read the tour →</a></p>
+  </div>
+</div>
+
+<h2>How they talk to each other</h2>
+
+<p>There are only <strong>two conversations</strong> between the backend
+services, and one implicit one at the hardware layer:</p>
+
+<figure class="figure">
+<svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Side A vs Side B interactions">
+  <!-- Side A block -->
+  <rect x="20" y="30" width="410" height="290" rx="10" fill="#fafbfc" stroke="var(--border)" stroke-width="1"/>
+  <text x="225" y="55" class="svg-title" text-anchor="middle">Side A — configuration ↔ direct_control</text>
+  <text x="225" y="76" class="svg-label-small" text-anchor="middle">"Is this device free? Yes. Then I'll move it."</text>
+
+  <rect x="45" y="120" width="160" height="60" rx="8" class="svg-box-config"/>
+  <text x="125" y="146" class="svg-title-config svg-title" text-anchor="middle">configuration</text>
+  <text x="125" y="165" class="svg-label-small" text-anchor="middle">registry &amp; lock oracle</text>
+
+  <rect x="245" y="120" width="160" height="60" rx="8" class="svg-box-dc"/>
+  <text x="325" y="146" class="svg-title-dc svg-title" text-anchor="middle">direct_control</text>
+  <text x="325" y="165" class="svg-label-small" text-anchor="middle">hardware I/O</text>
+
+  <path d="M 245 140 L 205 140" class="svg-arrow"/>
+  <text x="225" y="132" class="svg-label-small" text-anchor="middle">lookup PV / lock</text>
+  <path d="M 205 165 L 245 165" class="svg-arrow"/>
+  <text x="225" y="185" class="svg-label-small" text-anchor="middle">"go" / "wait"</text>
+
+  <text x="60" y="220" class="svg-label" font-weight="600">On every user write:</text>
+  <text x="60" y="240" class="svg-label-small">1. direct_control asks configuration "who owns this PV / is</text>
+  <text x="60" y="255" class="svg-label-small">   the device locked?"</text>
+  <text x="60" y="272" class="svg-label-small">2. If locked by someone else → 423 Locked, refuse the write.</text>
+  <text x="60" y="289" class="svg-label-small">3. If free → do the EPICS put; report health back.</text>
+  <text x="60" y="306" class="svg-label-small">Registry data is also pushed over WebSocket for live views.</text>
+
+  <!-- Side B block -->
+  <rect x="465" y="30" width="410" height="290" rx="10" fill="#fafbfc" stroke="var(--border)" stroke-width="1"/>
+  <text x="670" y="55" class="svg-title" text-anchor="middle">Side B — configuration ↔ queueserver</text>
+  <text x="670" y="76" class="svg-label-small" text-anchor="middle">"Sync my devices, lock what I need, run the plan."</text>
+
+  <rect x="490" y="120" width="160" height="60" rx="8" class="svg-box-config"/>
+  <text x="570" y="146" class="svg-title-config svg-title" text-anchor="middle">configuration</text>
+  <text x="570" y="165" class="svg-label-small" text-anchor="middle">registry &amp; lock oracle</text>
+
+  <rect x="690" y="120" width="160" height="60" rx="8" class="svg-box-qs"/>
+  <text x="770" y="146" class="svg-title-qs svg-title" text-anchor="middle">queueserver</text>
+  <text x="770" y="165" class="svg-label-small" text-anchor="middle">plan queue &amp; RE worker</text>
+
+  <path d="M 690 140 L 650 140" class="svg-arrow"/>
+  <text x="670" y="132" class="svg-label-small" text-anchor="middle">device list, diff, lock</text>
+  <path d="M 650 165 L 690 165" class="svg-arrow"/>
+  <text x="670" y="185" class="svg-label-small" text-anchor="middle">changes to apply</text>
+
+  <text x="505" y="220" class="svg-label" font-weight="600">Around every plan run:</text>
+  <text x="505" y="240" class="svg-label-small">1. Manager bootstraps: fetch device list, apply overlay to worker.</text>
+  <text x="505" y="255" class="svg-label-small">2. Before starting a plan: lock the devices it will touch (per-plan</text>
+  <text x="505" y="272" class="svg-label-small">   is default; lock_all=True locks the whole beamline).</text>
+  <text x="505" y="289" class="svg-label-small">3. Renew heartbeats while the plan runs — only if leases are enabled.</text>
+  <text x="505" y="306" class="svg-label-small">4. Release on plan end. lock_epoch signals a config-service restart.</text>
+</svg>
+<figcaption>Figure 3 — The two conversations between backend services.</figcaption>
+</figure>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Side A · <a href="side-a.html">details →</a></h3>
+    <p><em>configuration&nbsp;↔&nbsp;direct_control</em></p>
+    <p>Every read/write direct_control performs consults configuration first,
+    for both the device metadata (where's the PV? what's its type?) and the
+    safety gate (is anyone else using this right now?). Direct_control also
+    reports PV health back so operators see failing hardware.</p>
+  </div>
+  <div class="card">
+    <h3>Side B · <a href="side-b.html">details →</a></h3>
+    <p><em>configuration&nbsp;↔&nbsp;queueserver</em></p>
+    <p>When queueserver spins up a worker, it syncs its device list from
+    the registry, then acquires per-plan locks on the devices the plan
+    needs. An always-on <em>lock_epoch</em> tells queueserver when
+    configuration_service restarts (and drops the in-memory lock table),
+    so it can re-acquire. Opt-in TTL leases add auto-expiry as a third
+    safety net for crashed lock holders.</p>
+  </div>
+</div>
+
+<h2>How the frontend uses all of this</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Frontend connections to the three backends">
+  <rect x="330" y="20" width="240" height="60" rx="8" class="svg-box-fe"/>
+  <text x="450" y="46" class="svg-title-fe svg-title" text-anchor="middle">React + Finch frontend</text>
+  <text x="450" y="67" class="svg-label-small" text-anchor="middle">TypeScript types generated from each service's OpenAPI</text>
+
+  <!-- Config path -->
+  <rect x="30" y="200" width="240" height="70" rx="8" class="svg-box-config"/>
+  <text x="150" y="226" class="svg-title-config svg-title" text-anchor="middle">configuration_service</text>
+  <text x="150" y="245" class="svg-label-small" text-anchor="middle">list devices, browse PVs,</text>
+  <text x="150" y="260" class="svg-label-small" text-anchor="middle">admin: add/edit/enable/disable</text>
+
+  <!-- DC path -->
+  <rect x="330" y="200" width="240" height="70" rx="8" class="svg-box-dc"/>
+  <text x="450" y="226" class="svg-title-dc svg-title" text-anchor="middle">direct_control_service</text>
+  <text x="450" y="245" class="svg-label-small" text-anchor="middle">live values (WebSocket),</text>
+  <text x="450" y="260" class="svg-label-small" text-anchor="middle">single writes, batch writes</text>
+
+  <!-- QS path -->
+  <rect x="630" y="200" width="240" height="70" rx="8" class="svg-box-qs"/>
+  <text x="750" y="226" class="svg-title-qs svg-title" text-anchor="middle">queueserver_service</text>
+  <text x="750" y="245" class="svg-label-small" text-anchor="middle">submit plans, watch queue,</text>
+  <text x="750" y="260" class="svg-label-small" text-anchor="middle">stream console output</text>
+
+  <!-- arrows -->
+  <path d="M 380 80 L 200 200" class="svg-arrow-hot"/>
+  <text x="255" y="140" class="svg-label-small">REST</text>
+
+  <path d="M 450 80 L 450 200" class="svg-arrow-hot"/>
+  <text x="465" y="140" class="svg-label-small">REST + WS</text>
+
+  <path d="M 520 80 L 700 200" class="svg-arrow-hot"/>
+  <text x="635" y="140" class="svg-label-small">REST + WS</text>
+</svg>
+<figcaption>Figure 4 — The frontend fans out to all three services.</figcaption>
+</figure>
+
+<p>The frontend is a React app that uses <code>@blueskyproject/finch</code>
+components. Every service publishes its API as an OpenAPI schema
+(<code>shared-schema/*.openapi.json</code>) that the frontend turns into
+TypeScript types — so a route change on the backend shows up as a
+compile-time error in the UI. See
+<a href="frontend-integration.html">Frontend integration</a> for how the
+generation, WebSocket connections, and dev proxy work.</p>
+
+<h2>The target-state pivot: HTTP-only</h2>
+
+<div class="callout done">
+  <h4>What's changing</h4>
+  <p>Historically <code>queueserver_service</code> spoke <strong>two</strong>
+  protocols to the outside world: HTTP (for the browser) and 0MQ (for CLI
+  tools and older clients). The target state after the current remediation
+  is <strong>HTTP-only</strong>. Every 0MQ knob, environment variable, and
+  library dependency gets removed; every consumer moves to HTTP.</p>
+  <p>The one remaining "internal" 0MQ use — the manager publishing console
+  output — is replaced by an in-process asyncio queue. The upshot: fewer
+  moving parts, one API surface to test, one contract to freeze.</p>
+</div>
+
+<p>See <a href="key-updates.html">Key updates</a> for the milestones that
+got us there (dispatch-serialization lock, the compat test suite, the
+staged 0MQ retirement, the HTTP-based <code>qserver</code> CLI, etc.).</p>
+
+<h2>Where to go next</h2>
+
+<div class="card-grid">
+  <div class="card config">
+    <h3>1 · Meet each service</h3>
+    <p><a href="configuration-service.html">configuration_service</a><br>
+    <a href="direct-control-service.html">direct_control_service</a><br>
+    <a href="queueserver-service.html">queueserver_service</a></p>
+  </div>
+  <div class="card">
+    <h3>2 · See them work together</h3>
+    <p><a href="side-a.html">Side A — configuration ↔ direct_control</a><br>
+    <a href="side-b.html">Side B — configuration ↔ queueserver</a></p>
+  </div>
+  <div class="card fe">
+    <h3>3 · Wire in the UI</h3>
+    <p><a href="frontend-integration.html">Frontend integration</a></p>
+  </div>
+  <div class="card">
+    <h3>4 · Recent history</h3>
+    <p><a href="key-updates.html">Key updates timeline</a></p>
+  </div>
+</div>
+
+<footer class="pagefoot">
+  Orientation to the ophyd-service backend · target-state after the
+  2026-07-02 backend-remediation effort · diagrams and text are hand-authored,
+  no third-party libraries required to view.
+</footer>
+
+</main>
+</body>
+</html>

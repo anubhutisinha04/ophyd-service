@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Key updates — Orientation to the backend</title>
+<link rel="stylesheet" href="assets/orientation.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <ul>
+    <li class="home"><a href="index.html">Orientation</a></li>
+    <li><a href="configuration-service.html">Configuration</a></li>
+    <li><a href="direct-control-service.html">Direct Control</a></li>
+    <li><a href="queueserver-service.html">Queueserver</a></li>
+    <li><a href="side-a.html">Side&nbsp;A</a></li>
+    <li><a href="side-b.html">Side&nbsp;B</a></li>
+    <li><a href="frontend-integration.html">Frontend</a></li>
+    <li><a href="key-updates.html" class="here">Key updates</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<h1>Key updates that shaped the target state</h1>
+<p class="subtitle">A curated tour of the most consequential changes on the way
+to the target-state backend. Not every PR — just the ones that meaningfully
+changed what a new reader needs to understand.</p>
+
+<div class="callout">
+  <h4>How to read this page</h4>
+  <p>Grouped by <em>theme</em>, not phase or date. Each entry names the shipped
+  behaviour first and (in a subline) the concrete PR that landed it, so you
+  can find the diff. Legend: <span class="tag done">delivered</span> lands
+  are on <code>main</code>; <span class="tag now">in flight</span> is an
+  open PR; <span class="tag future">planned</span> is scoped but not yet
+  in flight.</p>
+</div>
+
+<h2>Theme 0 · The queueserver_service journey</h2>
+
+<p>Before any of the reliability/safety fixes below, there was a
+different kind of change: turning the two upstream packages into
+one refined service. These commits set up everything else on this
+page and are worth reading first.</p>
+
+<table class="data">
+<thead><tr><th>What happened</th><th>When</th><th>Landed in</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Vendor upstream in-tree</strong> — imported <code>bluesky-queueserver</code> + <code>bluesky-httpserver</code> as a squash, stripped upstream CI / templates / deploy keys, and set up the <code>bluesky-queueserver-api</code> PyPI-client compat gate on day one so subsequent changes could be measured against the real client.</td>
+  <td>2026-06-10</td>
+  <td><code>356d521</code>, <code>22da9b3</code>, <code>a1ae8cd</code></td>
+</tr>
+<tr>
+  <td><strong>Unify into one cohesive package</strong> — replaced the two stapled-together upstream layouts with a single <code>queueserver_service</code> package (<code>manager/</code>, <code>http/</code>, <code>common/</code>). One <code>pyproject.toml</code>, one <code>pytest</code> run, one dist. External contracts (console-script names, wire protocols, cookie names) kept intact.</td>
+  <td>2026-06-10</td>
+  <td><code>149578e</code></td>
+</tr>
+<tr>
+  <td><strong>Refine + simplify</strong> — with the two halves fused, cross-cutting improvements landed one after another: pluggable queue store (Redis / SQLite / PostgreSQL), per-plan device locking, profile-collection reload endpoints, ConfigServiceCoordinator extracted, HTTP routes split into 12 domain routers, <code>bluesky-httpserver</code> shim dist.</td>
+  <td>2026-06 → present</td>
+  <td>PR #79, PR #80, PR #88, and many more (see themes below)</td>
+</tr>
+<tr>
+  <td><strong>Retire 0MQ (HTTP-only)</strong> — the largest simplification: remove 0MQ from the external contract entirely, keep manager↔worker pipes untouched. The <code>bluesky-queueserver-api</code> HTTP-transport contract stays intact so downstream consumers (e.g. <a href="https://blueskyproject.io/blop" rel="external" target="_blank">BLOP</a>) keep working — they just import from <code>.http</code> instead of <code>.zmq</code>. See <a href="queueserver-service.html">the queueserver page</a> for the Phase 6 staging (6a: unified only → 6b: in-process console bridge → 6c: HTTP-based qserver CLI → 6d: delete zmq code).</td>
+  <td>in progress</td>
+  <td>Phase 6 (staged)</td>
+</tr>
+</tbody>
+</table>
+
+<div class="callout">
+  <h4>Why this matters</h4>
+  <p>Nearly all of the <em>other</em> changes on this page happen in code
+  that was upstream's, is now the fork's, and is on a trajectory
+  toward "HTTP-only, one cohesive package". Reading a change without
+  that context makes it look like a random pile of fixes; reading it
+  <em>with</em> that context makes it a coherent story of gradually
+  simplifying a two-package vendor drop into one clean service.</p>
+</div>
+
+<h2>Theme 1 · Reliability wins</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Reliability wins summary">
+  <text x="450" y="24" class="svg-title" text-anchor="middle">The five reliability changes that mattered most</text>
+
+  <rect x="30" y="60" width="260" height="100" rx="8" class="svg-box-config"/>
+  <text x="160" y="86" class="svg-title-config svg-title" text-anchor="middle">Lock leases + lock_epoch</text>
+  <text x="160" y="106" class="svg-label-small" text-anchor="middle">Opt-in TTL leases + heartbeat.</text>
+  <text x="160" y="121" class="svg-label-small" text-anchor="middle">Always-on lock-authority epoch</text>
+  <text x="160" y="141" class="svg-label-small" text-anchor="middle">signals in-memory table reset.</text>
+
+  <rect x="320" y="60" width="260" height="100" rx="8" class="svg-box-qs"/>
+  <text x="450" y="86" class="svg-title-qs svg-title" text-anchor="middle">Manager can't silently brick</text>
+  <text x="450" y="106" class="svg-label-small" text-anchor="middle">Guards on every set_result</text>
+  <text x="450" y="121" class="svg-label-small" text-anchor="middle">and loop-body exception</text>
+  <text x="450" y="141" class="svg-label-small" text-anchor="middle">so poll tasks can't die.</text>
+
+  <rect x="610" y="60" width="260" height="100" rx="8" class="svg-box-qs"/>
+  <text x="740" y="86" class="svg-title-qs svg-title" text-anchor="middle">Dead worker is detected</text>
+  <text x="740" y="106" class="svg-label-small" text-anchor="middle">Watchdog-confirmed death →</text>
+  <text x="740" y="121" class="svg-label-small" text-anchor="middle">recovery; no more stuck</text>
+  <text x="740" y="141" class="svg-label-small" text-anchor="middle">EXECUTING_QUEUE.</text>
+
+  <rect x="180" y="185" width="260" height="100" rx="8" class="svg-box-qs"/>
+  <text x="310" y="211" class="svg-title-qs svg-title" text-anchor="middle">Atomic overlays</text>
+  <text x="310" y="231" class="svg-label-small" text-anchor="middle">Registry-driven device</text>
+  <text x="310" y="246" class="svg-label-small" text-anchor="middle">upserts stage-then-commit</text>
+  <text x="310" y="266" class="svg-label-small" text-anchor="middle">in the worker namespace.</text>
+
+  <rect x="460" y="185" width="260" height="100" rx="8" class="svg-box-dc"/>
+  <text x="590" y="211" class="svg-title-dc svg-title" text-anchor="middle">No monitor leaks</text>
+  <text x="590" y="231" class="svg-label-small" text-anchor="middle">Client disconnect during</text>
+  <text x="590" y="246" class="svg-label-small" text-anchor="middle">EPICS subscribe no longer</text>
+  <text x="590" y="266" class="svg-label-small" text-anchor="middle">leaves an orphan monitor.</text>
+</svg>
+<figcaption>Figure 1 — The five reliability changes that shaped the target
+state.</figcaption>
+</figure>
+
+<table class="data">
+<thead><tr><th>What changed</th><th>Before</th><th>After</th><th>Landed in</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Lock leases + lock-authority epoch</strong> <span class="tag done">delivered</span></td>
+  <td>Locks were indefinite in-memory with no expiry; a queueserver crash left every held device locked until an operator force-unlocked (or configuration_service restarted, which itself dropped every lock silently — direct_control couldn't distinguish "unlocked" from "authority reset").</td>
+  <td>Opt-in TTL leases (<code>CONFIG_LOCK_LEASE_TTL_SECONDS</code>, default <code>0</code> = legacy) with a <code>POST /devices/lock/renew</code> heartbeat: crashed holders lose their locks after the TTL. An always-on <code>lock_epoch</code> (fresh per configuration_service process start, distinct from the DB-backed registry <code>service_epoch</code>) surfaces on lock/renew/status so queueserver re-acquires and direct_control logs an attributable "authority reset" event. Queueserver's <code>lock_scope</code> default also changed from <code>environment</code> to <code>plan</code>.</td>
+  <td>PR #81</td>
+</tr>
+<tr>
+  <td><strong>Manager silent-brick fixed</strong> <span class="tag done">delivered</span></td>
+  <td>The worker-state poll task died permanently on a double <code>set_result</code>; the manager kept running but its view of the worker was frozen forever. Watchdog couldn't see it (heartbeats live in another task).</td>
+  <td>Every future set is guarded with <code>if not fut.done():</code> via a new <code>_complete_manager_task</code>. The loop body is wrapped so exceptions don't kill the task.</td>
+  <td>PR #83</td>
+</tr>
+<tr>
+  <td><strong>Dispatch serialization lock</strong> <span class="tag done">delivered</span></td>
+  <td>HTTP and 0MQ handlers could concurrently start plans; two concurrent <code>queue_start</code> calls could both pass the IDLE check.</td>
+  <td>One <code>asyncio.Lock</code> in <code>_dispatch_command</code> serializes every command path. Also the structural prerequisite for going HTTP-only.</td>
+  <td>PR #83</td>
+</tr>
+<tr>
+  <td><strong>Worker-death detection</strong> <span class="tag done">delivered</span></td>
+  <td>A SIGKILL-ed worker left the manager stuck in <code>EXECUTING_QUEUE</code> forever.</td>
+  <td>N consecutive state-poll timeouts trigger a watchdog check. Positive "dead" → recover cleanly. Watchdog comm-timeout treated as "unknown" so a stalled host can't false-positive.</td>
+  <td>PR #84</td>
+</tr>
+<tr>
+  <td><strong>Plan report retention</strong> <span class="tag done">delivered</span></td>
+  <td>Plan reports were destroyed on read with a 0.5 s pipe timeout — a slow read marked completed plans as failed and re-executed them.</td>
+  <td>Reports retained until an explicit reset; fetch uses the long pipe timeout with one retry; a delivered-flag gates re-processing.</td>
+  <td>PR #83</td>
+</tr>
+<tr>
+  <td><strong>Task-results acknowledgement</strong> <span class="tag done">delivered</span></td>
+  <td>Task results were destroyed on read; a lost pipe response lost the result.</td>
+  <td>Manager sends the task_uids it received last time; worker drops those and returns the rest. Single-flight to avoid flooding the pipe.</td>
+  <td>PR #89</td>
+</tr>
+<tr>
+  <td><strong>Atomic device overlays + guarded sync</strong> <span class="tag done">delivered</span></td>
+  <td>Overlay RPC used the 0.5 s pipe timeout while the worker did a full regeneration → every registry change aborted the plan. Partial failures left a half-updated namespace. Periodic sync died silently as an orphan task; manager-restart crash-looped if config was down.</td>
+  <td>Overlay uses the long pipe timeout; worker applies upserts stage-then-commit inside a staging dict. Periodic sync and manager-restart paths both wrapped in a guard that surfaces failures in <code>/api/status</code>.</td>
+  <td>PR #96</td>
+</tr>
+<tr>
+  <td><strong>Config-registry lock lifecycle</strong> <span class="tag done">delivered</span></td>
+  <td>A locked device could be deleted (orphan lock, unclearable); registry reset didn't clear locks; force-unlock was non-atomic; enable/disable mutated memory before persisting; PV re-homing was broken on <code>update_device</code>; concurrent same-name creates could double-write.</td>
+  <td>DELETE/PUT on a locked device returns 409; force-unlock is all-or-nothing; reset/clear wipes the lock table; enable/disable copy-then-persist-then-apply; PV ownership re-homing extracted; one app-wide <code>asyncio.Lock</code> around all mutations; <code>--workers &gt; 1</code> rejected.</td>
+  <td>PR #90, PR #98</td>
+</tr>
+<tr>
+  <td><strong>Monitor lock + subscribe leak</strong> <span class="tag done">delivered</span></td>
+  <td>5-second EPICS connect for a dead PV held the global monitor lock, freezing every subscriber. Client disconnect during in-flight subscribe leaked permanent CA monitors.</td>
+  <td>Per-PV connect lock; connects happen outside the fan-out lock; batch subscribes are concurrent. Both sockets re-check under the lock after subscribe returns and unsubscribe if no clients remain.</td>
+  <td>PR #93</td>
+</tr>
+</tbody>
+</table>
+
+<h2>Theme 2 · Hardware-safety wins (direct_control)</h2>
+
+<table class="data">
+<thead><tr><th>What changed</th><th>Before</th><th>After</th><th>Landed in</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Stop-on-command-timeout</strong> <span class="tag done">delivered</span></td>
+  <td>If <code>motor.set(x)</code> timed out, hardware kept moving with no <code>stop()</code>.</td>
+  <td>Both classic and async drivers issue <code>stop()</code> on timeout. Error message reports whether stop was issued. Opt out per-request or via <code>stop_on_command_timeout=false</code>.</td>
+  <td>PR #97</td>
+</tr>
+<tr>
+  <td><strong>Coordination status &amp; alarm propagation</strong> <span class="tag done">delivered</span></td>
+  <td>UNKNOWN coordination status returned 500 and reported PV health (a gate failure treated as a hardware failure). Alarm severity was hardcoded 0/0 in every update. <code>read_only</code> subscription flag was cosmetic — a writable signal was always built.</td>
+  <td>UNKNOWN → 409, no PV-health report. Alarm severity/status plumbed through every update (initial + running). <code>read_only</code> plumbed all the way to the ophyd signal. Failed subscribes send a <code>pv_subscribe_failed</code> envelope.</td>
+  <td>PR #99</td>
+</tr>
+<tr>
+  <td><strong>Standalone-mode device socket</strong> <span class="tag done">delivered</span></td>
+  <td>The device socket bypassed the registry abstraction with a raw <code>httpx</code> call and was broken in <code>file</code>/<code>auto</code> mode (every subscribe → <code>upstream_unreachable</code>).</td>
+  <td>Device socket resolves PVs via the same <code>RegistryProvider</code> as the write path (HTTP client or file loader). Standalone/file mode works end-to-end.</td>
+  <td>PR #100 <span class="tag now">in flight</span></td>
+</tr>
+<tr>
+  <td><strong>Control-limit validation</strong> <span class="tag done">delivered</span></td>
+  <td>No limit validation on any write path (<code>PVLimits</code>/<code>ValueLimitError</code> models existed but were unreferenced).</td>
+  <td><code>DeviceController</code> reads <code>(lower_ctrl_limit, upper_ctrl_limit)</code> via <code>pv.get_ctrlvars()</code>; out-of-range numeric writes → 422 before EPICS is touched. Fail-open on metadata failure; skipped for non-numerics and EPICS unlimited convention. Opt out per-request or globally.</td>
+  <td>PR #101 <span class="tag now">in flight</span></td>
+</tr>
+</tbody>
+</table>
+
+<h2>Theme 3 · The HTTP-only pivot (queueserver)</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HTTP-only pivot roadmap">
+  <text x="450" y="24" class="svg-title" text-anchor="middle">The HTTP-only pivot — how we got here and what's left</text>
+
+  <!-- foundation -->
+  <rect x="30" y="60" width="200" height="70" rx="6" fill="var(--ok-bg)" stroke="var(--ok)"/>
+  <text x="130" y="86" class="svg-title" text-anchor="middle">Foundation</text>
+  <text x="130" y="105" class="svg-label-small" text-anchor="middle">Dispatch lock (PR #83)</text>
+  <text x="130" y="120" class="svg-label-small" text-anchor="middle">extra=allow (PR #92)</text>
+
+  <rect x="250" y="60" width="200" height="70" rx="6" fill="var(--ok-bg)" stroke="var(--ok)"/>
+  <text x="350" y="86" class="svg-title" text-anchor="middle">Parity shims</text>
+  <text x="350" y="105" class="svg-label-small" text-anchor="middle">manager subpaths (PR #86)</text>
+  <text x="350" y="120" class="svg-label-small" text-anchor="middle">bluesky_httpserver (PR #88)</text>
+
+  <rect x="470" y="60" width="200" height="70" rx="6" fill="var(--ok-bg)" stroke="var(--ok)"/>
+  <text x="570" y="86" class="svg-title" text-anchor="middle">HTTP compat suite</text>
+  <text x="570" y="105" class="svg-label-small" text-anchor="middle">Side-C (PR #91)</text>
+  <text x="570" y="120" class="svg-label-small" text-anchor="middle">WS auth parity (PR #95)</text>
+
+  <rect x="690" y="60" width="180" height="70" rx="6" class="svg-box-plain"/>
+  <text x="780" y="86" class="svg-title" text-anchor="middle">Now: 0MQ removal</text>
+  <text x="780" y="105" class="svg-label-small" text-anchor="middle">stages 6a → 6d</text>
+  <text x="780" y="120" class="svg-label-small" text-anchor="middle">qserver CLI on HTTP</text>
+
+  <path d="M 230 95 L 250 95" class="svg-arrow"/>
+  <path d="M 450 95 L 470 95" class="svg-arrow"/>
+  <path d="M 670 95 L 690 95" class="svg-arrow"/>
+
+  <!-- Result -->
+  <rect x="30" y="170" width="840" height="90" rx="6" class="svg-box-qs"/>
+  <text x="450" y="196" class="svg-title-qs svg-title" text-anchor="middle">Target state: one HTTP + WebSocket contract, no 0MQ</text>
+  <text x="450" y="218" class="svg-label" text-anchor="middle">All external clients (browser, operator CLI, external tooling) hit the same API.</text>
+  <text x="450" y="236" class="svg-label" text-anchor="middle">Console output flows worker → HTTP via an in-process asyncio queue, not the PUB socket.</text>
+  <text x="450" y="254" class="svg-label-small" text-anchor="middle">Side-C compat suite passes identically before and after each removal stage — that's the acceptance gate.</text>
+</svg>
+<figcaption>Figure 2 — The HTTP-only pivot, from foundation to target state.</figcaption>
+</figure>
+
+<table class="data">
+<thead><tr><th>What changed</th><th>Why it matters</th><th>Landed in</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Parity shims for upstream clients</strong> <span class="tag done">delivered</span></td>
+  <td>External profile collections that do <code>from bluesky_queueserver.manager.annotation_decorator import ...</code>, or <code>pip install bluesky-httpserver</code>, or <code>import bluesky_httpserver</code>, need to keep working.</td>
+  <td>PR #86 (<code>bluesky_queueserver.manager.*</code> subpaths), PR #88 (a <code>bluesky-httpserver</code> shim distribution)</td>
+</tr>
+<tr>
+  <td><strong><code>extra="allow"</code> on RE-manager responses</strong> <span class="tag done">delivered</span></td>
+  <td>The biggest wire-level compat risk: the fork used <code>extra="forbid"</code>, so if the manager ever returned an unknown key, HTTP would 500. Upstream passes the dict through raw.</td>
+  <td>PR #92</td>
+</tr>
+<tr>
+  <td><strong>Version + compat contract documentation</strong> <span class="tag done">delivered</span></td>
+  <td>Pins like <code>bluesky-queueserver&lt;1.0</code> silently resolved to real upstream instead of the fork. The compat contract had no written home.</td>
+  <td>PR #94</td>
+</tr>
+<tr>
+  <td><strong>Side-C compat test suite</strong> <span class="tag done">delivered</span></td>
+  <td>The acceptance gate for the 0MQ retirement: drives the real PyPI <code>bluesky-queueserver-api</code> HTTP transport against a live manager. Every stage of 0MQ removal must pass this identically.</td>
+  <td>PR #91</td>
+</tr>
+<tr>
+  <td><strong>WebSocket auth parity</strong> <span class="tag done">delivered</span></td>
+  <td>WS auth used to accept only header <code>ApiKey</code> (case-sensitive). HTTP path was broader. Also cleaned up unsupported admin config.</td>
+  <td>PR #95</td>
+</tr>
+<tr>
+  <td><strong>0MQ retirement, staged</strong> <span class="tag future">in progress</span></td>
+  <td>Stage 6a: deprecate then remove the two-process topology. Stage 6b: in-process asyncio bridge for the console/info streams. Stage 6c: rework <code>qserver</code> CLI onto the HTTP transport. Stage 6d: delete the REP loop, PUB publisher, zmq halves of <code>comms.py</code>, CLI flags, env vars.</td>
+  <td>staged; see queueserver page</td>
+</tr>
+</tbody>
+</table>
+
+<h2>Theme 4 · Architecture &amp; modularization</h2>
+
+<table class="data">
+<thead><tr><th>What changed</th><th>Before</th><th>After</th><th>Landed in</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Config-service coordinator extracted</strong> <span class="tag done">delivered</span></td>
+  <td>~914 lines of config-service coordination were embedded in a 4700-line <code>manager.py</code>.</td>
+  <td>Pulled into <code>queueserver_service/manager/config_service.py</code> — the highest-value modularization slice, done early to isolate the fork's largest divergence from upstream.</td>
+  <td>PR #79</td>
+</tr>
+<tr>
+  <td><strong>HTTP routers split by domain</strong> <span class="tag done">delivered</span></td>
+  <td>1895-line <code>core_api.py</code> held every HTTP route.</td>
+  <td>Split into 12 domain routers under <code>http/routers/</code>: admin, console, environment, execution, locks, permissions, plans_devices, profile_collection, queue, run_engine, status.</td>
+  <td>PR #80</td>
+</tr>
+<tr>
+  <td><strong>Shared cross-service package</strong> <span class="tag future">planned</span></td>
+  <td>Wire models are triple-defined by hand across the three services; only queueserver's httpx client retries.</td>
+  <td>A <code>backend/ophyd_service_common/</code> package with wire models + a retrying httpx client, adopted by all three services.</td>
+  <td>planned</td>
+</tr>
+<tr>
+  <td><strong>Manager, main.py, profile_ops splits</strong> <span class="tag future">planned</span></td>
+  <td>Big single-file modules across all three services.</td>
+  <td>Configuration's <code>main.py</code> → AppState + 8 routers. Direct_control's <code>main.py</code> → startup/responses/routers + shared WS base. Manager's <code>manager.py</code> → core + lock_info + worker_comm + handler modules. Done after 0MQ removal so we don't split code about to be deleted.</td>
+  <td>planned</td>
+</tr>
+</tbody>
+</table>
+
+<h2>Theme 5 · HTTP layer + auth + CI hygiene</h2>
+
+<table class="data">
+<thead><tr><th>What changed</th><th>Landed in / status</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>HTTP + auth fixes</strong> — SSE console is now async (was consuming a threadpool thread per client); session-purge task actually runs in the executor (was a no-op); anonymous whoami returns null; authenticator background tasks start; OIDC exchange uses async httpx.</td>
+  <td><span class="tag future">planned</span> (Phase 5)</td>
+</tr>
+<tr>
+  <td><strong>Dependency pinning</strong> — queueserver's fully-unpinned <code>requirements.txt</code> gets floors; shared-dep floors aligned across services or moved to a root constraints file.</td>
+  <td><span class="tag future">planned</span></td>
+</tr>
+<tr>
+  <td><strong>Python 3.11.8 → 3.12</strong> in Docker images (or add a 3.11 CI leg); healthcheck for the queueserver image.</td>
+  <td><span class="tag future">planned</span></td>
+</tr>
+<tr>
+  <td><strong>Fork-sync hygiene</strong> — record the fork SHAs in the queueserver README; document a periodic upstream diff-triage routine focused on the <code>http/</code> auth stack.</td>
+  <td><span class="tag future">planned</span></td>
+</tr>
+<tr>
+  <td><strong>Unified-mode default host</strong> — bind to <code>127.0.0.1</code> by default; done-callback on the uvicorn <code>serve()</code> task so a busy port is loud.</td>
+  <td><span class="tag future">planned</span></td>
+</tr>
+<tr>
+  <td><strong>CI test-suite rebalance</strong> — regenerated <code>.test_durations</code>, bumped the queueserver test matrix from 3 to 6 groups; per-group wall-clock dropped from ~44 min to 14–22 min.</td>
+  <td>PR #85 <span class="tag done">delivered</span></td>
+</tr>
+<tr>
+  <td><strong>Delete transport-only tests, migrate manager tests</strong> — retire the 0MQ-based <code>test_qserver_cli.py</code>; convert <code>test_zmq_api_base.py</code> to a transport-fixture design so the 0MQ leg runs only in nightly.</td>
+  <td><span class="tag future">planned</span> (Phase 5.9 b–d)</td>
+</tr>
+</tbody>
+</table>
+
+<h2>What none of this changes</h2>
+
+<div class="callout">
+  <h4>The invariants worth remembering</h4>
+  <ul>
+    <li><strong>configuration_service is the source of truth</strong> for devices, PVs, and locks. Everything else consults it.</li>
+    <li><strong>direct_control never writes without permission.</strong> The coordination gate is on every write path.</li>
+    <li><strong>queueserver runs plans in a separate worker process.</strong> The RE lives in the worker; the manager doesn't touch hardware directly.</li>
+    <li><strong>The HTTP + WebSocket surface</strong> consumed by <code>bluesky-queueserver-api</code>'s HTTP transport is a <strong>frozen contract</strong>, enforced by the Side-C test suite. 0MQ removal must not regress it.</li>
+    <li><strong>Lock-authority epoch is always on; TTL leases are opt-in.</strong> With leases enabled, a crashed holder's locks self-release; with the default (disabled), the <code>lock_epoch</code> signal still lets queueserver re-acquire after a config-service restart.</li>
+  </ul>
+</div>
+
+<h2>Where to look next</h2>
+
+<div class="card-grid">
+  <div class="card"><h3>Overview →</h3><p><a href="index.html">The 30-second picture and the two seams.</a></p></div>
+  <div class="card"><h3>Per service →</h3><p><a href="configuration-service.html">configuration</a> · <a href="direct-control-service.html">direct_control</a> · <a href="queueserver-service.html">queueserver</a></p></div>
+  <div class="card"><h3>Interactions →</h3><p><a href="side-a.html">Side A</a> · <a href="side-b.html">Side B</a></p></div>
+</div>
+
+<footer class="pagefoot">
+  Key updates timeline · target-state after the ongoing backend remediation · <a href="index.html">back to orientation</a>
+</footer>
+
+</main>
+</body>
+</html>

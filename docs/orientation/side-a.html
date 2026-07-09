@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Side A — configuration ↔ direct_control · Orientation to the backend</title>
+<link rel="stylesheet" href="assets/orientation.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <ul>
+    <li class="home"><a href="index.html">Orientation</a></li>
+    <li><a href="configuration-service.html">Configuration</a></li>
+    <li><a href="direct-control-service.html">Direct Control</a></li>
+    <li><a href="queueserver-service.html">Queueserver</a></li>
+    <li><a href="side-a.html" class="here">Side&nbsp;A</a></li>
+    <li><a href="side-b.html">Side&nbsp;B</a></li>
+    <li><a href="frontend-integration.html">Frontend</a></li>
+    <li><a href="key-updates.html">Key updates</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<h1>Side A · configuration ↔ direct_control</h1>
+<p class="subtitle">The conversation between the source-of-truth registry and
+the service that actually talks to hardware. Everything a user does with a
+UI widget travels this seam.</p>
+
+<h2>The picture</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Side A overall diagram">
+  <text x="450" y="26" class="svg-title" text-anchor="middle">Side A · four conversations, one seam</text>
+
+  <rect x="60" y="80" width="240" height="90" rx="8" class="svg-box-config"/>
+  <text x="180" y="108" class="svg-title-config svg-title" text-anchor="middle">configuration_service</text>
+  <text x="180" y="128" class="svg-label-small" text-anchor="middle">registry · locks · PV health</text>
+  <text x="180" y="146" class="svg-label-small" text-anchor="middle">port 8004</text>
+
+  <rect x="600" y="80" width="240" height="90" rx="8" class="svg-box-dc"/>
+  <text x="720" y="108" class="svg-title-dc svg-title" text-anchor="middle">direct_control_service</text>
+  <text x="720" y="128" class="svg-label-small" text-anchor="middle">EPICS I/O · live monitors</text>
+  <text x="720" y="146" class="svg-label-small" text-anchor="middle">port 8003</text>
+
+  <!-- 1. registry lookup -->
+  <path d="M 600 100 L 300 100" class="svg-arrow-hot"/>
+  <text x="450" y="94" class="svg-label" text-anchor="middle">1 · registry lookup</text>
+  <text x="450" y="114" class="svg-label-small" text-anchor="middle">GET /devices/{name} · /pvs/{pv} · /devices/{name}/instantiation</text>
+
+  <!-- 2. coordination gate -->
+  <path d="M 600 138 L 300 138" class="svg-arrow-hot"/>
+  <text x="450" y="132" class="svg-label" text-anchor="middle">2 · coordination gate</text>
+  <text x="450" y="152" class="svg-label-small" text-anchor="middle">GET /devices/{name}/status  →  "locked by whom?"</text>
+
+  <!-- 3. enrichment (reverse) -->
+  <path d="M 300 195 L 600 195" class="svg-arrow"/>
+  <text x="450" y="188" class="svg-label" text-anchor="middle">3 · enrichment (reverse direction)</text>
+  <text x="450" y="208" class="svg-label-small" text-anchor="middle">POST /devices/enrich  →  "connect these and tell me their metadata"</text>
+
+  <!-- 4. PV health -->
+  <path d="M 600 240 L 300 240" class="svg-arrow"/>
+  <text x="450" y="234" class="svg-label" text-anchor="middle">4 · PV health reports (fire-and-forget)</text>
+  <text x="450" y="254" class="svg-label-small" text-anchor="middle">POST /pvs/{pv}/success · /pvs/{pv}/failure</text>
+
+  <!-- Note about direction -->
+  <rect x="60" y="285" width="780" height="45" rx="6" class="svg-box-plain"/>
+  <text x="450" y="308" class="svg-label" text-anchor="middle">Convention · direct_control is the client on paths 1, 2, and 4. Only path 3 (enrichment) reverses.</text>
+  <text x="450" y="324" class="svg-label-small" text-anchor="middle">All calls are HTTP; the shared retrying httpx client will be adopted on both sides during shared-package work.</text>
+</svg>
+<figcaption>Figure 1 — The four conversation types that make up Side A.</figcaption>
+</figure>
+
+<h2>The classic user write — full sequence</h2>
+
+<p>The single most important flow on Side A is what happens when a user
+clicks "Set" in the UI. Here it is, gate by gate:</p>
+
+<figure class="figure">
+<svg viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sequence diagram of a user PV write">
+  <!-- Lifelines -->
+  <text x="90" y="30" class="svg-title-fe svg-title" text-anchor="middle">Browser</text>
+  <text x="90" y="46" class="svg-label-small" text-anchor="middle">React + Finch</text>
+  <line x1="90" y1="55" x2="90" y2="530" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <text x="330" y="30" class="svg-title-dc svg-title" text-anchor="middle">direct_control_service</text>
+  <text x="330" y="46" class="svg-label-small" text-anchor="middle">FastAPI, port 8003</text>
+  <line x1="330" y1="55" x2="330" y2="530" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <text x="580" y="30" class="svg-title-config svg-title" text-anchor="middle">configuration_service</text>
+  <text x="580" y="46" class="svg-label-small" text-anchor="middle">registry &amp; locks, port 8004</text>
+  <line x1="580" y1="55" x2="580" y2="530" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <text x="820" y="30" class="svg-title" text-anchor="middle">EPICS IOC</text>
+  <text x="820" y="46" class="svg-label-small" text-anchor="middle">the hardware</text>
+  <line x1="820" y1="55" x2="820" y2="530" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <!-- 1. Browser -> DC -->
+  <path d="M 90 90 L 330 90" class="svg-arrow-hot"/>
+  <text x="200" y="82" class="svg-label-small" text-anchor="middle">POST /api/v1/pv/set { pv_name, value }</text>
+
+  <!-- 2. DC internal: global read_only? -->
+  <rect x="330" y="105" width="130" height="25" rx="3" fill="var(--dc-bg)" stroke="var(--dc-color)"/>
+  <text x="395" y="122" class="svg-label-small" text-anchor="middle">read-only? (403 if yes)</text>
+
+  <!-- 3. DC -> Config: lookup PV/device -->
+  <path d="M 330 155 L 580 155" class="svg-arrow"/>
+  <text x="455" y="148" class="svg-label-small" text-anchor="middle">GET /api/v1/pvs/{pv} + /devices/{owner}</text>
+  <path d="M 580 175 L 330 175" class="svg-arrow"/>
+  <text x="455" y="168" class="svg-label-small" text-anchor="middle">200 {device, pv_metadata}  · or 404</text>
+
+  <!-- 4. DC -> Config: coordination gate -->
+  <path d="M 330 205 L 580 205" class="svg-arrow-hot"/>
+  <text x="455" y="198" class="svg-label" text-anchor="middle">coordination gate</text>
+  <path d="M 330 222 L 580 222" class="svg-arrow"/>
+  <text x="455" y="214" class="svg-label-small" text-anchor="middle">GET /api/v1/devices/{name}/status</text>
+  <path d="M 580 242 L 330 242" class="svg-arrow"/>
+  <text x="455" y="235" class="svg-label-small" text-anchor="middle">{ available, lock_status, holder }</text>
+
+  <!-- 5. DC: gate decision -->
+  <rect x="330" y="258" width="200" height="40" rx="3" fill="var(--dc-bg)" stroke="var(--dc-color)"/>
+  <text x="430" y="275" class="svg-label-small" text-anchor="middle">if locked → 423 Locked (stop)</text>
+  <text x="430" y="290" class="svg-label-small" text-anchor="middle">if UNKNOWN → 409 Conflict (stop)</text>
+
+  <!-- 6. DC: control limit check -->
+  <path d="M 330 320 L 820 320" class="svg-arrow"/>
+  <text x="575" y="313" class="svg-label-small" text-anchor="middle">pv.get_ctrlvars() (limits + type)</text>
+  <path d="M 820 337 L 330 337" class="svg-arrow"/>
+  <text x="575" y="331" class="svg-label-small" text-anchor="middle">(lower_ctrl_limit, upper_ctrl_limit)</text>
+  <rect x="330" y="350" width="200" height="25" rx="3" fill="var(--dc-bg)" stroke="var(--dc-color)"/>
+  <text x="430" y="367" class="svg-label-small" text-anchor="middle">out of range → 422 (stop)</text>
+
+  <!-- 7. Do the EPICS put -->
+  <path d="M 330 400 L 820 400" class="svg-arrow-hot"/>
+  <text x="575" y="393" class="svg-label" text-anchor="middle">EPICS caput (with optional put-completion)</text>
+  <path d="M 820 418 L 330 418" class="svg-arrow-hot"/>
+  <text x="575" y="411" class="svg-label-small" text-anchor="middle">ack (or error)</text>
+
+  <!-- 8. DC -> Config: PV health -->
+  <path d="M 330 450 L 580 450" class="svg-arrow" stroke-dasharray="4 3"/>
+  <text x="455" y="444" class="svg-label-small" text-anchor="middle">POST /api/v1/pvs/{pv}/success  (fire-and-forget)</text>
+
+  <!-- 9. DC -> Browser -->
+  <path d="M 330 490 L 90 490" class="svg-arrow-hot"/>
+  <text x="200" y="482" class="svg-label-small" text-anchor="middle">200 { pv_name, value, timestamp }</text>
+
+  <!-- 10. Live monitor push -->
+  <path d="M 820 520 L 90 520" class="svg-arrow" stroke-dasharray="4 3"/>
+  <text x="450" y="514" class="svg-label-small" text-anchor="middle">EPICS monitor callback → WebSocket push (independent of the POST reply)</text>
+</svg>
+<figcaption>Figure 2 — What actually happens when a user sets a PV value.</figcaption>
+</figure>
+
+<h2>The four conversations, in detail</h2>
+
+<h3>1 · Registry lookup — "what is this thing?"</h3>
+
+<p>Whenever direct_control needs to write a PV or run a device method, it
+first asks configuration for the metadata:</p>
+
+<ul>
+  <li><code>GET /api/v1/pvs/{pv}</code> — who owns this PV? what's its type?</li>
+  <li><code>GET /api/v1/devices/{name}</code> — device details, PV list, whether it's enabled.</li>
+  <li><code>GET /api/v1/devices/{name}/instantiation</code> — Python class path and constructor arguments to build the ophyd object (device-method path only).</li>
+</ul>
+
+<p>Direct_control caches nothing durable — the registry is the truth, every
+lookup is a live call. Configuration returns 503 while it's still starting;
+direct_control's startup deliberately blocks on configuration's
+<code>/health</code> before serving traffic.</p>
+
+<h3>2 · Coordination gate — "am I allowed?"</h3>
+
+<p>The safety-critical call. Before any write reaches EPICS, direct_control
+hits <code>GET /api/v1/devices/{name}/status</code> and inspects
+<code>lock_status</code>:</p>
+
+<table class="data">
+<thead><tr><th>lock_status</th><th>What direct_control does</th></tr></thead>
+<tbody>
+<tr><td><code>unlocked</code></td><td>Proceed to the EPICS put.</td></tr>
+<tr><td><code>locked</code> (by me)</td><td>Proceed. (The write is coming from the entity that holds the lock.)</td></tr>
+<tr><td><code>locked</code> (by someone else)</td><td>Return <code>423 Locked</code>. Do not touch EPICS.</td></tr>
+<tr><td><code>UNKNOWN</code> (any unmodelled response)</td><td>Return <code>409 Conflict</code>. Fail-closed.</td></tr>
+</tbody>
+</table>
+
+<p>The gate is opt-outable via <code>DIRECT_CONTROL_COORDINATION_CHECK_ENABLED=false</code>
+for testing, but in production it's always on.</p>
+
+<h3>3 · Enrichment — the reverse direction</h3>
+
+<p>The one call where configuration acts as the client. When configuration
+is (re)building its registry from a profile, it needs to know each
+device's <em>live</em> metadata — connect status, PV list, alarm state.
+It POSTs a batch of device specs to
+<code>POST /api/v1/devices/enrich</code> on direct_control, which
+connects each one and returns the enriched view.</p>
+
+<p>Configuration handles a direct_control outage gracefully: the batch
+is marked <code>enrichment_unavailable</code> instead of failing the
+whole registry load.</p>
+
+<h3>4 · PV health reports</h3>
+
+<p>Every EPICS operation direct_control performs — read, write, monitor
+callback failure — is reported back to configuration:</p>
+
+<ul>
+  <li><code>POST /api/v1/pvs/{pv}/success</code></li>
+  <li><code>POST /api/v1/pvs/{pv}/failure</code> (with an error description)</li>
+</ul>
+
+<p>These are <strong>fire-and-forget</strong>: the outcome of the user's
+write is never blocked on the health report succeeding. Configuration
+aggregates the reports into per-PV counters + last-seen timestamps so a
+UI can highlight failing hardware.</p>
+
+<h2>What can go wrong (and what changed)</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Configuration is down</h3>
+    <p><strong>Behaviour:</strong> direct_control returns 503 to the user
+    (registry lookup fails). The safety gate fails closed — no writes go
+    through. Startup blocks on configuration's <code>/health</code>, so a
+    fresh direct_control won't come up if configuration isn't ready.</p>
+  </div>
+  <div class="card">
+    <h3>Configuration returns UNKNOWN status</h3>
+    <p><strong>New behaviour:</strong> the write returns 409 Conflict (a
+    coordination problem) and <em>no</em> PV-health report is sent. A
+    gate failure was never about the PV, so it must not affect the
+    PV's health score.</p>
+  </div>
+  <div class="card">
+    <h3>Direct_control connects a dead PV</h3>
+    <p><strong>Old behaviour:</strong> the 5-second EPICS connect held
+    the global monitor lock, freezing every other subscriber.
+    <br><strong>New behaviour:</strong> per-PV connect lock, connect
+    happens outside the fan-out lock, dead PVs never freeze live
+    ones.</p>
+  </div>
+  <div class="card">
+    <h3>A client disconnects mid-subscribe</h3>
+    <p><strong>Old behaviour:</strong> the EPICS monitor stuck around
+    forever.
+    <br><strong>New behaviour:</strong> after the subscribe returns we
+    re-check under the lock that clients still want the PV; if not we
+    unsubscribe immediately. Both sockets got the fix.</p>
+  </div>
+  <div class="card">
+    <h3>Configuration flaps briefly</h3>
+    <p>The queueserver-side httpx client has retries baked in; the
+    direct_control clients are being brought onto the same retry helper
+    as part of the shared-package work, so a transient blip mid-session
+    stops turning every write into a 503.</p>
+    <p><span class="tag future">planned</span></p>
+  </div>
+  <div class="card">
+    <h3>Registry write races</h3>
+    <p><strong>Old behaviour:</strong> concurrent create-same-name
+    requests could both pass the "does it exist?" check and both write.
+    <br><strong>New behaviour:</strong> one app-wide asyncio lock
+    serializes every registry mutation; concurrent same-name creates
+    yield exactly one 201 and one 409.</p>
+  </div>
+</div>
+
+<h2>The mental model</h2>
+
+<div class="callout">
+  <h4>Two rules</h4>
+  <ol>
+    <li><strong>Direct_control never writes without first asking configuration.</strong>
+    That's the safety story — the gate can't be bypassed by any code path.</li>
+    <li><strong>Configuration never touches hardware directly.</strong>
+    When it needs live device metadata (enrichment), it asks direct_control.
+    When it wants to know if a PV is healthy, it consumes reports —
+    it doesn't ping.</li>
+  </ol>
+</div>
+
+<h2>Where to look next</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Side B →</h3>
+    <p><a href="side-b.html">The other seam: how queueserver coordinates
+    with configuration for whole-plan device locking.</a></p>
+  </div>
+  <div class="card">
+    <h3>direct_control internals →</h3>
+    <p><a href="direct-control-service.html">Deeper on the two write
+    paths and the monitor fan-out.</a></p>
+  </div>
+</div>
+
+<footer class="pagefoot">
+  Side A · configuration ↔ direct_control · <a href="index.html">back to
+  orientation</a>
+</footer>
+
+</main>
+</body>
+</html>

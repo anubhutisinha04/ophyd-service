@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>queueserver_service — Orientation to the backend</title>
+<link rel="stylesheet" href="assets/orientation.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <ul>
+    <li class="home"><a href="index.html">Orientation</a></li>
+    <li><a href="configuration-service.html">Configuration</a></li>
+    <li><a href="direct-control-service.html">Direct Control</a></li>
+    <li><a href="queueserver-service.html" class="here">Queueserver</a></li>
+    <li><a href="side-a.html">Side&nbsp;A</a></li>
+    <li><a href="side-b.html">Side&nbsp;B</a></li>
+    <li><a href="frontend-integration.html">Frontend</a></li>
+    <li><a href="key-updates.html">Key updates</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<h1>queueserver_service</h1>
+<p class="subtitle">The plan runner — takes bluesky plans, queues them, executes
+them in a worker process, streams progress back to the UI.</p>
+
+<h2>How this service came to be</h2>
+
+<p>queueserver_service is one of the two backends that started life as
+someone else's code. The upstream world has two separate packages —
+<code>bluesky-queueserver</code> (the RE manager + worker) and
+<code>bluesky-httpserver</code> (a FastAPI front-end for it) — that
+together do what this one service now does. The ophyd-service fork
+vendored both packages in, merged them into a single cohesive
+Python package, and has been refining and simplifying that merger
+ever since.</p>
+
+<figure class="figure">
+<svg viewBox="0 0 900 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Queueserver evolution — four phases">
+  <text x="450" y="26" class="svg-title" text-anchor="middle">The four phases of the queueserver_service journey</text>
+
+  <!-- Phase A -->
+  <rect x="30" y="60" width="200" height="120" rx="8" class="svg-box-plain"/>
+  <text x="130" y="86" class="svg-title" text-anchor="middle">A · Vendor + strip</text>
+  <text x="130" y="106" class="svg-label-small" text-anchor="middle">Bring the two upstream</text>
+  <text x="130" y="121" class="svg-label-small" text-anchor="middle">packages in-tree; delete</text>
+  <text x="130" y="136" class="svg-label-small" text-anchor="middle">upstream CI / templates /</text>
+  <text x="130" y="151" class="svg-label-small" text-anchor="middle">deploy keys we don't need.</text>
+  <text x="130" y="170" class="svg-label-small" fill="var(--fg-soft)" text-anchor="middle" font-style="italic">2026-06-10</text>
+
+  <rect x="240" y="60" width="200" height="120" rx="8" class="svg-box-plain"/>
+  <text x="340" y="86" class="svg-title" text-anchor="middle">B · Unify</text>
+  <text x="340" y="106" class="svg-label-small" text-anchor="middle">Replace the two stapled-</text>
+  <text x="340" y="121" class="svg-label-small" text-anchor="middle">together upstream layouts</text>
+  <text x="340" y="136" class="svg-label-small" text-anchor="middle">with one queueserver_service</text>
+  <text x="340" y="151" class="svg-label-small" text-anchor="middle">Python package.</text>
+  <text x="340" y="170" class="svg-label-small" fill="var(--fg-soft)" text-anchor="middle" font-style="italic">2026-06-10</text>
+
+  <rect x="450" y="60" width="200" height="120" rx="8" class="svg-box-qs" fill-opacity="0.5"/>
+  <text x="550" y="86" class="svg-title-qs svg-title" text-anchor="middle">C · Refine + simplify</text>
+  <text x="550" y="106" class="svg-label-small" text-anchor="middle">Pluggable queue store,</text>
+  <text x="550" y="121" class="svg-label-small" text-anchor="middle">manager-core criticals fixed,</text>
+  <text x="550" y="136" class="svg-label-small" text-anchor="middle">coordinator + routers</text>
+  <text x="550" y="151" class="svg-label-small" text-anchor="middle">extracted, compat shims.</text>
+  <text x="550" y="170" class="svg-label-small" fill="var(--fg-soft)" text-anchor="middle" font-style="italic">2026-06 → present</text>
+
+  <rect x="660" y="60" width="200" height="120" rx="8" class="svg-box-qs"/>
+  <text x="760" y="86" class="svg-title-qs svg-title" text-anchor="middle">D · HTTP-only</text>
+  <text x="760" y="106" class="svg-label-small" text-anchor="middle">Retire 0MQ entirely.</text>
+  <text x="760" y="121" class="svg-label-small" text-anchor="middle">One external contract:</text>
+  <text x="760" y="136" class="svg-label-small" text-anchor="middle">HTTP + WebSocket, plus</text>
+  <text x="760" y="151" class="svg-label-small" text-anchor="middle">in-process pipes to the worker.</text>
+  <text x="760" y="170" class="svg-label-small" fill="var(--future)" text-anchor="middle" font-style="italic">in progress</text>
+
+  <path d="M 230 120 L 240 120" class="svg-arrow"/>
+  <path d="M 440 120 L 450 120" class="svg-arrow"/>
+  <path d="M 650 120 L 660 120" class="svg-arrow"/>
+
+  <!-- Target state box -->
+  <rect x="30" y="220" width="840" height="120" rx="10" class="svg-box-qs"/>
+  <text x="450" y="248" class="svg-title-qs svg-title" text-anchor="middle">Target state — what this orientation describes</text>
+  <text x="450" y="270" class="svg-label" text-anchor="middle">One cohesive Python package. One HTTP + WebSocket surface. No 0MQ on the wire.</text>
+  <text x="450" y="290" class="svg-label-small" text-anchor="middle">Manager and worker in one deployment unit ("unified mode"); worker still a subprocess for isolation, spoken to over multiprocessing pipes.</text>
+  <text x="450" y="308" class="svg-label-small" text-anchor="middle">The <tspan style="font-family:ui-monospace">bluesky-queueserver-api</tspan> PyPI client keeps working — through its HTTP transport only. Enforced by the Side-C compat suite.</text>
+  <text x="450" y="326" class="svg-label-small" text-anchor="middle" font-style="italic">Phase D is not fully landed yet; the orientation reflects where the code is heading, not the exact contents of any single day's main.</text>
+</svg>
+<figcaption>Figure 1 — Four phases: vendor-in, unify, refine, HTTP-only. Verified
+against the git history of <code>backend/queueserver_service/</code>.</figcaption>
+</figure>
+
+<h3>Phase A · Vendor + strip (2026-06-10)</h3>
+
+<p>Upstream is two separate PyPI packages that have to be installed
+together to be useful. Rather than run against those PyPI packages as
+black boxes, the fork imported both — as a squash of the upstream
+tree — so the code could be modified in-tree:</p>
+
+<blockquote style="border-left:3px solid var(--qs-color); padding:0.6em 1em; background:var(--qs-bg); border-radius:0 4px 4px 0; margin:1em 0; font-size:0.95em;">
+Commit <code>356d521</code> — <em>"feat: add queueserver_service backend,
+based on bluesky-queueserver + bluesky-httpserver"</em><br>
+Commit <code>22da9b3</code> — <em>"chore(queueserver): strip
+upstream-repo artifacts (CI workflows, repo templates, deploy key,
+codecov)"</em>
+</blockquote>
+
+<p>The compatibility gate for the <code>bluesky-queueserver-api</code>
+PyPI client was set up in the same window (<code>a1ae8cd</code>) so
+every subsequent change could be measured against "does the real
+client still work?".</p>
+
+<h3>Phase B · Unify (2026-06-10)</h3>
+
+<p>The imported code inherited upstream's two-package layout —
+<code>bluesky_queueserver/</code> plus
+<code>subprojects/bluesky-httpserver/</code>, two setup.py files, two
+sets of test suites, two docs trees. Commit <code>149578e</code>
+replaced that with a single package, keeping every external
+contract intact. From its own message:</p>
+
+<blockquote style="border-left:3px solid var(--qs-color); padding:0.6em 1em; background:var(--qs-bg); border-radius:0 4px 4px 0; margin:1em 0; font-size:0.95em;">
+Commit <code>149578e</code> — <em>"queueserver_service: restructure into
+one cohesive package.</em>
+<br><em>Replace the two stapled-together upstream repo layouts
+(bluesky_queueserver + subprojects/bluesky-httpserver) with a single
+queueserver_service package … console-script names, wire protocols,
+cookie names and the locked_by_service default are unchanged; OpenAPI
+schema regenerated and diffs only in the version field."</em>
+</blockquote>
+
+<p>Result:</p>
+
+<ul>
+  <li><code>queueserver_service/manager/</code> (was <code>bluesky_queueserver.manager</code>)</li>
+  <li><code>queueserver_service/http/</code> (was <code>bluesky_httpserver</code>)</li>
+  <li><code>queueserver_service/common/</code> — the comms/JSON-RPC/logging code that both halves shared</li>
+  <li>One <code>pyproject.toml</code> replaced two setup.py/setup.cfg/versioneer/MANIFEST duplicates</li>
+  <li><code>tests/manager/</code> + <code>tests/http/</code> collected by one <code>pytest</code> run</li>
+</ul>
+
+<h3>Phase C · Refine + simplify (2026-06 → present)</h3>
+
+<p>With the two halves fused into one package, the door opened for
+cross-cutting improvements that would have been awkward across two
+repos. A sample from the git history:</p>
+
+<table class="data">
+<thead><tr><th>Date</th><th>Commit</th><th>Refinement</th></tr></thead>
+<tbody>
+<tr><td>2026-06-10</td><td><code>0bd1a95</code></td><td>Per-plan device locking (only lock what the plan touches).</td></tr>
+<tr><td>2026-06-10</td><td><code>26cfdbf</code></td><td>OpenAPI drift test — CI catches out-of-date schema artifacts.</td></tr>
+<tr><td>2026-06-11</td><td><code>12e58d9</code></td><td>Pluggable plan-queue storage: Redis <em>or</em> SQLAlchemy (SQLite / PostgreSQL).</td></tr>
+<tr><td>2026-06-12</td><td><code>715fc3c</code></td><td>Profile-collection reload endpoints — restart the RE without restarting the service.</td></tr>
+<tr><td>2026-07-01</td><td><code>279de6c</code></td><td>Extract the ~914-line ConfigServiceCoordinator out of manager.py.</td></tr>
+<tr><td>2026-07-01</td><td><code>3a8e87e</code></td><td>Split the monolithic core_api router into 12 domain routers.</td></tr>
+<tr><td>2026-07-02</td><td><code>001b489</code></td><td>Add a <code>bluesky-httpserver</code> shim distribution + import namespace, so external code that expects the upstream dist keeps working.</td></tr>
+<tr><td>ongoing</td><td>…</td><td>Manager-core criticals (dispatch lock, worker-death detection, atomic overlays), lock leases + <code>lock_epoch</code>, WS auth parity, and more — see <a href="key-updates.html">Key updates</a>.</td></tr>
+</tbody>
+</table>
+
+<h3>Phase D · HTTP-only (in progress — this orientation shows the target)</h3>
+
+<p>The largest simplification is still landing. Upstream
+<code>bluesky-queueserver</code> speaks two protocols to the outside
+world: HTTP (for browsers) and 0MQ (for CLI tools and older clients).
+The ophyd-service target state removes 0MQ entirely, leaving HTTP +
+WebSocket as the single external contract. Manager↔worker
+communication (multiprocessing pipes) is unaffected — that's internal
+and not "on the wire".</p>
+
+<div class="callout future">
+  <h4>Where Phase D stands today</h4>
+  <ul>
+    <li><strong>Done:</strong> the structural prerequisites — dispatch
+    serialization lock so HTTP handlers can't race the 0MQ REP loop
+    (PR #83); the Side-C compat test suite that pins the HTTP contract
+    (PR #91); WS auth parity with the HTTP path (PR #95); the
+    <code>bluesky-httpserver</code> shim (PR #88).</li>
+    <li><strong>Planned in the current remediation:</strong> in-process
+    asyncio bridge to replace the 0MQ PUB console/info stream (stage
+    6b), rework the <code>qserver</code> operator CLI onto the HTTP
+    transport of <code>bluesky-queueserver-api</code> (stage 6c),
+    then delete the REP loop, PUB publisher, zmq halves of
+    <code>common/comms.py</code>, CLI flags, and
+    <code>QSERVER_ZMQ_*</code> env vars (stage 6d).</li>
+    <li><strong>Guardrail:</strong> the Side-C compat suite must pass
+    identically before and after every stage. If a real
+    <code>REManagerAPI</code> HTTP-transport call regresses, the stage
+    doesn't ship.</li>
+  </ul>
+</div>
+
+<p>The rest of this page describes the <strong>target state</strong>
+after Phase D lands — one process, one HTTP + WS contract, no 0MQ on
+the wire. When you read the current code and find residual 0MQ
+imports (<code>manager.py</code>, <code>output_streaming.py</code>,
+<code>common/comms.py</code>), you're looking at code slated for
+deletion in stage 6d.</p>
+
+<h2>The picture</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 550" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Queueserver internal structure">
+  <text x="450" y="26" class="svg-title" text-anchor="middle">Inside queueserver_service (unified mode)</text>
+
+  <rect x="30" y="55" width="840" height="480" rx="12" class="svg-box-qs" fill-opacity="0.35"/>
+  <text x="60" y="80" class="svg-title-qs svg-title">queueserver_service · port 60610 · one process</text>
+
+  <!-- HTTP + WS -->
+  <rect x="60" y="105" width="780" height="60" rx="6" fill="white" stroke="var(--qs-color)" stroke-width="1.5"/>
+  <text x="450" y="130" class="svg-title" text-anchor="middle">HTTP + WebSocket (FastAPI) — the "httpserver" half</text>
+  <text x="450" y="150" class="svg-label-small" text-anchor="middle">/api/queue/* · /api/status · /api/environment/* · /api/plans/* · /api/console_output/ws · /api/status/ws</text>
+
+  <!-- dispatch lock -->
+  <rect x="60" y="185" width="780" height="35" rx="6" fill="#fff5d1" stroke="#a37500" stroke-width="1.5"/>
+  <text x="450" y="208" class="svg-title" text-anchor="middle">Dispatch lock — one command in flight at a time (safety-critical)</text>
+
+  <!-- Manager -->
+  <rect x="60" y="240" width="380" height="180" rx="6" fill="white" stroke="var(--qs-color)" stroke-width="1.5"/>
+  <text x="250" y="266" class="svg-title-qs svg-title" text-anchor="middle">RE Manager (async)</text>
+  <text x="250" y="288" class="svg-label" text-anchor="middle">Owns the queue &amp; the running plan.</text>
+  <text x="250" y="308" class="svg-label-small" text-anchor="middle">• plan queue (Redis or SQLite backed)</text>
+  <text x="250" y="325" class="svg-label-small" text-anchor="middle">• history of finished plans</text>
+  <text x="250" y="342" class="svg-label-small" text-anchor="middle">• environment lifecycle (open/close)</text>
+  <text x="250" y="359" class="svg-label-small" text-anchor="middle">• config-service coordinator (Side B)</text>
+  <text x="250" y="376" class="svg-label-small" text-anchor="middle">• watchdog-based worker liveness</text>
+  <text x="250" y="393" class="svg-label-small" text-anchor="middle">• guarded periodic device-sync polling</text>
+  <text x="250" y="410" class="svg-label-small" text-anchor="middle">talks to the worker over pipes</text>
+
+  <!-- Worker -->
+  <rect x="460" y="240" width="380" height="180" rx="6" fill="white" stroke="var(--qs-color)" stroke-width="1.5"/>
+  <text x="650" y="266" class="svg-title-qs svg-title" text-anchor="middle">RE Worker (subprocess)</text>
+  <text x="650" y="288" class="svg-label" text-anchor="middle">Where the RunEngine actually runs.</text>
+  <text x="650" y="308" class="svg-label-small" text-anchor="middle">• bluesky RunEngine instance</text>
+  <text x="650" y="325" class="svg-label-small" text-anchor="middle">• profile collection namespace (devices &amp; plans)</text>
+  <text x="650" y="342" class="svg-label-small" text-anchor="middle">• device overlay applied atomically</text>
+  <text x="650" y="359" class="svg-label-small" text-anchor="middle">• task results retained until acked</text>
+  <text x="650" y="376" class="svg-label-small" text-anchor="middle">• plan reports retained across retries</text>
+
+  <!-- Pipes and watchdog -->
+  <path d="M 440 320 L 460 320" class="svg-arrow"/>
+  <path d="M 460 350 L 440 350" class="svg-arrow"/>
+  <text x="450" y="308" class="svg-label-small" text-anchor="middle">multiprocessing pipes</text>
+
+  <!-- console + info -->
+  <rect x="60" y="440" width="780" height="80" rx="6" fill="white" stroke="var(--qs-color)" stroke-width="1.5"/>
+  <text x="450" y="465" class="svg-title" text-anchor="middle">Console output + system info streams</text>
+  <text x="450" y="484" class="svg-label-small" text-anchor="middle">Target state: in-process asyncio queue from worker → HTTP layer (no 0MQ PUB)</text>
+  <text x="450" y="502" class="svg-label-small" text-anchor="middle">Bounded queue, drop-oldest on overflow</text>
+</svg>
+<figcaption>Figure 2 — Manager + worker + HTTP in one process. In target state
+the console/info feed is an in-process asyncio queue.</figcaption>
+</figure>
+
+<h2>What it does (in plain English)</h2>
+
+<div class="card-grid">
+  <div class="card qs">
+    <h3>Holds a plan queue</h3>
+    <p>Users submit bluesky plans (scan, count, custom). The manager
+    stores them in a persistent queue. Three queue-store backends are
+    plug-selectable via URI: <code>redis://</code> (the historical
+    default), <code>sqlite+aiosqlite:///</code>, and
+    <code>postgresql+asyncpg://</code>. Plans wait until the queue is
+    started and the environment is open.</p>
+  </div>
+  <div class="card qs">
+    <h3>Runs plans in a worker</h3>
+    <p>A separate <code>RE Worker</code> subprocess actually runs the
+    bluesky RunEngine. The manager talks to it over pipes. The worker
+    imports a "profile collection" that defines devices and plans.</p>
+  </div>
+  <div class="card qs">
+    <h3>Streams progress to the UI</h3>
+    <p>Console output, system info, and status updates are pushed over
+    WebSocket. The React UI sees plan-by-plan progress and any print
+    statements from the plan.</p>
+  </div>
+  <div class="card qs">
+    <h3>Coordinates with configuration_service</h3>
+    <p>Before starting a plan, the manager locks the devices it needs
+    (see <a href="side-b.html">Side B</a>). It also keeps its device
+    list in sync with the registry via a periodic diff.</p>
+  </div>
+</div>
+
+<h2>Unified mode: one process, one API</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Unified mode vs classic upstream mode">
+  <!-- classic -->
+  <rect x="30" y="30" width="410" height="210" rx="8" class="svg-box-plain"/>
+  <text x="235" y="55" class="svg-title" text-anchor="middle">Classic upstream layout (retired here)</text>
+  <rect x="60" y="80" width="150" height="60" rx="6" class="svg-box-qs"/>
+  <text x="135" y="106" class="svg-label" text-anchor="middle">RE Manager</text>
+  <text x="135" y="123" class="svg-label-small" text-anchor="middle">separate process</text>
+  <rect x="260" y="80" width="150" height="60" rx="6" class="svg-box-qs"/>
+  <text x="335" y="106" class="svg-label" text-anchor="middle">httpserver</text>
+  <text x="335" y="123" class="svg-label-small" text-anchor="middle">separate process</text>
+  <path d="M 210 110 L 260 110" class="svg-arrow-warn"/>
+  <text x="235" y="105" class="svg-label-small" text-anchor="middle">0MQ REP/REQ</text>
+  <text x="235" y="160" class="svg-label" text-anchor="middle">Two processes, two APIs</text>
+  <text x="235" y="180" class="svg-label-small" text-anchor="middle">HTTP requests rode 0MQ to reach the manager</text>
+  <text x="235" y="200" class="svg-label-small" text-anchor="middle">Two things to deploy, monitor, restart</text>
+
+  <!-- unified -->
+  <rect x="460" y="30" width="410" height="210" rx="8" class="svg-box-qs"/>
+  <text x="665" y="55" class="svg-title-qs svg-title" text-anchor="middle">Unified mode (target)</text>
+  <rect x="490" y="80" width="350" height="60" rx="6" fill="white" stroke="var(--qs-color)" stroke-width="1.5"/>
+  <text x="665" y="106" class="svg-title-qs svg-title" text-anchor="middle">start-re-manager</text>
+  <text x="665" y="126" class="svg-label-small" text-anchor="middle">manager + FastAPI in one process</text>
+  <text x="665" y="160" class="svg-label" text-anchor="middle">HTTP calls the manager in-process</text>
+  <text x="665" y="180" class="svg-label-small" text-anchor="middle">No 0MQ between HTTP and manager</text>
+  <text x="665" y="200" class="svg-label-small" text-anchor="middle">One thing to deploy, one API, one contract</text>
+</svg>
+<figcaption>Figure 3 — Unified mode is the only supported deployment in
+the target state.</figcaption>
+</figure>
+
+<h2>The HTTP-only pivot</h2>
+
+<div class="callout">
+  <h4>Why this is a big deal</h4>
+  <p>Upstream <code>bluesky-queueserver</code> exposes two protocols: HTTP
+  (for the browser) and 0MQ (for the <code>qserver</code> CLI and older
+  clients). The ophyd-service fork removes 0MQ entirely and keeps HTTP as
+  the single external contract. Fewer moving parts, one thing to test,
+  one thing to secure.</p>
+</div>
+
+<figure class="figure">
+<svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="0MQ removal staged plan">
+  <text x="450" y="24" class="svg-title" text-anchor="middle">The 0MQ retirement, in four stages</text>
+
+  <rect x="30" y="50" width="200" height="70" rx="6" fill="var(--ok-bg)" stroke="var(--ok)" stroke-width="1.5"/>
+  <text x="130" y="76" class="svg-title" text-anchor="middle">6a · Unified only</text>
+  <text x="130" y="96" class="svg-label-small" text-anchor="middle">Two-process topology deprecated,</text>
+  <text x="130" y="110" class="svg-label-small" text-anchor="middle">then removed</text>
+
+  <rect x="250" y="50" width="200" height="70" rx="6" class="svg-box-plain"/>
+  <text x="350" y="76" class="svg-title" text-anchor="middle">6b · Bridge console</text>
+  <text x="350" y="96" class="svg-label-small" text-anchor="middle">Worker → HTTP via in-process</text>
+  <text x="350" y="110" class="svg-label-small" text-anchor="middle">asyncio queue, not PUB socket</text>
+
+  <rect x="470" y="50" width="200" height="70" rx="6" class="svg-box-plain"/>
+  <text x="570" y="76" class="svg-title" text-anchor="middle">6c · Move tooling</text>
+  <text x="570" y="96" class="svg-label-small" text-anchor="middle">qserver CLI reworked onto</text>
+  <text x="570" y="110" class="svg-label-small" text-anchor="middle">the HTTP transport</text>
+
+  <rect x="690" y="50" width="180" height="70" rx="6" class="svg-box-plain"/>
+  <text x="780" y="76" class="svg-title" text-anchor="middle">6d · Delete</text>
+  <text x="780" y="96" class="svg-label-small" text-anchor="middle">Delete zmq halves of comms,</text>
+  <text x="780" y="110" class="svg-label-small" text-anchor="middle">CLI flags, env vars, tests</text>
+
+  <path d="M 230 85 L 250 85" class="svg-arrow"/>
+  <path d="M 450 85 L 470 85" class="svg-arrow"/>
+  <path d="M 670 85 L 690 85" class="svg-arrow"/>
+
+  <!-- Acceptance gate -->
+  <rect x="30" y="160" width="840" height="60" rx="6" class="svg-box-qs"/>
+  <text x="450" y="185" class="svg-title-qs svg-title" text-anchor="middle">Acceptance gate at every stage — the Side C HTTP compat test suite</text>
+  <text x="450" y="205" class="svg-label-small" text-anchor="middle">Runs the real bluesky_queueserver_api HTTP client against the live server; must pass identically before and after each stage.</text>
+
+  <!-- What breaks -->
+  <rect x="30" y="240" width="840" height="60" rx="6" class="svg-box-plain"/>
+  <text x="450" y="265" class="svg-label" font-weight="600" text-anchor="middle">Accepted breaks (documented)</text>
+  <text x="450" y="285" class="svg-label-small" text-anchor="middle">bluesky_queueserver_api's ZMQ transport · external 0MQ PUB subscribers · <tspan style="font-family:ui-monospace">from bluesky_queueserver import ZMQCommSendThreads</tspan></text>
+</svg>
+<figcaption>Figure 4 — The four stages of the 0MQ retirement.</figcaption>
+</figure>
+
+<h2>Key API endpoints (target state, HTTP-only)</h2>
+
+<table class="data">
+<thead><tr><th>Category</th><th>Route(s)</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td>Queue</td><td><code>/api/queue/get</code> · <code>/queue/item/add</code> · <code>/queue/item/remove</code> · <code>/queue/start</code> · <code>/queue/stop</code></td>
+    <td>Read and edit the plan queue; start / stop execution.</td></tr>
+<tr><td>Environment</td><td><code>/api/environment/open</code> · <code>/environment/close</code></td>
+    <td>Bring the worker up (with its profile), or tear it down.</td></tr>
+<tr><td>Plans &amp; devices</td><td><code>/api/plans/allowed</code> · <code>/plans/existing</code> · <code>/devices/allowed</code></td>
+    <td>What can be run? What devices are known?</td></tr>
+<tr><td>Status</td><td><code>/api/status</code> · <code>/api/status/ws</code></td>
+    <td>Live manager state — queue length, running plan, env state.</td></tr>
+<tr><td>Console</td><td><code>/api/console_output</code> · <code>/api/console_output/ws</code></td>
+    <td>Everything the plan prints, streamed live.</td></tr>
+<tr><td>History</td><td><code>/api/history/get</code></td>
+    <td>What has been run, in what order, with what outcome.</td></tr>
+<tr><td>Locks</td><td><code>/api/lock</code> · <code>/api/unlock</code></td>
+    <td>RE-manager-level locks (distinct from the device locks in configuration_service).</td></tr>
+<tr><td>Scripts / functions</td><td><code>/api/script/upload</code> · <code>/api/function/execute</code></td>
+    <td>Runtime code injection into the worker (admin-only).</td></tr>
+<tr><td>Auth</td><td><code>/api/auth/*</code></td>
+    <td>Login, tokens, API keys, principal introspection.</td></tr>
+</tbody>
+</table>
+
+<h2>Target-state improvements</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Manager can't silently brick anymore</h3>
+    <p>The worker-state poll task used to die permanently on a
+    double-<code>set_result</code> — the manager kept running but its
+    view of the worker was frozen forever. Every future set is guarded
+    now, and the loop body itself is wrapped so a single exception
+    can't kill the polling task.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>No more duplicate plan starts</h3>
+    <p>In unified mode, HTTP and (legacy) 0MQ handlers could both pass the
+    "queue is idle" check and both start a plan. A single
+    <code>asyncio.Lock</code> around dispatch guarantees one command at
+    a time. This is also the structural prerequisite for going
+    HTTP-only.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Plan reports and task results survive</h3>
+    <p>Plan reports used to be destroyed on read with a 0.5&nbsp;s pipe
+    timeout — a slow read would mark a completed plan as failed and
+    re-execute it. Reports are now retained until explicitly reset,
+    and the fetch uses the long timeout with one retry. Task results
+    are retained until the caller acknowledges receipt.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>SIGKILL-ed worker is detected</h3>
+    <p>Previously a killed worker left the manager stuck in
+    <code>EXECUTING_QUEUE</code> forever. After N consecutive state
+    poll timeouts the manager now checks the watchdog; on a positive
+    "worker dead" it recovers cleanly. A watchdog <em>comm</em> timeout
+    is treated as "unknown", so a stalled host can't false-positive.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Overlay updates are atomic</h3>
+    <p>Applying a registry overlay in the worker used to run partway
+    and leave a half-updated namespace on failure. It's now
+    stage-then-commit: every upsert instantiates into a staging dict;
+    only if all succeed does the worker's namespace mutate. Uses the
+    long pipe timeout, so a big registry change doesn't abort the
+    running plan.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Guarded config-service polling</h3>
+    <p>The periodic device-sync poll now runs inside a guard that logs
+    failures and surfaces them in the status response, instead of
+    dying silently as an orphaned task. If configuration is
+    unreachable at manager restart, the manager degrades rather than
+    crash-loops.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>HTTP-only, in-process console</h3>
+    <p>The output console will be delivered by an in-process asyncio
+    queue from the worker into the HTTP layer, replacing the 0MQ PUB
+    socket. Bounded queue with drop-oldest so a slow client can't back
+    up the worker.</p>
+    <p><span class="tag future">in progress</span></p>
+  </div>
+  <div class="card">
+    <h3>qserver CLI on HTTP</h3>
+    <p>The <code>qserver</code> operator CLI is being reworked as a thin
+    wrapper over the HTTP transport of <code>bluesky-queueserver-api</code>
+    (which is already a dependency). Same commands, no 0MQ required.</p>
+    <p><span class="tag future">in progress</span></p>
+  </div>
+  <div class="card">
+    <h3>Modular manager + routers</h3>
+    <p>The 4700-line <code>manager.py</code> has already had its config-service
+    coordinator client extracted (~914 lines in
+    <code>manager/config_service.py</code>), and the HTTP routes have
+    been split into 12 domain routers under <code>http/routers/</code>
+    (admin, console, environment, execution, locks, permissions,
+    plans_devices, profile_collection, queue, run_engine, status).
+    Further splits (lock_info, worker_comm, handler modules) happen
+    after 0MQ removal so we don't split code about to be deleted.</p>
+    <p><span class="tag done">delivered</span> / <span class="tag future">remainder planned</span></p>
+  </div>
+</div>
+
+<div class="callout done">
+  <h4>Compatibility contract — a hard requirement</h4>
+  <p>The frozen contract queueserver must keep is the HTTP + WebSocket
+  surface consumed by <code>bluesky-queueserver-api</code>'s HTTP
+  transport. It is enforced by the Side-C compat test suite, which
+  drives the real PyPI client library against a live server on every
+  PR.</p>
+</div>
+
+<h2>Compatibility with <code>bluesky-queueserver-api</code></h2>
+
+<p>The single most important non-negotiable in the whole queueserver
+evolution is this: <strong>the PyPI
+<code>bluesky-queueserver-api</code> client must keep working against
+our service</strong>. Every simplification, every refactor, every
+0MQ-removal stage has to pass that test. Without it, downstream
+consumers built on the API library break.</p>
+
+<p>The catch is that the API library ships <em>two</em> transports
+under the same top-level package:</p>
+
+<figure class="figure">
+<svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="bluesky-queueserver-api two transports">
+  <text x="450" y="24" class="svg-title" text-anchor="middle">bluesky-queueserver-api · two transports, same API surface</text>
+
+  <!-- API library -->
+  <rect x="270" y="60" width="360" height="60" rx="8" class="svg-box-plain"/>
+  <text x="450" y="85" class="svg-title" text-anchor="middle">bluesky_queueserver_api (PyPI)</text>
+  <text x="450" y="105" class="svg-label-small" text-anchor="middle">v0.0.13+ · one API surface, two transport picks</text>
+
+  <!-- HTTP transport -->
+  <rect x="60" y="160" width="360" height="70" rx="8" class="svg-box-qs"/>
+  <text x="240" y="186" class="svg-title-qs svg-title" text-anchor="middle">bluesky_queueserver_api.http</text>
+  <text x="240" y="207" class="svg-label-small" text-anchor="middle">HTTP + WebSocket transport</text>
+  <text x="240" y="222" class="svg-label-small" text-anchor="middle" font-style="italic">supported by ophyd-service</text>
+
+  <!-- ZMQ transport -->
+  <rect x="480" y="160" width="360" height="70" rx="8" class="svg-box-plain" opacity="0.6"/>
+  <text x="660" y="186" class="svg-title" text-anchor="middle">bluesky_queueserver_api.zmq</text>
+  <text x="660" y="207" class="svg-label-small" text-anchor="middle">0MQ transport (still exists upstream)</text>
+  <text x="660" y="222" class="svg-label-small" text-anchor="middle" font-style="italic" fill="var(--warn)">NOT supported once Phase D lands</text>
+
+  <path d="M 380 120 L 240 160" class="svg-arrow-hot"/>
+  <path d="M 520 120 L 660 160" class="svg-arrow-warn"/>
+
+  <!-- ophyd-service queueserver -->
+  <rect x="60" y="275" width="360" height="45" rx="8" class="svg-box-qs"/>
+  <text x="240" y="302" class="svg-title-qs svg-title" text-anchor="middle">ophyd-service queueserver_service</text>
+
+  <!-- upstream bluesky-queueserver -->
+  <rect x="480" y="275" width="360" height="45" rx="8" class="svg-box-plain" opacity="0.6"/>
+  <text x="660" y="302" class="svg-title" text-anchor="middle">upstream bluesky-queueserver</text>
+
+  <path d="M 240 230 L 240 275" class="svg-arrow-hot"/>
+  <path d="M 660 230 L 660 275" class="svg-arrow" stroke-dasharray="4 3"/>
+</svg>
+<figcaption>Figure 5 — The API library is transport-agnostic; the
+consumer picks. ophyd-service supports the HTTP pick only.</figcaption>
+</figure>
+
+<p>An importer of the library writes exactly one of:</p>
+
+<pre><code>from bluesky_queueserver_api.http import REManagerAPI   # HTTP transport
+from bluesky_queueserver_api.zmq  import REManagerAPI   # 0MQ transport</code></pre>
+
+<p>Both classes expose the same methods
+(<code>status()</code>, <code>queue_start()</code>,
+<code>environment_open()</code>, <code>item_add()</code>, …). Only the
+wire protocol differs. The ophyd-service target keeps the HTTP one
+working. The ZMQ one continues to work against <em>upstream</em>
+deployments, just not against ours.</p>
+
+<h3>Why this matters — a real downstream: BLOP</h3>
+
+<p><a href="https://blueskyproject.io/blop" rel="external"
+target="_blank">BLOP</a> (the Bluesky Optimization Package) is a
+concrete example of an unrelated project that depends on
+<code>bluesky-queueserver-api</code> to drive experiments:</p>
+
+<ul>
+  <li>BLOP declares <code>queueserver = ["bluesky-queueserver-api"]</code>
+  as an optional dependency in its <code>pyproject.toml</code>.</li>
+  <li>Its <code>QueueserverOptimizationRunner</code> accepts a
+  <code>re_manager_api</code> argument — an instance of
+  <code>REManagerAPI</code> from <em>either</em> transport. BLOP's
+  own docs are explicit: <em>"The <code>re_manager_api</code> argument
+  also accepts an HTTP-based client
+  (<code>bluesky_queueserver_api.http.REManagerAPI</code>) for
+  deployments that expose the queueserver over HTTP rather than
+  ZMQ."</em></li>
+  <li>BLOP's example code today constructs the <code>.zmq</code>
+  variant. Against ophyd-service's HTTP-only queueserver_service, a
+  BLOP user just imports from <code>.http</code> instead — the rest of
+  their integration doesn't change.</li>
+</ul>
+
+<div class="callout">
+  <h4>What downstream consumers actually need to do</h4>
+  <p>If you're a downstream that currently uses
+  <code>bluesky_queueserver_api.zmq.REManagerAPI</code> against an
+  ophyd-service deployment: swap the import to
+  <code>bluesky_queueserver_api.http.REManagerAPI</code> and construct
+  it with the HTTP URL + API key instead of the ZMQ address. That's
+  the whole migration. If you're already on the HTTP transport,
+  nothing changes for you at all.</p>
+</div>
+
+<h3>How the compat guarantee is enforced</h3>
+
+<p>Three mechanisms keep the HTTP-transport contract from silently
+regressing:</p>
+
+<ol>
+  <li><strong>Distribution + shim naming.</strong> This service's dist
+  is named <code>bluesky-queueserver</code> so the API client's
+  <code>Requires-Dist</code> resolves in-tree (not to upstream, which
+  would shadow our console scripts). A companion
+  <code>bluesky-httpserver</code> shim distribution provides the
+  import name and dist name upstream code expects.</li>
+  <li><strong>Legacy import surface.</strong> A thin top-level
+  <code>bluesky_queueserver</code> package re-exports the names the
+  API client (and existing beamline startup scripts) reach for —
+  <code>bluesky_queueserver.manager.annotation_decorator</code>,
+  <code>.profile_tools</code>, and friends — mapped onto the in-tree
+  <code>queueserver_service</code> implementation.</li>
+  <li><strong>Side-C test suite (the acceptance gate).</strong> Drives
+  the real PyPI <code>bluesky_queueserver_api.http.REManagerAPI</code>
+  against a live queueserver_service on every PR. Every 0MQ-removal
+  stage has to pass it identically before and after. If a call the
+  client makes stops working, the stage doesn't ship.</li>
+</ol>
+
+<h2>Where to look next</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>See Side B →</h3>
+    <p><a href="side-b.html">How queueserver syncs devices and takes
+    lease-based locks in configuration_service.</a></p>
+  </div>
+  <div class="card">
+    <h3>Frontend integration →</h3>
+    <p><a href="frontend-integration.html">How the React UI submits plans
+    and streams console output.</a></p>
+  </div>
+  <div class="card">
+    <h3>Key updates →</h3>
+    <p><a href="key-updates.html">The critical PRs that got us to the
+    target state.</a></p>
+  </div>
+</div>
+
+<footer class="pagefoot">
+  queueserver_service · REST + WebSocket · port 60610 · <a href="index.html">back to
+  orientation</a>
+</footer>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frontend integration — Orientation to the backend</title>
+<link rel="stylesheet" href="assets/orientation.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <ul>
+    <li class="home"><a href="index.html">Orientation</a></li>
+    <li><a href="configuration-service.html">Configuration</a></li>
+    <li><a href="direct-control-service.html">Direct Control</a></li>
+    <li><a href="queueserver-service.html">Queueserver</a></li>
+    <li><a href="side-a.html">Side&nbsp;A</a></li>
+    <li><a href="side-b.html">Side&nbsp;B</a></li>
+    <li><a href="frontend-integration.html" class="here">Frontend</a></li>
+    <li><a href="key-updates.html">Key updates</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<h1>Frontend integration</h1>
+<p class="subtitle">How the React + Finch UI talks to the three backend
+services. Owned by another team — this page describes what the backend
+exposes to them, not their code.</p>
+
+<h2>The picture</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Frontend integration diagram">
+  <text x="450" y="26" class="svg-title" text-anchor="middle">Frontend integration — three backends, one browser</text>
+
+  <!-- Browser -->
+  <rect x="270" y="60" width="360" height="80" rx="8" class="svg-box-fe"/>
+  <text x="450" y="90" class="svg-title-fe svg-title" text-anchor="middle">React + Finch (browser)</text>
+  <text x="450" y="112" class="svg-label-small" text-anchor="middle">@blueskyproject/finch component library</text>
+  <text x="450" y="128" class="svg-label-small" text-anchor="middle">TypeScript types generated from each service's OpenAPI</text>
+
+  <!-- Vite dev server -->
+  <rect x="330" y="180" width="240" height="50" rx="6" class="svg-box-plain"/>
+  <text x="450" y="205" class="svg-title" text-anchor="middle">Vite dev server · port 5173</text>
+  <text x="450" y="222" class="svg-label-small" text-anchor="middle">CORS is wildcard in dev on both HTTP backends</text>
+
+  <path d="M 450 140 L 450 180" class="svg-arrow"/>
+
+  <!-- Three backend boxes -->
+  <rect x="30" y="280" width="260" height="80" rx="8" class="svg-box-config"/>
+  <text x="160" y="308" class="svg-title-config svg-title" text-anchor="middle">configuration_service</text>
+  <text x="160" y="328" class="svg-label-small" text-anchor="middle">REST only · port 8004</text>
+  <text x="160" y="344" class="svg-label-small" text-anchor="middle">list/edit devices, browse PVs</text>
+
+  <rect x="320" y="280" width="260" height="80" rx="8" class="svg-box-dc"/>
+  <text x="450" y="308" class="svg-title-dc svg-title" text-anchor="middle">direct_control_service</text>
+  <text x="450" y="328" class="svg-label-small" text-anchor="middle">REST + WebSocket · port 8003</text>
+  <text x="450" y="344" class="svg-label-small" text-anchor="middle">writes, live values, batch caput</text>
+
+  <rect x="610" y="280" width="260" height="80" rx="8" class="svg-box-qs"/>
+  <text x="740" y="308" class="svg-title-qs svg-title" text-anchor="middle">queueserver_service</text>
+  <text x="740" y="328" class="svg-label-small" text-anchor="middle">REST + WebSocket · port 60610</text>
+  <text x="740" y="344" class="svg-label-small" text-anchor="middle">queue, console, status</text>
+
+  <path d="M 380 230 L 200 280" class="svg-arrow-hot"/>
+  <path d="M 450 230 L 450 280" class="svg-arrow-hot"/>
+  <path d="M 520 230 L 700 280" class="svg-arrow-hot"/>
+
+  <!-- Schema flow -->
+  <rect x="30" y="410" width="840" height="70" rx="6" class="svg-box-plain"/>
+  <text x="450" y="435" class="svg-title" text-anchor="middle">shared-schema/*.openapi.json — the contract between them</text>
+  <text x="450" y="454" class="svg-label-small" text-anchor="middle">Each backend writes its OpenAPI schema on startup · frontend runs <tspan style="font-family:ui-monospace">openapi-typescript</tspan> to generate .d.ts files</text>
+  <text x="450" y="470" class="svg-label-small" text-anchor="middle">Route change on the backend → compile-time error in the UI · a drift test in CI catches unrefreshed schemas</text>
+</svg>
+<figcaption>Figure 1 — The frontend fans out to all three services and consumes
+each one's OpenAPI schema for its TypeScript types.</figcaption>
+</figure>
+
+<h2>What the frontend gets from each service</h2>
+
+<div class="card-grid">
+  <div class="card config">
+    <h3>From configuration_service</h3>
+    <p><strong>Metadata + admin.</strong> The list of devices and PVs, who
+    owns what, whether devices are enabled. Also the admin operations
+    for adding/editing/enabling/disabling devices from the UI.</p>
+    <p><em>Access pattern:</em> REST only. No WebSocket — the registry
+    changes rarely enough that polling or refresh-on-action is fine.</p>
+  </div>
+
+  <div class="card dc">
+    <h3>From direct_control_service</h3>
+    <p><strong>Live values and hardware control.</strong> Widgets
+    subscribe to PVs or devices over WebSocket for real-time values;
+    they POST individual writes or a batch of writes ("configure
+    beamline for edge X" = 40 PVs in one round-trip).</p>
+    <p><em>Access pattern:</em> WebSocket for streaming, REST for
+    one-shot reads and writes.</p>
+  </div>
+
+  <div class="card qs">
+    <h3>From queueserver_service</h3>
+    <p><strong>Plan lifecycle.</strong> Submit a plan, see the queue,
+    watch the console output stream, view history. Also environment
+    open/close and RE pause/resume/stop controls.</p>
+    <p><em>Access pattern:</em> REST for queue edits &amp; commands,
+    WebSocket for status &amp; console streams.</p>
+  </div>
+</div>
+
+<h2>OpenAPI-driven TypeScript</h2>
+
+<p>Every backend publishes its full OpenAPI spec to
+<code>shared-schema/&lt;service&gt;.openapi.json</code>. The frontend
+runs <code>openapi-typescript</code> to turn each schema into
+<code>.d.ts</code> files that give type checking on every route,
+parameter, and response body.</p>
+
+<figure class="figure">
+<svg viewBox="0 0 900 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Schema generation flow">
+  <rect x="30" y="80" width="200" height="80" rx="8" class="svg-box-config"/>
+  <text x="130" y="110" class="svg-title" text-anchor="middle">Backend service</text>
+  <text x="130" y="128" class="svg-label-small" text-anchor="middle">writes on startup:</text>
+  <text x="130" y="145" class="svg-label-small" text-anchor="middle">shared-schema/*.openapi.json</text>
+
+  <rect x="290" y="80" width="200" height="80" rx="8" class="svg-box-plain"/>
+  <text x="390" y="110" class="svg-title" text-anchor="middle">Committed to repo</text>
+  <text x="390" y="128" class="svg-label-small" text-anchor="middle">works on a fresh clone</text>
+  <text x="390" y="145" class="svg-label-small" text-anchor="middle">CI drift test catches stale JSON</text>
+
+  <rect x="550" y="80" width="200" height="80" rx="8" class="svg-box-plain"/>
+  <text x="650" y="106" class="svg-title" text-anchor="middle">openapi-typescript</text>
+  <text x="650" y="124" class="svg-label-small" text-anchor="middle">npx openapi-typescript</text>
+  <text x="650" y="140" class="svg-label-small" text-anchor="middle">→ frontend/src/api/*.d.ts</text>
+
+  <rect x="810" y="80" width="60" height="80" rx="8" class="svg-box-fe"/>
+  <text x="840" y="120" class="svg-title-fe svg-title" text-anchor="middle">UI</text>
+  <text x="840" y="140" class="svg-label-small" text-anchor="middle">typed</text>
+
+  <path d="M 230 120 L 290 120" class="svg-arrow"/>
+  <path d="M 490 120 L 550 120" class="svg-arrow"/>
+  <path d="M 750 120 L 810 120" class="svg-arrow"/>
+
+  <text x="450" y="200" class="svg-label" text-anchor="middle">If a backend route changes and the frontend hasn't regenerated,</text>
+  <text x="450" y="218" class="svg-label" text-anchor="middle">the change either shows up as a TypeScript error (great) or the drift test fails in CI (also great).</text>
+</svg>
+<figcaption>Figure 2 — OpenAPI schemas are the machine-readable contract
+between backend and frontend.</figcaption>
+</figure>
+
+<p>The commands, from the top-level README:</p>
+
+<pre><code>npx openapi-typescript shared-schema/configuration_service.openapi.json \
+    -o frontend/src/api/configuration_service.d.ts
+npx openapi-typescript shared-schema/direct_control.openapi.json \
+    -o frontend/src/api/direct_control.d.ts
+npx openapi-typescript shared-schema/queueserver_service.openapi.json \
+    -o frontend/src/api/queueserver_service.d.ts</code></pre>
+
+<div class="callout warn">
+  <h4>WebSockets are not in the OpenAPI spec</h4>
+  <p>FastAPI doesn't emit WebSocket endpoints into the OpenAPI schema.
+  Each service documents its WebSocket contracts prose-style in the
+  service README — see <code>direct_control_service/README.md</code>
+  and <code>queueserver_service/README.md</code>. The frontend team
+  writes the WS message types by hand.</p>
+</div>
+
+<h2>Development topology</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Development topology">
+  <text x="450" y="24" class="svg-title" text-anchor="middle">Local dev — three backends via docker compose, frontend via npm run dev</text>
+
+  <!-- Vite dev server -->
+  <rect x="30" y="60" width="260" height="180" rx="8" class="svg-box-fe"/>
+  <text x="160" y="88" class="svg-title-fe svg-title" text-anchor="middle">Vite dev server</text>
+  <text x="160" y="105" class="svg-label" text-anchor="middle">npm run dev</text>
+  <text x="160" y="130" class="svg-label-small" text-anchor="middle">port 5173</text>
+  <text x="160" y="155" class="svg-label-small" text-anchor="middle">HMR, React fast refresh</text>
+  <text x="160" y="185" class="svg-label" text-anchor="middle">Fetches direct to</text>
+  <text x="160" y="203" class="svg-label" text-anchor="middle">localhost:8003 / 8004 / 60610</text>
+  <text x="160" y="225" class="svg-label-small" text-anchor="middle">(no proxy — CORS wildcard in dev)</text>
+
+  <!-- Docker compose -->
+  <rect x="330" y="60" width="540" height="180" rx="8" class="svg-box-plain"/>
+  <text x="600" y="88" class="svg-title" text-anchor="middle">docker compose up --build</text>
+  <rect x="360" y="105" width="150" height="50" rx="4" class="svg-box-config"/>
+  <text x="435" y="128" class="svg-label-small" text-anchor="middle">configuration</text>
+  <text x="435" y="144" class="svg-label-small" text-anchor="middle">:8004</text>
+  <rect x="530" y="105" width="150" height="50" rx="4" class="svg-box-dc"/>
+  <text x="605" y="128" class="svg-label-small" text-anchor="middle">direct_control</text>
+  <text x="605" y="144" class="svg-label-small" text-anchor="middle">:8003</text>
+  <rect x="700" y="105" width="150" height="50" rx="4" class="svg-box-plain"/>
+  <text x="775" y="128" class="svg-label-small" text-anchor="middle">postgres · IOC</text>
+  <text x="775" y="144" class="svg-label-small" text-anchor="middle">:5432 · :5064 CA</text>
+  <text x="600" y="180" class="svg-label" text-anchor="middle">queueserver runs in a separate "pod"</text>
+  <text x="600" y="200" class="svg-label-small" text-anchor="middle">integration/pods/with-queueserver/</text>
+  <text x="600" y="218" class="svg-label-small" text-anchor="middle">not in the inner-loop compose (needs Redis + more setup)</text>
+
+  <path d="M 290 150 L 330 150" class="svg-arrow-hot"/>
+</svg>
+<figcaption>Figure 3 — Development stack. Frontend runs on the host; backends
+in Docker.</figcaption>
+</figure>
+
+<h2>The WebSocket contracts, in brief</h2>
+
+<h3>direct_control — three WebSocket endpoints</h3>
+
+<table class="data">
+<thead><tr><th>Endpoint</th><th>Client says</th><th>Server pushes</th></tr></thead>
+<tbody>
+<tr><td><code>/ws/pv-socket</code></td>
+    <td><code>{ action: "subscribe", pvs: [...] }</code><br>
+        <code>{ action: "subscribeReadOnly", pvs: [...] }</code></td>
+    <td><code>subscribed</code> per PV that stuck<br>
+        <code>pv_subscribe_failed</code> per PV that didn't<br>
+        <code>pv_update</code> with value + alarm + timestamp</td></tr>
+<tr><td><code>/ws/device-socket</code></td>
+    <td><code>{ action: "subscribe", devices: [...] }</code></td>
+    <td>updates keyed by device name, one push per component PV</td></tr>
+<tr><td><code>/ws/control-socket</code></td>
+    <td><code>{ action: "set", pv: ..., value: ... }</code></td>
+    <td>per-write acks (also coordination-gated)</td></tr>
+</tbody>
+</table>
+
+<h3>queueserver — three WebSocket endpoints</h3>
+
+<table class="data">
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>/api/status/ws</code></td><td>Manager state updates (queue length, running plan, env state, sync errors).</td></tr>
+<tr><td><code>/api/console_output/ws</code></td><td>Everything the plan or worker prints, line by line.</td></tr>
+<tr><td><code>/api/info/ws</code></td><td>System info (memory, uptime, versions) at a lower cadence.</td></tr>
+</tbody>
+</table>
+
+<h2>Auth story</h2>
+
+<div class="card-grid">
+  <div class="card config">
+    <h3>configuration_service</h3>
+    <p>No in-service auth today for read routes. Destructive admin
+    routes (force-unlock, reset) will be gated by a shared secret —
+    that work is planned in the current remediation.</p>
+  </div>
+  <div class="card dc">
+    <h3>direct_control_service</h3>
+    <p>No in-service auth. Authorization is expected from upstream
+    middleware (reverse proxy, API gateway). A global read-only mode
+    (<code>DIRECT_CONTROL_GLOBAL_READ_ONLY=true</code>) refuses every
+    write, useful for monitor-only deployments.</p>
+  </div>
+  <div class="card qs">
+    <h3>queueserver_service</h3>
+    <p>Has the full upstream <code>bluesky-httpserver</code> auth stack:
+    API keys, session tokens, external OIDC providers,
+    <code>DictionaryAuthenticator</code> for dev. WebSocket auth
+    accepts <code>Authorization: ApiKey ...</code> (case-insensitive)
+    and <code>?api_key=...</code>; cookies deliberately rejected on
+    WS to avoid CSWSH.</p>
+  </div>
+</div>
+
+<h2>What the frontend team can rely on (target state)</h2>
+
+<ul>
+  <li><strong>One HTTP surface per service, one WebSocket surface per
+  service.</strong> No 0MQ anywhere on the target-state backend.</li>
+  <li><strong>Types generated from OpenAPI stay in sync</strong> with the
+  running server — a CI drift test enforces this.</li>
+  <li><strong>Widget writes fail explicitly.</strong> 423 Locked, 422 out
+  of range, 409 UNKNOWN gate. No silent no-ops.</li>
+  <li><strong>Live values carry alarm severity</strong>. UIs can render
+  MINOR / MAJOR / INVALID without a second query.</li>
+  <li><strong>Errors on WS subscribes are surfaced</strong>. If a PV
+  doesn't stick you get <code>pv_subscribe_failed</code>, not silence.</li>
+  <li><strong>Devices are never permanently locked</strong> because
+  queueserver crashed — TTL leases release automatically.</li>
+</ul>
+
+<h2>Where to look next</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Existing frontend guide →</h3>
+    <p><a href="../frontend-backend-integration.html">The batch-caput
+    workflow guide</a> — how to drive "configure the beamline for
+    edge X" style workflows.</p>
+  </div>
+  <div class="card">
+    <h3>direct_control internals →</h3>
+    <p><a href="direct-control-service.html">Two write paths, monitor
+    fan-out, safety gates.</a></p>
+  </div>
+  <div class="card">
+    <h3>queueserver internals →</h3>
+    <p><a href="queueserver-service.html">Manager + worker, unified
+    mode, HTTP-only.</a></p>
+  </div>
+</div>
+
+<footer class="pagefoot">
+  React + Finch frontend integration · owned by another team ·
+  <a href="index.html">back to orientation</a>
+</footer>
+
+</main>
+</body>
+</html>

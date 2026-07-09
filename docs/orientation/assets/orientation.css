@@ -1,0 +1,179 @@
+/* orientation.css — shared styles for the "Orientation to the backend" docs.
+   Diagram-first, plain-English, minimal chrome. */
+
+:root {
+  --fg: #1e2733;
+  --fg-soft: #555f6d;
+  --bg: #ffffff;
+  --bg-soft: #f6f7f9;
+  --bg-code: #f2f4f7;
+  --border: #d7dbe0;
+  --accent: #1f6feb;
+  --accent-soft: #e7f0fd;
+  --config-color: #1a7f37;   /* configuration_service — green */
+  --config-bg:    #e8f5ec;
+  --dc-color:     #b45309;   /* direct_control — amber */
+  --dc-bg:        #fdf3e2;
+  --qs-color:     #6f42c1;   /* queueserver — purple */
+  --qs-bg:        #eee6f8;
+  --frontend-color: #0969da; /* React + Finch — blue */
+  --frontend-bg:    #e6f1ff;
+  --warn: #c93030;
+  --warn-bg: #fde8e8;
+  --ok: #1a7f37;
+  --ok-bg: #e8f5ec;
+  --future: #6a4c93;
+  --future-bg: #f0e9fa;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  margin: 0;
+  line-height: 1.55;
+}
+
+main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 1.5em 1.5em 4em;
+}
+
+nav.topnav {
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+  padding: 0.6em 1em;
+  font-size: 0.92em;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+nav.topnav ul { list-style: none; padding: 0; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 1em; max-width: 1080px; }
+nav.topnav a { color: var(--fg-soft); text-decoration: none; }
+nav.topnav a:hover { color: var(--accent); text-decoration: underline; }
+nav.topnav a.here { color: var(--accent); font-weight: 600; }
+nav.topnav .home { font-weight: 600; }
+
+h1 { font-size: 2.1em; border-bottom: 2px solid var(--fg); padding-bottom: 0.25em; margin-top: 0.5em; }
+h2 { font-size: 1.5em; margin-top: 2em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+h3 { font-size: 1.15em; margin-top: 1.6em; color: var(--fg); }
+
+p, li { font-size: 1em; }
+code { background: var(--bg-code); padding: 0.1em 0.35em; border-radius: 3px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; }
+pre { background: var(--bg-code); padding: 0.9em 1em; border-radius: 5px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+
+.subtitle {
+  color: var(--fg-soft);
+  font-size: 1.05em;
+  margin-top: -0.5em;
+  margin-bottom: 1.5em;
+}
+
+.callout {
+  background: var(--accent-soft);
+  border-left: 4px solid var(--accent);
+  padding: 0.8em 1em;
+  margin: 1em 0;
+  border-radius: 0 4px 4px 0;
+}
+.callout.warn   { background: var(--warn-bg);   border-left-color: var(--warn); }
+.callout.done   { background: var(--ok-bg);     border-left-color: var(--ok); }
+.callout.future { background: var(--future-bg); border-left-color: var(--future); }
+.callout h4 { margin: 0 0 0.4em; }
+
+.figure {
+  margin: 1.6em auto;
+  text-align: center;
+}
+.figure svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+.figure figcaption {
+  color: var(--fg-soft);
+  font-size: 0.9em;
+  margin-top: 0.4em;
+}
+
+.svg-label { font-family: -apple-system, sans-serif; font-size: 14px; fill: var(--fg); }
+.svg-label-small { font-family: -apple-system, sans-serif; font-size: 11px; fill: var(--fg-soft); }
+.svg-title { font-family: -apple-system, sans-serif; font-size: 15px; font-weight: 600; fill: var(--fg); }
+
+.svg-box-config { fill: var(--config-bg); stroke: var(--config-color); stroke-width: 2; }
+.svg-box-dc     { fill: var(--dc-bg);     stroke: var(--dc-color);     stroke-width: 2; }
+.svg-box-qs     { fill: var(--qs-bg);     stroke: var(--qs-color);     stroke-width: 2; }
+.svg-box-fe     { fill: var(--frontend-bg); stroke: var(--frontend-color); stroke-width: 2; }
+.svg-box-plain  { fill: var(--bg-soft);   stroke: var(--fg-soft);      stroke-width: 1.5; }
+
+.svg-title-config { fill: var(--config-color); }
+.svg-title-dc     { fill: var(--dc-color); }
+.svg-title-qs     { fill: var(--qs-color); }
+.svg-title-fe     { fill: var(--frontend-color); }
+
+.svg-arrow { fill: none; stroke: var(--fg-soft); stroke-width: 2; }
+.svg-arrow-hot { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+.svg-arrow-warn { fill: none; stroke: var(--warn); stroke-width: 2; stroke-dasharray: 6 3; }
+.svg-arrow-future { fill: none; stroke: var(--future); stroke-width: 2; stroke-dasharray: 4 3; }
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1em;
+  margin: 1.4em 0;
+}
+.card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1em 1.1em;
+  background: var(--bg);
+}
+.card h3 { margin-top: 0; }
+.card.config { border-top: 3px solid var(--config-color); }
+.card.dc     { border-top: 3px solid var(--dc-color); }
+.card.qs     { border-top: 3px solid var(--qs-color); }
+.card.fe     { border-top: 3px solid var(--frontend-color); }
+.card a.card-link { color: var(--accent); text-decoration: none; font-weight: 600; }
+.card a.card-link:hover { text-decoration: underline; }
+
+table.data {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 0.95em;
+}
+table.data th, table.data td {
+  border: 1px solid var(--border);
+  padding: 0.45em 0.7em;
+  text-align: left;
+  vertical-align: top;
+}
+table.data th { background: var(--bg-soft); font-weight: 600; }
+table.data tr:nth-child(even) td { background: var(--bg-soft); }
+
+.tag { display: inline-block; padding: 0.05em 0.5em; border-radius: 10px; font-size: 0.8em; font-weight: 600; }
+.tag.done   { background: var(--ok-bg);     color: var(--ok); }
+.tag.future { background: var(--future-bg); color: var(--future); }
+.tag.warn   { background: var(--warn-bg);   color: var(--warn); }
+.tag.now    { background: var(--accent-soft); color: var(--accent); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 1.2em; margin: 0.8em 0 1.4em; font-size: 0.9em; color: var(--fg-soft); }
+.legend .swatch { display: inline-block; width: 14px; height: 14px; border: 1px solid var(--border); vertical-align: middle; margin-right: 0.35em; border-radius: 2px; }
+.legend .swatch.config { background: var(--config-bg); border-color: var(--config-color); }
+.legend .swatch.dc     { background: var(--dc-bg);     border-color: var(--dc-color); }
+.legend .swatch.qs     { background: var(--qs-bg);     border-color: var(--qs-color); }
+.legend .swatch.fe     { background: var(--frontend-bg); border-color: var(--frontend-color); }
+
+footer.pagefoot {
+  border-top: 1px solid var(--border);
+  margin-top: 3em;
+  padding-top: 1em;
+  color: var(--fg-soft);
+  font-size: 0.9em;
+  text-align: center;
+}

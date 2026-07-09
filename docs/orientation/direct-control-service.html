@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>direct_control_service — Orientation to the backend</title>
+<link rel="stylesheet" href="assets/orientation.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <ul>
+    <li class="home"><a href="index.html">Orientation</a></li>
+    <li><a href="configuration-service.html">Configuration</a></li>
+    <li><a href="direct-control-service.html" class="here">Direct Control</a></li>
+    <li><a href="queueserver-service.html">Queueserver</a></li>
+    <li><a href="side-a.html">Side&nbsp;A</a></li>
+    <li><a href="side-b.html">Side&nbsp;B</a></li>
+    <li><a href="frontend-integration.html">Frontend</a></li>
+    <li><a href="key-updates.html">Key updates</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<h1>direct_control_service</h1>
+<p class="subtitle">The live wire to the hardware — where <strong>ophyd
+lives</strong> in the ophyd-service backend. Instantiates ophyd/ophyd-async
+device classes on demand, drives them, and streams updates back over
+WebSockets.</p>
+
+<h2>Why this is <em>the</em> ophyd service</h2>
+
+<p>"ophyd-service" is a project-level framing rather than a term the code
+uses, but direct_control is where the framing becomes concrete. It's the
+only service in the backend that <strong>instantiates ophyd device
+classes and drives their methods</strong> — everything else works with
+metadata, PV strings, and lock records. When a request arrives like
+<em>"move motor X to 3.14 and wait for it to arrive"</em>, direct_control
+imports the ophyd class from the registry, calls
+<code>motor.set(3.14)</code>, awaits the ophyd <code>Status</code>, and
+returns the result. That's ophyd — exposed as a service.</p>
+
+<p>The service supports two device frameworks side by side, and it says
+so unambiguously — from <code>src/direct_control/drivers.py</code>:</p>
+
+<blockquote style="border-left:3px solid var(--dc-color); padding:0.6em 1em; background:var(--dc-bg); border-radius:0 4px 4px 0; margin:1em 0;">
+<em>"direct_control drives BOTH classic ophyd (pyepics transport) and
+ophyd-async (aioca/p4p transports) devices during the multi-year
+migration between the two frameworks. The two frameworks do not
+interoperate below the bluesky RunEngine: different transports,
+connection models, and Status semantics. This module is the single
+place that branches on framework — everything above it stays
+framework-agnostic."</em>
+</blockquote>
+
+<figure class="figure">
+<svg viewBox="0 0 900 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ophyd framework layers in direct_control">
+  <text x="450" y="24" class="svg-title" text-anchor="middle">direct_control's layer stack</text>
+
+  <!-- HTTP -->
+  <rect x="60" y="55" width="780" height="45" rx="6" class="svg-box-fe"/>
+  <text x="450" y="82" class="svg-title-fe svg-title" text-anchor="middle">HTTP + WebSocket — the outside world (browser, CLI, notebook)</text>
+
+  <!-- direct_control layer -->
+  <rect x="60" y="115" width="780" height="45" rx="6" class="svg-box-dc"/>
+  <text x="450" y="135" class="svg-title-dc svg-title" text-anchor="middle">direct_control (FastAPI · driver dispatch · coordination gate)</text>
+  <text x="450" y="152" class="svg-label-small" text-anchor="middle">detect_framework(cls) picks a driver per device class (issubclass check, authoritative)</text>
+
+  <!-- Two frameworks side by side -->
+  <rect x="60" y="180" width="380" height="60" rx="6" fill="white" stroke="var(--dc-color)" stroke-width="1.5"/>
+  <text x="250" y="205" class="svg-title" text-anchor="middle">ClassicOphydDriver</text>
+  <text x="250" y="225" class="svg-label-small" text-anchor="middle">ophyd.Device · EpicsSignal · Status.wait via asyncio.to_thread</text>
+
+  <rect x="460" y="180" width="380" height="60" rx="6" fill="white" stroke="var(--dc-color)" stroke-width="1.5"/>
+  <text x="650" y="205" class="svg-title" text-anchor="middle">OphydAsyncDriver</text>
+  <text x="650" y="225" class="svg-label-small" text-anchor="middle">ophyd_async.core.Device · AsyncStatus awaited natively (no threadpool)</text>
+
+  <!-- EPICS libraries -->
+  <rect x="60" y="260" width="380" height="55" rx="6" class="svg-box-plain"/>
+  <text x="250" y="285" class="svg-title" text-anchor="middle">pyepics</text>
+  <text x="250" y="303" class="svg-label-small" text-anchor="middle">synchronous · Channel Access</text>
+
+  <rect x="460" y="260" width="380" height="55" rx="6" class="svg-box-plain"/>
+  <text x="650" y="282" class="svg-title" text-anchor="middle">aioca + p4p</text>
+  <text x="650" y="300" class="svg-label-small" text-anchor="middle">async · CA (aioca) + PVAccess (p4p)</text>
+
+  <!-- EPICS network -->
+  <rect x="60" y="330" width="780" height="20" rx="4" class="svg-box-plain"/>
+  <text x="450" y="345" class="svg-label-small" text-anchor="middle">EPICS network → beamline IOCs (motors, detectors, shutters, …)</text>
+
+  <path d="M 250 160 L 250 180" class="svg-arrow"/>
+  <path d="M 650 160 L 650 180" class="svg-arrow"/>
+  <path d="M 250 240 L 250 260" class="svg-arrow"/>
+  <path d="M 650 240 L 650 260" class="svg-arrow"/>
+</svg>
+<figcaption>Figure 1 — Layer stack, mapped to real files.
+<code>drivers.py</code> is the one place that branches on framework;
+the transports are declared as dependencies in the service's
+<code>pyproject.toml</code>.</figcaption>
+</figure>
+
+<h3>Two drivers, one API surface</h3>
+
+<p>Both drivers expose the same three methods —
+<code>connect(device, timeout)</code>,
+<code>invoke(target, method, args, kwargs, timeout, use_put)</code>,
+<code>destroy(device)</code> — so the endpoint code above them stays
+framework-agnostic. The differences live inside the drivers:</p>
+
+<div class="card-grid">
+  <div class="card dc">
+    <h3>ClassicOphydDriver → pyepics</h3>
+    <p>Handles classes inheriting from
+    <code>ophyd.ophydobj.OphydObject</code>. Because the underlying
+    calls are blocking, every framework call is offloaded with
+    <code>asyncio.to_thread</code> — <code>wait_for_connection</code>,
+    the verb invocation, and <code>Status.wait</code>. This is the
+    only way to bridge sync ophyd into the async web server without
+    stalling the event loop.</p>
+    <p><em>Retained because a large body of existing device classes
+    still uses classic ophyd. Fully supported.</em></p>
+  </div>
+  <div class="card dc">
+    <h3>OphydAsyncDriver → aioca + p4p</h3>
+    <p>Handles classes inheriting from
+    <code>ophyd_async.core.Device</code>. Everything is
+    <code>await</code>ed natively — <code>await device.connect()</code>,
+    <code>await AsyncStatus</code>, no threadpool hop. The driver even
+    hard-refuses a classic <code>Status</code> returned by an
+    async-tagged class ("framework mix-up") rather than deadlock on the
+    wrong event loop.</p>
+    <p><em>The direction of travel. ophyd-async is what the code paths
+    were built for.</em></p>
+  </div>
+</div>
+
+<div class="callout done">
+  <h4>How the dispatch actually works</h4>
+  <p>Verified from <code>drivers.py</code>:</p>
+  <ol>
+    <li>A device class arrives from the registry.
+    <code>detect_framework(cls)</code> checks
+    <code>issubclass(cls, AsyncDevice)</code> first, then
+    <code>issubclass(cls, OphydObject)</code>.</li>
+    <li>A class belonging to <em>neither</em> is a hard error — there
+    is no PV-gateway fallback at the device-control level. The
+    docstring is explicit: <em>"cannot drive it"</em>.</li>
+    <li>The right driver instance is returned by
+    <code>driver_for(framework)</code>, and every subsequent call for
+    that device dispatches through it.</li>
+    <li>Method names are also allowlisted (<code>set</code>,
+    <code>put</code>, <code>get</code>, <code>read</code>,
+    <code>describe</code>, <code>read_configuration</code>,
+    <code>describe_configuration</code>, <code>trigger</code>,
+    <code>stop</code>) — the bluesky verb surface, not arbitrary
+    attribute dispatch. A control endpoint that executes any named
+    method on live hardware would be an injection surface.</li>
+  </ol>
+</div>
+
+<h3>Dependencies confirm the story</h3>
+
+<p>From <code>backend/direct_control_service/pyproject.toml</code>, with
+its own explanatory comments:</p>
+
+<pre><code># Bluesky ecosystem. ophyd brings the pyepics CA transport for classic
+# devices; ophyd-async[ca] brings aioca for async devices.
+"ophyd&gt;=1.9.0",
+"ophyd-async[ca]&gt;=0.13.0",
+
+# EPICS integration
+"pyepics&gt;=3.5.0",
+"p4p&gt;=4.1.0",</code></pre>
+
+<p>Both transports are declared as direct dependencies, both device
+frameworks pulled in with their EPICS extras.
+<code>ophyd-async[ca]</code>'s <code>[ca]</code> extra is what brings
+in <code>aioca</code>; <code>p4p</code> gives the PVAccess side.</p>
+
+<h3>How this service got here — from the git history</h3>
+
+<p>The re-orientation isn't just an assertion — it's visible in the
+commit history of this directory:</p>
+
+<table class="data">
+<thead><tr><th>Date</th><th>Commit</th><th>What it did</th></tr></thead>
+<tbody>
+<tr><td>2026-04-24</td><td><code>c17d0a6</code></td><td>Initial import of <code>direct_control_service</code>.</td></tr>
+<tr><td>2026-04-27</td><td><code>7b4188c</code></td><td><em>"fix(direct_control): align caput status truthiness to bool(status == 1)"</em> — this era is PV-centric: caput, caget, PV batching.</td></tr>
+<tr><td>2026-04-28</td><td><code>86fb79b</code></td><td><em>"Import epicscorelibs.path.pyepics before any pyepics import"</em> — pyepics is central.</td></tr>
+<tr><td>2026-05-21</td><td><code>e823e0b</code>, <code>83a0186</code></td><td>Batch-caput work.</td></tr>
+<tr><td>2026-05-22</td><td><code>aa14ba1</code></td><td>PV-health reporter added.</td></tr>
+<tr><td><strong>2026-06-10</strong></td><td><strong><code>fbb209b</code></strong></td><td><strong><em>"feat(direct-control): real device server for classic ophyd + ophyd-async"</em></strong> — the re-orientation. <code>drivers.py</code>, <code>device_controller.py</code>, and the two-driver dispatch mechanism land in this commit. The service goes from "PV proxy" to "device server".</td></tr>
+<tr><td>2026-06-11+</td><td>…</td><td>Refactors and safety hardening on the new device path.</td></tr>
+</tbody>
+</table>
+
+<p>The commit message calls the change a <strong>"real device server"</strong> —
+an explicit acknowledgement that what came before was something less. That's
+the moment direct_control started earning the "ophyd" in "ophyd-service".</p>
+
+<h3>PV path vs device path — the README's own labels</h3>
+
+<p>The service's own README calls the two paths by canonical names:</p>
+
+<ul>
+  <li><strong>Low-fidelity channel · PV Control</strong> — raw EPICS
+  set/get by PV name. Fast, cheap, still coordination-gated. The
+  survivor of the pyepics-wrapper era.</li>
+  <li><strong>High-fidelity channel · Device Method Execution</strong> —
+  <em>"instantiates the registry's device class as a live ophyd object
+  and runs the verb with Status completion awaited. Supports both
+  classic ophyd and ophyd-async device classes, dispatched per device
+  by framework detection."</em></li>
+</ul>
+
+<p>The high-fidelity channel is the one that makes this an ophyd
+service. The low-fidelity channel is the useful fallback — because
+sometimes you just want to poke a PV without materializing a device
+object.</p>
+
+<h2>The picture</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Direct control service internal structure">
+  <text x="450" y="26" class="svg-title" text-anchor="middle">Inside direct_control_service</text>
+
+  <rect x="30" y="55" width="840" height="450" rx="12" class="svg-box-dc" fill-opacity="0.35"/>
+  <text x="60" y="80" class="svg-title-dc svg-title">direct_control_service · port 8003</text>
+
+  <!-- REST + WS entrypoints -->
+  <rect x="60" y="105" width="380" height="70" rx="6" fill="white" stroke="var(--dc-color)" stroke-width="1.5"/>
+  <text x="250" y="128" class="svg-title" text-anchor="middle">REST · FastAPI</text>
+  <text x="250" y="146" class="svg-label-small" text-anchor="middle">/api/v1/pv/{name}/value · /api/v1/pv/set · batch</text>
+  <text x="250" y="162" class="svg-label-small" text-anchor="middle">/api/v1/devices/{name}/{method} — high-fidelity</text>
+
+  <rect x="460" y="105" width="380" height="70" rx="6" fill="white" stroke="var(--dc-color)" stroke-width="1.5"/>
+  <text x="650" y="128" class="svg-title" text-anchor="middle">WebSocket streams</text>
+  <text x="650" y="146" class="svg-label-small" text-anchor="middle">/ws/pv-socket · /ws/device-socket · /ws/control-socket</text>
+  <text x="650" y="162" class="svg-label-small" text-anchor="middle">ophyd-websocket-compatible</text>
+
+  <!-- Coordination gate -->
+  <rect x="60" y="195" width="780" height="45" rx="6" fill="#fff5d1" stroke="#a37500" stroke-width="1.5"/>
+  <text x="450" y="221" class="svg-title" text-anchor="middle">Coordination gate — every write asks configuration_service first</text>
+
+  <!-- Two paths -->
+  <rect x="60" y="265" width="360" height="130" rx="6" fill="white" stroke="var(--dc-color)" stroke-width="1.5"/>
+  <text x="240" y="290" class="svg-title-dc svg-title" text-anchor="middle">Low-fidelity PV path</text>
+  <text x="240" y="312" class="svg-label" text-anchor="middle">Raw EPICS put/get on named PVs</text>
+  <text x="240" y="332" class="svg-label-small" text-anchor="middle">Fast, cheap, one-shot</text>
+  <text x="240" y="350" class="svg-label-small" text-anchor="middle">Optional control-limit validation</text>
+  <text x="240" y="368" class="svg-label-small" text-anchor="middle">Optional put-completion</text>
+  <text x="240" y="386" class="svg-label-small" text-anchor="middle">Used by widgets, batch setpoints</text>
+
+  <rect x="480" y="265" width="360" height="130" rx="6" fill="white" stroke="var(--dc-color)" stroke-width="1.5"/>
+  <text x="660" y="290" class="svg-title-dc svg-title" text-anchor="middle">High-fidelity device path (ophyd)</text>
+  <text x="660" y="312" class="svg-label" text-anchor="middle">Instantiates the ophyd class,</text>
+  <text x="660" y="328" class="svg-label" text-anchor="middle">runs the verb, awaits Status</text>
+  <text x="660" y="348" class="svg-label-small" text-anchor="middle">motor.set() · det.trigger() · dev.stop()</text>
+  <text x="660" y="366" class="svg-label-small" text-anchor="middle">Classic (pyepics) &amp; async (aioca/p4p)</text>
+  <text x="660" y="384" class="svg-label-small" text-anchor="middle">Stop-on-timeout by default</text>
+
+  <!-- Live monitors -->
+  <rect x="60" y="415" width="780" height="75" rx="6" fill="white" stroke="var(--dc-color)" stroke-width="1.5"/>
+  <text x="450" y="440" class="svg-title-dc svg-title" text-anchor="middle">PV Monitor Manager — one CA/PVA subscription per PV, fan-out to many clients</text>
+  <text x="450" y="460" class="svg-label-small" text-anchor="middle">Per-PV connect lock (dead PVs don't stall others) · disconnect-during-subscribe leak closed</text>
+  <text x="450" y="475" class="svg-label-small" text-anchor="middle">Alarm severity/status &amp; read_only propagated · error envelope on failed subscribes</text>
+</svg>
+<figcaption>Figure 2 — The two paths in and the live-monitor fan-out.</figcaption>
+</figure>
+
+<h2>What it does (in plain English)</h2>
+
+<div class="card-grid">
+  <div class="card dc">
+    <h3>Reads and writes PVs</h3>
+    <p>The lowest-level path: given a PV name and a value, do the EPICS
+    put. Values, timestamps, and errors are surfaced verbatim. Optionally
+    validates against control limits before writing.</p>
+  </div>
+  <div class="card dc">
+    <h3>Runs device methods</h3>
+    <p>The higher-level path: given a device name and a method
+    (<code>set</code>, <code>trigger</code>, <code>stop</code>, …),
+    instantiate the ophyd class from the registry, call the method, and
+    await completion. Works for classic ophyd and ophyd-async devices.</p>
+  </div>
+  <div class="card dc">
+    <h3>Streams live values</h3>
+    <p>Frontend widgets open a WebSocket, subscribe to PVs or devices,
+    and get a push every time a value changes. Alarm severity comes with
+    every update.</p>
+  </div>
+  <div class="card dc">
+    <h3>Never writes without permission</h3>
+    <p>Every write path first asks configuration_service "is this device
+    locked?". If it is, direct_control returns <code>423 Locked</code>
+    and never touches EPICS.</p>
+  </div>
+</div>
+
+<h2>Key API surfaces</h2>
+
+<h3>REST endpoints</h3>
+<table class="data">
+<thead><tr><th>Route</th><th>What it's for</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>GET /api/v1/pv/{name}/value</code></td>
+    <td>Read one PV right now.</td>
+    <td>No lock check (read is free).</td></tr>
+<tr><td><code>POST /api/v1/pv/set</code></td>
+    <td>Write one PV.</td>
+    <td>Coordination-gated. 423 if locked.</td></tr>
+<tr><td><code>POST /api/v1/pv/set-batch</code></td>
+    <td>Write many PVs in one round-trip.</td>
+    <td>Per-item results; partial failures reported.</td></tr>
+<tr><td><code>POST /api/v1/devices/{name}/{method}</code></td>
+    <td>Invoke a method on the ophyd device (e.g. <code>motor/set</code>).</td>
+    <td>Instantiates the class; awaits Status.</td></tr>
+<tr><td><code>GET /api/v1/devices/{name}/components</code></td>
+    <td>Walk the ophyd device hierarchy (for the tree view).</td>
+    <td>Nested-device navigation.</td></tr>
+<tr><td><code>POST /api/v1/devices/enrich</code></td>
+    <td>Given a list of device specs, connect them and report metadata.</td>
+    <td>Called <em>by</em> configuration during registry builds.</td></tr>
+</tbody>
+</table>
+
+<h3>WebSocket streams</h3>
+<table class="data">
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>/ws/pv-socket</code></td><td>Subscribe to a set of PV names; get value + metadata + alarm on every change.</td></tr>
+<tr><td><code>/ws/device-socket</code></td><td>Subscribe to a device; get updates for every PV it owns, keyed by the device name.</td></tr>
+<tr><td><code>/ws/control-socket</code></td><td>Command channel over WS — write PVs and receive per-write acks (also coordination-gated).</td></tr>
+</tbody>
+</table>
+
+<h2>The safety story</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Direct control write-safety sequence">
+  <text x="450" y="24" class="svg-title" text-anchor="middle">Every write goes through three checks</text>
+
+  <!-- lane 1 -->
+  <rect x="30"  y="60" width="820" height="55" rx="6" class="svg-box-plain"/>
+  <text x="50" y="88" class="svg-title">1 · Global read-only?</text>
+  <text x="50" y="106" class="svg-label-small">If <tspan style="font-family:ui-monospace">DIRECT_CONTROL_GLOBAL_READ_ONLY=true</tspan> (default), refuse with 403. Prevents accidental writes from a monitor deployment.</text>
+
+  <!-- lane 2 -->
+  <rect x="30" y="125" width="820" height="55" rx="6" class="svg-box-plain"/>
+  <text x="50" y="153" class="svg-title">2 · Coordination gate</text>
+  <text x="50" y="171" class="svg-label-small">Ask configuration_service <tspan style="font-family:ui-monospace">GET /devices/{name}/status</tspan>. If locked by someone else → 423. If UNKNOWN → 409 (fail-closed).</text>
+
+  <!-- lane 3 -->
+  <rect x="30" y="190" width="820" height="55" rx="6" class="svg-box-plain"/>
+  <text x="50" y="218" class="svg-title">3 · Control-limit validation (numeric writes)</text>
+  <text x="50" y="236" class="svg-label-small">Read the PV's <tspan style="font-family:ui-monospace">(lower_ctrl_limit, upper_ctrl_limit)</tspan>. Reject 422 if out of range. Fail-open on any metadata failure so a slow EPICS lookup never blocks a valid write.</text>
+
+  <!-- lane 4 -->
+  <rect x="30" y="255" width="820" height="55" rx="6" fill="var(--dc-bg)" stroke="var(--dc-color)" stroke-width="2"/>
+  <text x="50" y="283" class="svg-title-dc svg-title">4 · Do the EPICS put · then report health back to configuration</text>
+  <text x="50" y="301" class="svg-label-small">Success → <tspan style="font-family:ui-monospace">POST /pvs/{pv}/success</tspan>. Failure → <tspan style="font-family:ui-monospace">/failure</tspan> with the error. Fire-and-forget — the write result is not blocked on the report.</text>
+</svg>
+<figcaption>Figure 3 — The four gates before a value ever reaches EPICS.</figcaption>
+</figure>
+
+<h2>Live monitoring: one subscription, many clients</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PV monitor fan-out">
+  <!-- Clients -->
+  <rect x="30" y="30" width="180" height="40" rx="4" class="svg-box-fe"/>
+  <text x="120" y="55" class="svg-label" text-anchor="middle">Client A (browser tab)</text>
+  <rect x="30" y="90" width="180" height="40" rx="4" class="svg-box-fe"/>
+  <text x="120" y="115" class="svg-label" text-anchor="middle">Client B (dashboard)</text>
+  <rect x="30" y="150" width="180" height="40" rx="4" class="svg-box-fe"/>
+  <text x="120" y="175" class="svg-label" text-anchor="middle">Client C (script)</text>
+
+  <!-- WebSocket manager -->
+  <rect x="290" y="60" width="240" height="130" rx="8" class="svg-box-dc"/>
+  <text x="410" y="88" class="svg-title-dc svg-title" text-anchor="middle">PV WebSocket Manager</text>
+  <text x="410" y="110" class="svg-label-small" text-anchor="middle">Tracks: PV → {clients}</text>
+  <text x="410" y="128" class="svg-label-small" text-anchor="middle">Serializes update text once</text>
+  <text x="410" y="146" class="svg-label-small" text-anchor="middle">Fans out to every subscriber</text>
+  <text x="410" y="170" class="svg-label-small" text-anchor="middle">Refcount goes to 0 → unsubscribe</text>
+
+  <!-- Monitor manager (EPICS) -->
+  <rect x="600" y="60" width="260" height="130" rx="8" class="svg-box-plain"/>
+  <text x="730" y="88" class="svg-title" text-anchor="middle">PV Monitor Manager</text>
+  <text x="730" y="110" class="svg-label-small" text-anchor="middle">One CA/PVA subscription per PV</text>
+  <text x="730" y="128" class="svg-label-small" text-anchor="middle">Per-PV connect lock — dead PVs</text>
+  <text x="730" y="144" class="svg-label-small" text-anchor="middle">don't stall the others</text>
+  <text x="730" y="168" class="svg-label-small" text-anchor="middle">Alarm severity + read_only in every update</text>
+
+  <path d="M 210 50  L 290 90"  class="svg-arrow-hot"/>
+  <path d="M 210 110 L 290 130" class="svg-arrow-hot"/>
+  <path d="M 210 170 L 290 155" class="svg-arrow-hot"/>
+  <path d="M 530 130 L 600 130" class="svg-arrow-hot"/>
+  <text x="565" y="122" class="svg-label-small" text-anchor="middle">subscribe /</text>
+  <text x="565" y="138" class="svg-label-small" text-anchor="middle">unsubscribe</text>
+
+  <!-- EPICS -->
+  <rect x="290" y="225" width="570" height="45" rx="8" class="svg-box-plain"/>
+  <text x="575" y="252" class="svg-title" text-anchor="middle">EPICS network (CA / PVA) · beamline IOCs</text>
+  <path d="M 730 190 L 730 225" class="svg-arrow"/>
+</svg>
+<figcaption>Figure 4 — Three tabs watching the same PV cost one EPICS
+subscription, not three.</figcaption>
+</figure>
+
+<h2>Target-state improvements</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Blocking EPICS work out of the hot lock</h3>
+    <p>The EPICS connect (up to 5&nbsp;s for a dead PV) used to happen while
+    holding the global monitor lock — a single dead PV could freeze
+    every other subscriber. Connects now happen outside the lock behind
+    a per-PV connect lock. Subscribes to a batch of PVs happen
+    concurrently, not serially.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>No more monitor leaks</h3>
+    <p>If a client disconnected mid-subscribe, the EPICS monitor could
+    stick around forever. After the subscribe returns we now re-check
+    whether any client still wants the PV — if not, we unsubscribe
+    immediately. Both the pv-socket and device-socket got the fix.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Alarm severity is real data now</h3>
+    <p>Every PV update carries the EPICS <code>(status, severity)</code>
+    pair and a friendly name (NO_ALARM, MINOR, MAJOR, INVALID). Widgets
+    can highlight alarming values without a separate query.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>read_only actually means read-only</h3>
+    <p><code>subscribeReadOnly</code> used to be cosmetic — a writable
+    signal was still built. It now plumbs all the way down to the
+    ophyd signal, so an accidental write on a read-only subscription
+    fails at the layer that should catch it.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Failed subscribes tell you why</h3>
+    <p>Instead of silently going quiet, a subscribe that fails now sends
+    a <code>pv_subscribe_failed</code> error envelope over the socket.
+    The <code>subscribed</code> confirmation is only sent for PVs that
+    actually stuck.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Coordination unknown ≠ hardware failure</h3>
+    <p>When the coordination check returns an unmodelled status, we now
+    return 409 (a coordination problem) instead of 500 (a hardware
+    problem). Crucially we <em>don't</em> report PV health on it — a
+    gate failure was never about the PV.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Stop-on-timeout for commands</h3>
+    <p>If a <code>motor.set(x)</code> times out, we now call
+    <code>motor.stop()</code> — hardware shouldn't be left moving
+    because we gave up waiting. Opt out per-request or with
+    <code>stop_on_command_timeout=false</code>.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Device socket works in standalone mode</h3>
+    <p>The device WebSocket used to bypass the registry abstraction and
+    only work with a live configuration_service. It now goes through the
+    same <code>RegistryProvider</code> as the write path, so file-mode
+    and standalone deployments work end-to-end.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Control-limit validation on writes</h3>
+    <p>Numeric writes now read the PV's
+    <code>(lower_ctrl_limit, upper_ctrl_limit)</code> and reject
+    out-of-range values with 422 before touching EPICS. On by default;
+    opt out per-request.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Update fan-out coalescing (planned)</h3>
+    <p>High-rate PVs can spam clients faster than they can render. A
+    per-PV latest-value coalescing policy will drop stale updates
+    when a client is slow, and TTL-evict monitors created by REST
+    reads without follow-up subscribers.</p>
+    <p><span class="tag future">planned</span></p>
+  </div>
+</div>
+
+<div class="callout">
+  <h4>Rule of thumb</h4>
+  <p>direct_control_service <strong>never</strong> makes decisions about
+  <em>who</em> is allowed to write or <em>whether</em> a plan is running.
+  Both of those live in configuration_service. Direct_control just executes
+  what it's told, once it has clearance.</p>
+</div>
+
+<h2>Where to look next</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>See Side A →</h3>
+    <p><a href="side-a.html">The full sequence of a UI write, from the
+    frontend through direct_control and the configuration gate to
+    EPICS.</a></p>
+  </div>
+  <div class="card">
+    <h3>Frontend integration →</h3>
+    <p><a href="frontend-integration.html">How React + Finch consume the
+    REST and WebSocket surfaces.</a></p>
+  </div>
+</div>
+
+<footer class="pagefoot">
+  direct_control_service · REST + WebSocket · port 8003 · <a href="index.html">back to
+  orientation</a>
+</footer>
+
+</main>
+</body>
+</html>

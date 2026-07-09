@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>configuration_service — Orientation to the backend</title>
+<link rel="stylesheet" href="assets/orientation.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <ul>
+    <li class="home"><a href="index.html">Orientation</a></li>
+    <li><a href="configuration-service.html" class="here">Configuration</a></li>
+    <li><a href="direct-control-service.html">Direct Control</a></li>
+    <li><a href="queueserver-service.html">Queueserver</a></li>
+    <li><a href="side-a.html">Side&nbsp;A</a></li>
+    <li><a href="side-b.html">Side&nbsp;B</a></li>
+    <li><a href="frontend-integration.html">Frontend</a></li>
+    <li><a href="key-updates.html">Key updates</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<h1>configuration_service</h1>
+<p class="subtitle">The source of truth for what devices exist on the beamline
+and who is allowed to touch them right now.</p>
+
+<h2>The picture</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Configuration service internal structure">
+  <text x="450" y="26" class="svg-title" text-anchor="middle">Inside configuration_service</text>
+
+  <!-- outer boundary -->
+  <rect x="30" y="55" width="840" height="400" rx="12" class="svg-box-config" fill-opacity="0.35"/>
+  <text x="60" y="80" class="svg-title-config svg-title">configuration_service · port 8004</text>
+
+  <!-- HTTP router -->
+  <rect x="60" y="105" width="780" height="60" rx="6" fill="white" stroke="var(--config-color)" stroke-width="1.5"/>
+  <text x="450" y="130" class="svg-title" text-anchor="middle">FastAPI HTTP + OpenAPI</text>
+  <text x="450" y="150" class="svg-label-small" text-anchor="middle">/api/v1/devices · /api/v1/pvs · /api/v1/devices/{name}/status · /health</text>
+
+  <!-- App-level lock -->
+  <rect x="60" y="185" width="780" height="35" rx="6" fill="#fff5d1" stroke="#a37500" stroke-width="1.5"/>
+  <text x="450" y="208" class="svg-title" text-anchor="middle">One app-wide asyncio lock — serializes registry mutations</text>
+
+  <!-- three domain blocks -->
+  <rect x="60" y="240" width="240" height="130" rx="6" fill="white" stroke="var(--config-color)" stroke-width="1.5"/>
+  <text x="180" y="264" class="svg-title-config svg-title" text-anchor="middle">DeviceRegistry</text>
+  <text x="180" y="285" class="svg-label-small" text-anchor="middle">devices, PVs, ownership</text>
+  <text x="180" y="303" class="svg-label-small" text-anchor="middle">happi or BITS loader</text>
+  <text x="180" y="321" class="svg-label-small" text-anchor="middle">or start empty (CRUD)</text>
+  <text x="180" y="345" class="svg-label-small" text-anchor="middle">name/PV validation +</text>
+  <text x="180" y="360" class="svg-label-small" text-anchor="middle">device_class allowlist</text>
+
+  <rect x="330" y="240" width="240" height="130" rx="6" fill="white" stroke="var(--config-color)" stroke-width="1.5"/>
+  <text x="450" y="264" class="svg-title-config svg-title" text-anchor="middle">DeviceLockManager</text>
+  <text x="450" y="285" class="svg-label-small" text-anchor="middle">who holds which device</text>
+  <text x="450" y="303" class="svg-label-small" text-anchor="middle">in-memory + audit log to DB</text>
+  <text x="450" y="321" class="svg-label-small" text-anchor="middle">opt-in lease TTL + heartbeat</text>
+  <text x="450" y="339" class="svg-label-small" text-anchor="middle">lock-authority epoch (restart signal)</text>
+  <text x="450" y="357" class="svg-label-small" text-anchor="middle">force-unlock is all-or-nothing</text>
+
+  <rect x="600" y="240" width="240" height="130" rx="6" fill="white" stroke="var(--config-color)" stroke-width="1.5"/>
+  <text x="720" y="264" class="svg-title-config svg-title" text-anchor="middle">PVHealthManager</text>
+  <text x="720" y="285" class="svg-label-small" text-anchor="middle">per-PV success/failure</text>
+  <text x="720" y="303" class="svg-label-small" text-anchor="middle">counters + last-seen</text>
+  <text x="720" y="321" class="svg-label-small" text-anchor="middle">fed by direct_control's</text>
+  <text x="720" y="336" class="svg-label-small" text-anchor="middle">fire-and-forget reports</text>
+
+  <!-- Persistence -->
+  <rect x="60" y="390" width="780" height="50" rx="6" fill="white" stroke="var(--config-color)" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="450" y="412" class="svg-title" text-anchor="middle">Persistence · PostgreSQL (prod) or SQLite (dev)</text>
+  <text x="450" y="430" class="svg-label-small" text-anchor="middle">SQLAlchemy · registry &amp; audit trail survive restarts · lock state is in-memory only (leases opt-in; opt-out default = held-until-release)</text>
+
+  <!-- Down arrows -->
+  <path d="M 180 370 L 180 390" class="svg-arrow"/>
+  <path d="M 450 370 L 450 390" class="svg-arrow"/>
+  <path d="M 720 370 L 720 390" class="svg-arrow"/>
+</svg>
+<figcaption>Figure 1 — The internal pieces of configuration_service.</figcaption>
+</figure>
+
+<h2>What it does (in plain English)</h2>
+
+<div class="card-grid">
+  <div class="card config">
+    <h3>Keeps a device list</h3>
+    <p>Every device on the beamline is registered here with its Python
+    class path, constructor arguments, and the PVs it owns. Four
+    loader strategies (<code>CONFIG_LOAD_STRATEGY</code>): <strong>happi</strong>
+    (parses <code>happi_db.json</code>), <strong>bits</strong> (parses BITS
+    <code>devices.yml</code>), <strong>mock</strong> (built-in sample
+    data for tests), <strong>empty</strong> (start with nothing and
+    register via REST). Default is <strong>auto</strong>, which picks
+    the first strategy whose inputs are present.</p>
+  </div>
+  <div class="card config">
+    <h3>Enforces one writer per device</h3>
+    <p>When queueserver is about to run a plan, it asks configuration to
+    <strong>lock</strong> the devices it needs. Any write attempt from
+    another source (direct_control, another operator) is refused until
+    the lock is released.</p>
+  </div>
+  <div class="card config">
+    <h3>Remembers PV health</h3>
+    <p>Direct_control reports the outcome of every PV read/write. Config
+    aggregates those into a per-PV health record — how many successes,
+    how many failures, when it last worked — so the UI can highlight
+    dead hardware.</p>
+  </div>
+  <div class="card config">
+    <h3>Publishes an OpenAPI schema</h3>
+    <p>Every route is documented in a machine-readable schema written to
+    <code>shared-schema/configuration_service.openapi.json</code>. The
+    frontend turns this into TypeScript types.</p>
+  </div>
+</div>
+
+<h2>Key API endpoints (in plain English)</h2>
+
+<table class="data">
+<thead><tr><th>Route</th><th>What it's for</th><th>Who calls it</th></tr></thead>
+<tbody>
+<tr><td><code>GET /api/v1/devices</code></td>
+    <td>List every registered device.</td>
+    <td>UI, queueserver, direct_control</td></tr>
+<tr><td><code>GET /api/v1/devices/{name}</code></td>
+    <td>Look up one device: PVs, metadata, whether it's enabled.</td>
+    <td>direct_control (on every write)</td></tr>
+<tr><td><code>GET /api/v1/devices/{name}/instantiation</code></td>
+    <td>Give me the Python recipe to build this device (class + kwargs).</td>
+    <td>direct_control (device-method path), queueserver</td></tr>
+<tr><td><code>GET /api/v1/devices/{name}/status</code></td>
+    <td>Is it locked? By whom? Since when?</td>
+    <td>direct_control (safety gate on every write)</td></tr>
+<tr><td><code>POST /api/v1/devices/lock</code></td>
+    <td>Take a lock (with an owner + TTL lease).</td>
+    <td>queueserver, before starting a plan</td></tr>
+<tr><td><code>POST /api/v1/devices/lock/renew</code></td>
+    <td>Heartbeat — extends the lease on locks held by this item_id. Returns which devices were renewed vs lost vs conflict.</td>
+    <td>queueserver (only meaningful when leases are enabled)</td></tr>
+<tr><td><code>POST /api/v1/devices/unlock</code> / <code>force-unlock</code></td>
+    <td>Release a lock cleanly, or forcibly (admin).</td>
+    <td>queueserver on plan end · operator on cleanup</td></tr>
+<tr><td><code>POST /api/v1/devices/enrich</code></td>
+    <td>"Fill in these device specs with live metadata." Reverse call — config asks direct_control.</td>
+    <td>configuration → direct_control</td></tr>
+<tr><td><code>POST /api/v1/pvs/{pv}/success</code> / <code>/failure</code></td>
+    <td>Fire-and-forget health report.</td>
+    <td>direct_control after every EPICS operation</td></tr>
+<tr><td><code>GET /health</code></td>
+    <td>Liveness probe. Returns 503 until warmup is complete.</td>
+    <td>docker, direct_control at startup, humans</td></tr>
+</tbody>
+</table>
+
+<h2>What runs where</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Configuration service processes and dependencies">
+  <!-- Web process -->
+  <rect x="30" y="30" width="260" height="150" rx="8" class="svg-box-config"/>
+  <text x="160" y="55" class="svg-title-config svg-title" text-anchor="middle">Web process (uvicorn)</text>
+  <text x="160" y="80" class="svg-label-small" text-anchor="middle">single process, --workers=1</text>
+  <text x="160" y="98" class="svg-label-small" text-anchor="middle">FastAPI · asyncio · structlog</text>
+  <text x="160" y="120" class="svg-label" text-anchor="middle">In-memory: registry cache,</text>
+  <text x="160" y="136" class="svg-label" text-anchor="middle">locks, PV health counters</text>
+  <text x="160" y="160" class="svg-label-small" text-anchor="middle">"workers &gt; 1" is now rejected</text>
+
+  <!-- DB -->
+  <rect x="360" y="30" width="220" height="150" rx="8" class="svg-box-plain"/>
+  <text x="470" y="55" class="svg-title" text-anchor="middle">Database</text>
+  <text x="470" y="80" class="svg-label-small" text-anchor="middle">PostgreSQL 16 (prod)</text>
+  <text x="470" y="97" class="svg-label-small" text-anchor="middle">or SQLite (dev/single-node)</text>
+  <text x="470" y="122" class="svg-label" text-anchor="middle">Persists: device registry,</text>
+  <text x="470" y="138" class="svg-label" text-anchor="middle">audit trail, PV health</text>
+  <text x="470" y="162" class="svg-label-small" text-anchor="middle">Locks are in-memory only (leases opt-in)</text>
+
+  <!-- Seeding sources -->
+  <rect x="640" y="30" width="230" height="150" rx="8" class="svg-box-plain"/>
+  <text x="755" y="55" class="svg-title" text-anchor="middle">Startup seed (optional)</text>
+  <text x="755" y="76" class="svg-label" text-anchor="middle">CONFIG_LOAD_STRATEGY:</text>
+  <text x="755" y="94" class="svg-label-small" text-anchor="middle">• auto — pick first available</text>
+  <text x="755" y="110" class="svg-label-small" text-anchor="middle">• happi — happi_db.json</text>
+  <text x="755" y="126" class="svg-label-small" text-anchor="middle">• bits — a BITS profile</text>
+  <text x="755" y="142" class="svg-label-small" text-anchor="middle">• mock — built-in sample data</text>
+  <text x="755" y="158" class="svg-label-small" text-anchor="middle">• empty — CRUD-fed, no seed</text>
+  <text x="755" y="174" class="svg-label-small" text-anchor="middle">Live introspection also via queueserver</text>
+
+  <path d="M 290 100 L 360 100" class="svg-arrow"/>
+  <text x="325" y="94" class="svg-label-small" text-anchor="middle">SQLAlchemy</text>
+  <path d="M 640 105 L 580 105" class="svg-arrow"/>
+</svg>
+<figcaption>Figure 2 — One web process, one database, and a startup seeding source.</figcaption>
+</figure>
+
+<h2>Target-state improvements</h2>
+
+<p>The 2026-07-02 backend review flagged several safety and integrity gaps
+in configuration_service. The following are the target-state improvements
+this orientation reflects:</p>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>All registry mutations serialized</h3>
+    <p>Every create / update / delete / reset now holds a single
+    app-wide asyncio lock, closing check-then-act races between
+    concurrent requests. Running with <code>--workers &gt; 1</code> is
+    rejected at startup because the in-memory state can't span
+    workers.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Lock lifecycle can't leak</h3>
+    <p>Deleting or updating a locked device is now refused (409). If a
+    device is removed from the registry with its lock still held, a
+    force-unlock cleanly releases the orphan. A registry reset or clear
+    wipes the lock table — no more "beamline shows all-locked after a
+    reset".</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Locks with optional TTL leases</h3>
+    <p>Every lock can carry a TTL. If it does, the lock holder must
+    send heartbeats via <code>POST /devices/lock/renew</code>; if
+    heartbeats stop (crash, network partition, kill), the lease expires
+    and the device becomes writable again automatically. Leases are
+    <strong>opt-in</strong> (<code>CONFIG_LOCK_LEASE_TTL_SECONDS</code>,
+    default <code>0</code> = disabled). With leases disabled, locks are
+    held until an explicit release or a force-unlock — the historical
+    behaviour.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Lock-authority epoch (always on)</h3>
+    <p>Independent of the lease feature, every configuration_service
+    process start generates a fresh <code>lock_epoch</code>, surfaced
+    on lock/renew/status responses. Distinct from the DB-backed
+    registry <code>service_epoch</code>: a plain restart drops
+    all in-memory locks but preserves the registry, so the
+    <code>lock_epoch</code> is what signals lock-table loss to
+    queueserver and direct_control.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Force-unlock is atomic</h3>
+    <p>Force-unlock now validates the full request before touching any
+    lock. Either every named device is released or none are; the audit
+    row is always written. No half-applied force-unlocks.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Input validation hardened</h3>
+    <p>Device names, PV names, and standalone-PV values are all
+    validated for printable-ASCII / non-empty / no path separators.
+    An opt-in <code>CONFIG_DEVICE_CLASS_ALLOWLIST</code> refuses to
+    import unknown Python class paths.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Event loop stays responsive</h3>
+    <p>Blocking work — loading a big profile file, importing device
+    classes — now runs off the event loop via <code>asyncio.to_thread</code>,
+    so a slow disk or a big BITS profile no longer stalls unrelated
+    requests.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>/health never leaks DB internals</h3>
+    <p>The 503 response body no longer echoes raw DB exceptions (which
+    could leak DSN / host / credentials). It reports "not ready" with
+    a safe category only.</p>
+    <p><span class="tag done">delivered</span></p>
+  </div>
+  <div class="card">
+    <h3>Shared-secret auth on admin routes</h3>
+    <p>Destructive endpoints (force-unlock, registry reset) will be
+    gated by a shared secret so they can't be hit from an unauth'd
+    process on the same host.</p>
+    <p><span class="tag future">planned</span></p>
+  </div>
+</div>
+
+<div class="callout">
+  <h4>Rule of thumb</h4>
+  <p>configuration_service <strong>never touches EPICS</strong>. It doesn't
+  read a PV, it doesn't move a motor. It just answers the questions "what
+  do we have?" and "who owns it?", and remembers what direct_control tells
+  it about PV health.</p>
+</div>
+
+<h2>Where to look next</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>See Side A →</h3>
+    <p><a href="side-a.html">How direct_control uses configuration on every
+    hardware write</a>.</p>
+  </div>
+  <div class="card">
+    <h3>See Side B →</h3>
+    <p><a href="side-b.html">How queueserver syncs devices and takes lease-based locks</a>.</p>
+  </div>
+</div>
+
+<footer class="pagefoot">
+  configuration_service · REST · port 8004 · <a href="index.html">back to
+  orientation</a>
+</footer>
+
+</main>
+</body>
+</html>

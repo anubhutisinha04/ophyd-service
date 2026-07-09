@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Side B — configuration ↔ queueserver · Orientation to the backend</title>
+<link rel="stylesheet" href="assets/orientation.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <ul>
+    <li class="home"><a href="index.html">Orientation</a></li>
+    <li><a href="configuration-service.html">Configuration</a></li>
+    <li><a href="direct-control-service.html">Direct Control</a></li>
+    <li><a href="queueserver-service.html">Queueserver</a></li>
+    <li><a href="side-a.html">Side&nbsp;A</a></li>
+    <li><a href="side-b.html" class="here">Side&nbsp;B</a></li>
+    <li><a href="frontend-integration.html">Frontend</a></li>
+    <li><a href="key-updates.html">Key updates</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<h1>Side B · configuration ↔ queueserver</h1>
+<p class="subtitle">The conversation between the registry and the plan runner.
+Everything about "which devices does this plan need, and can I have exclusive
+access to them for the duration?" travels this seam.</p>
+
+<h2>The picture</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Side B overall diagram">
+  <text x="450" y="26" class="svg-title" text-anchor="middle">Side B · three conversations, one seam</text>
+
+  <rect x="60" y="80" width="240" height="90" rx="8" class="svg-box-config"/>
+  <text x="180" y="108" class="svg-title-config svg-title" text-anchor="middle">configuration_service</text>
+  <text x="180" y="128" class="svg-label-small" text-anchor="middle">registry · lease-based locks</text>
+  <text x="180" y="146" class="svg-label-small" text-anchor="middle">port 8004</text>
+
+  <rect x="600" y="80" width="240" height="90" rx="8" class="svg-box-qs"/>
+  <text x="720" y="108" class="svg-title-qs svg-title" text-anchor="middle">queueserver_service</text>
+  <text x="720" y="128" class="svg-label-small" text-anchor="middle">RE manager · worker</text>
+  <text x="720" y="146" class="svg-label-small" text-anchor="middle">port 60610</text>
+
+  <!-- 1. bootstrap + diff -->
+  <path d="M 600 100 L 300 100" class="svg-arrow-hot"/>
+  <text x="450" y="94" class="svg-label" text-anchor="middle">1 · device bootstrap + diff (sync)</text>
+  <text x="450" y="114" class="svg-label-small" text-anchor="middle">GET /devices-info · /devices/changes · POST/PUT/DELETE /devices</text>
+
+  <!-- 2. locks -->
+  <path d="M 600 138 L 300 138" class="svg-arrow-hot"/>
+  <text x="450" y="132" class="svg-label" text-anchor="middle">2 · per-plan device locks (+ opt-in lease/heartbeat)</text>
+  <text x="450" y="152" class="svg-label-small" text-anchor="middle">POST /devices/lock · /lock/renew · /unlock · /force-unlock</text>
+
+  <!-- 3. epoch check -->
+  <path d="M 600 195 L 300 195" class="svg-arrow"/>
+  <text x="450" y="188" class="svg-label" text-anchor="middle">3 · staleness &amp; epoch checks (two epochs, distinct)</text>
+  <text x="450" y="208" class="svg-label-small" text-anchor="middle">service_epoch = registry (DB) · lock_epoch = lock-authority (in-memory)</text>
+
+  <!-- Note -->
+  <rect x="60" y="245" width="780" height="80" rx="6" class="svg-box-plain"/>
+  <text x="450" y="268" class="svg-label" font-weight="600" text-anchor="middle">All conversations are queueserver → configuration.</text>
+  <text x="450" y="288" class="svg-label-small" text-anchor="middle">Owned by the ConfigServiceCoordinator (queueserver_service/manager/config_service.py) — a single retrying httpx client.</text>
+  <text x="450" y="308" class="svg-label-small" text-anchor="middle">Configuration never proactively pushes; queueserver polls, renews (if leases enabled), and re-syncs on epoch loss.</text>
+</svg>
+<figcaption>Figure 1 — Side B's three conversations, all initiated by queueserver.</figcaption>
+</figure>
+
+<h2>1 · Device bootstrap + diff</h2>
+
+<p>When a queueserver worker opens an environment, its Python namespace
+starts with whatever the profile collection defines. But the beamline
+registry is the authoritative source — devices may have been added,
+removed, or reconfigured since the profile was written. Queueserver
+reconciles the two at three points:</p>
+
+<figure class="figure">
+<svg viewBox="0 0 900 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bootstrap and diff sequence">
+  <text x="90" y="30" class="svg-title-qs svg-title" text-anchor="middle">Manager</text>
+  <line x1="90" y1="50" x2="90" y2="340" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <text x="360" y="30" class="svg-title-qs svg-title" text-anchor="middle">Worker</text>
+  <line x1="360" y1="50" x2="360" y2="340" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <text x="700" y="30" class="svg-title-config svg-title" text-anchor="middle">configuration_service</text>
+  <line x1="700" y1="50" x2="700" y2="340" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <!-- 1. env open -->
+  <path d="M 90 80 L 360 80" class="svg-arrow-hot"/>
+  <text x="225" y="72" class="svg-label-small" text-anchor="middle">env open — load profile collection</text>
+
+  <!-- 2. manager -> config: full device list -->
+  <path d="M 90 115 L 700 115" class="svg-arrow-hot"/>
+  <text x="395" y="108" class="svg-label" text-anchor="middle">A · bootstrap</text>
+  <text x="395" y="128" class="svg-label-small" text-anchor="middle">GET /api/v1/devices-info (active + inactive)</text>
+  <path d="M 700 145 L 90 145" class="svg-arrow"/>
+  <text x="395" y="140" class="svg-label-small" text-anchor="middle">full device registry</text>
+
+  <!-- 3. compute overlay -->
+  <rect x="90" y="160" width="200" height="25" rx="3" fill="var(--qs-bg)" stroke="var(--qs-color)"/>
+  <text x="190" y="177" class="svg-label-small" text-anchor="middle">compute overlay vs namespace</text>
+
+  <!-- 4. manager -> worker: apply overlay -->
+  <path d="M 90 210 L 360 210" class="svg-arrow-hot"/>
+  <text x="225" y="203" class="svg-label" text-anchor="middle">B · overlay apply</text>
+  <text x="225" y="223" class="svg-label-small" text-anchor="middle">command_update_device_overlay (long pipe timeout)</text>
+  <rect x="360" y="230" width="180" height="25" rx="3" fill="var(--qs-bg)" stroke="var(--qs-color)"/>
+  <text x="450" y="247" class="svg-label-small" text-anchor="middle">stage-then-commit (atomic)</text>
+  <path d="M 360 265 L 90 265" class="svg-arrow"/>
+  <text x="225" y="258" class="svg-label-small" text-anchor="middle">ok / partial-failure error</text>
+
+  <!-- 5. periodic diff -->
+  <path d="M 90 305 L 700 305" class="svg-arrow" stroke-dasharray="4 3"/>
+  <text x="395" y="298" class="svg-label" text-anchor="middle">C · periodic diff (guarded)</text>
+  <text x="395" y="320" class="svg-label-small" text-anchor="middle">GET /api/v1/devices/changes  →  overlay only what changed · errors surface in /api/status</text>
+</svg>
+<figcaption>Figure 2 — Environment-open bootstrap and the ongoing periodic
+diff. If configuration is unreachable, the manager degrades rather than
+crash-loops.</figcaption>
+</figure>
+
+<div class="callout done">
+  <h4>What changed here</h4>
+  <ul>
+    <li>The bootstrap used to gate "registry empty?" on <em>active-only</em>
+    device listings. If every device was disabled, bootstrap would
+    re-enable them. Now the check uses the full registry and correctly
+    treats "all disabled" as "no change needed".</li>
+    <li>The overlay used to be applied one device at a time with no
+    rollback. It's now stage-then-commit inside the worker: build all
+    of the new device instances in a staging dict; only mutate the
+    namespace if every one succeeds.</li>
+    <li>The overlay RPC used to use the 0.5&nbsp;s default pipe timeout
+    — while the worker did a full list regeneration that took longer.
+    A registry change during a running plan would time out and abort
+    the plan. Now uses the long timeout.</li>
+    <li>The periodic sync task and the manager-restart path now run
+    inside a guard that surfaces failures in <code>/api/status</code>
+    (<code>config_service_sync_error</code>) instead of dying silently
+    or crash-looping.</li>
+  </ul>
+</div>
+
+<h2>2 · Per-plan device locks (with optional lease/heartbeat)</h2>
+
+<p>The lock story has two parts that are easy to conflate. The <strong>lock
+lifecycle</strong> — acquire, release, force-unlock, epoch-detect —
+is always on. The <strong>lease/heartbeat</strong> mechanism (the "locks
+that expire if you don't renew them" story) is a distinct, opt-in
+feature layered on top.</p>
+
+<figure class="figure">
+<svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Lease + heartbeat lock lifecycle">
+  <text x="90" y="30" class="svg-title-qs svg-title" text-anchor="middle">queueserver</text>
+  <line x1="90" y1="50" x2="90" y2="440" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <text x="500" y="30" class="svg-title-config svg-title" text-anchor="middle">configuration_service</text>
+  <line x1="500" y1="50" x2="500" y2="440" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <text x="820" y="30" class="svg-title-dc svg-title" text-anchor="middle">direct_control</text>
+  <line x1="820" y1="50" x2="820" y2="440" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <!-- 1. queue_start -->
+  <rect x="20" y="70" width="140" height="25" rx="3" fill="var(--qs-bg)" stroke="var(--qs-color)"/>
+  <text x="90" y="87" class="svg-label-small" text-anchor="middle">plan starts</text>
+
+  <!-- 2. lock request -->
+  <path d="M 90 115 L 500 115" class="svg-arrow-hot"/>
+  <text x="295" y="108" class="svg-label" text-anchor="middle">1 · acquire lock</text>
+  <text x="295" y="128" class="svg-label-small" text-anchor="middle">POST /devices/lock { device_names, item_id, plan_uid }</text>
+  <path d="M 500 145 L 90 145" class="svg-arrow"/>
+  <text x="295" y="140" class="svg-label-small" text-anchor="middle">200 { locked, expires_at?, lock_epoch }</text>
+
+  <!-- 3. plan running -->
+  <rect x="20" y="165" width="140" height="25" rx="3" fill="var(--qs-bg)" stroke="var(--qs-color)"/>
+  <text x="90" y="182" class="svg-label-small" text-anchor="middle">plan running…</text>
+
+  <!-- concurrent: direct control -->
+  <path d="M 820 175 L 500 175" class="svg-arrow"/>
+  <text x="660" y="168" class="svg-label-small" text-anchor="middle">GET /devices/{name}/status</text>
+  <path d="M 500 195 L 820 195" class="svg-arrow"/>
+  <text x="660" y="188" class="svg-label-small" text-anchor="middle">{ locked, by queueserver, lock_epoch }</text>
+  <rect x="770" y="205" width="120" height="25" rx="3" fill="var(--dc-bg)" stroke="var(--dc-color)"/>
+  <text x="830" y="222" class="svg-label-small" text-anchor="middle">refuse write → 423</text>
+
+  <!-- 4. heartbeat -->
+  <path d="M 90 250 L 500 250" class="svg-arrow" stroke-dasharray="4 3"/>
+  <text x="295" y="240" class="svg-label" text-anchor="middle">2 · renew (heartbeat) — only if leases enabled</text>
+  <text x="295" y="263" class="svg-label-small" text-anchor="middle">POST /devices/lock/renew { item_id }</text>
+  <path d="M 500 280 L 90 280" class="svg-arrow" stroke-dasharray="4 3"/>
+  <text x="295" y="275" class="svg-label-small" text-anchor="middle">{ renewed, lost, conflict, expires_at, lock_epoch }</text>
+
+  <!-- 5. plan ends -->
+  <rect x="20" y="315" width="140" height="25" rx="3" fill="var(--qs-bg)" stroke="var(--qs-color)"/>
+  <text x="90" y="332" class="svg-label-small" text-anchor="middle">plan ends (or fails)</text>
+
+  <!-- 6. unlock -->
+  <path d="M 90 360 L 500 360" class="svg-arrow-hot"/>
+  <text x="295" y="352" class="svg-label" text-anchor="middle">3 · release lock cleanly</text>
+  <text x="295" y="372" class="svg-label-small" text-anchor="middle">POST /devices/unlock { item_id }</text>
+
+  <!-- 7. Or: lease expires or authority resets -->
+  <rect x="240" y="395" width="520" height="30" rx="3" fill="var(--warn-bg)" stroke="var(--warn)"/>
+  <text x="500" y="415" class="svg-label-small" text-anchor="middle">If queueserver crashes: lease expires (opt-in) · or config restart resets lock_epoch → queueserver re-acquires</text>
+</svg>
+<figcaption>Figure 3 — Lease-based locks + heartbeat when opted in; otherwise
+locks are released explicitly (or force-unlocked). Either way, an epoch
+change signals lock-table loss to the reader.</figcaption>
+</figure>
+
+<div class="callout warn">
+  <h4>Leases are opt-in — mind the default</h4>
+  <p>Enabling leases sets <code>CONFIG_LOCK_LEASE_TTL_SECONDS</code> to a
+  positive number; the default is <code>0</code>, which disables expiry.
+  With leases off, a lock is held until an explicit <code>unlock</code>
+  or an admin <code>force-unlock</code>. If the queueserver crashes
+  without releasing, the lock stays until the operator intervenes — or
+  until configuration_service itself restarts (which clears the
+  in-memory lock table). This is the historical behaviour, kept as
+  default for compatibility.</p>
+  <p>The <strong>lock-authority epoch</strong>, by contrast, is always
+  on. It's the mechanism that guarantees the reader (direct_control)
+  and the writer (queueserver) can both detect a lock-table reset,
+  regardless of whether leases are enabled.</p>
+</div>
+
+<h3>Two dimensions of lock policy, four combinations</h3>
+
+<p>The behaviour operators actually see depends on two orthogonal
+knobs — one on each side of the seam:</p>
+
+<table class="data">
+<thead><tr>
+<th></th>
+<th>queueserver <code>lock_scope</code></th>
+<th>configuration <code>lock_all</code></th>
+<th>What happens</th>
+</tr></thead>
+<tbody>
+<tr>
+  <td><strong>Default</strong></td>
+  <td><code>plan</code></td>
+  <td><code>False</code></td>
+  <td>Only the devices the plan actually names are locked, and only while the plan is running. Idle env → nothing locked.</td>
+</tr>
+<tr>
+  <td>"Lock the beamline"</td>
+  <td><code>plan</code></td>
+  <td><code>True</code></td>
+  <td>While a plan is running, <em>every</em> registered device reports as locked to direct_control — a plan holds the whole beamline. Toggle at runtime with <code>PUT /lock/policy</code>.</td>
+</tr>
+<tr>
+  <td>Legacy "environment"</td>
+  <td><code>environment</code></td>
+  <td><code>False</code></td>
+  <td>Devices are locked for the lifetime of the worker environment — locked even between plans. Kept for backward compatibility.</td>
+</tr>
+<tr>
+  <td>Legacy + lock-all</td>
+  <td><code>environment</code></td>
+  <td><code>True</code></td>
+  <td>Whole beamline locked whenever the environment is open.</td>
+</tr>
+</tbody>
+</table>
+
+<div class="callout done">
+  <h4>What changed here</h4>
+  <ul>
+    <li>Locks used to be indefinite and in-memory only, with no expiry.
+    An opt-in TTL lease + <code>/lock/renew</code> heartbeat now bounds
+    the blast radius of a crashed lock holder. Off by default; enable
+    with <code>CONFIG_LOCK_LEASE_TTL_SECONDS &gt; 0</code>.</li>
+    <li>Queueserver's <code>ConfigServiceCoordinator</code> renews on a
+    timer when the TTL is enabled, and re-acquires locks on
+    <code>lost_devices</code> or a changed <code>lock_epoch</code> —
+    closing the "config-service restart mid-plan drops locks" window.</li>
+    <li>Direct_control observes <code>lock_epoch</code> and logs
+    <code>lock_authority_reset</code> when it changes, so a brief
+    "everything available" window after a restart is attributable, not
+    silent.</li>
+    <li>Queueserver's <code>lock_scope</code> default changed from
+    <code>environment</code> to <code>plan</code>, so an idle
+    environment no longer holds locks.</li>
+    <li>Per-plan locking now unions the devices named by the plan with
+    the plan's bluesky decorator defaults, so plans that use
+    decorator-attached devices don't hit "unowned device" errors.</li>
+    <li>Force-unlock is all-or-nothing (validate every device exists
+    before releasing any), and always writes an audit row.</li>
+  </ul>
+</div>
+
+<h2>3 · Two epochs, one word — don't confuse them</h2>
+
+<p>The word "epoch" appears in two <em>distinct</em> mechanisms in the
+config↔queueserver conversation. Being clear about which is which
+saves debugging time:</p>
+
+<table class="data">
+<thead><tr><th></th><th><code>service_epoch</code></th><th><code>lock_epoch</code></th></tr></thead>
+<tbody>
+<tr><td>Also known as</td><td>registry epoch</td><td>lock-authority epoch</td></tr>
+<tr><td>Lives on</td><td>the DB-backed device registry</td><td>the in-memory lock table</td></tr>
+<tr><td>Changes when</td><td>the registry is reset (or migrated)</td><td>the configuration_service <em>process</em> starts</td></tr>
+<tr><td>What it signals</td><td>your cached device list is stale — re-fetch</td><td>the lock table was wiped — re-acquire</td></tr>
+<tr><td>Who cares</td><td>queueserver's device-sync path</td><td>queueserver's lock holder + direct_control's status reader</td></tr>
+</tbody>
+</table>
+
+<p>A plain configuration_service restart <em>does</em> change
+<code>lock_epoch</code> (locks are in-memory, gone on restart) but
+<em>does not</em> change <code>service_epoch</code> (the DB survived).
+This is exactly why both signals are needed — one on its own would
+miss half the failure modes.</p>
+
+<h2>How the pieces fit together — a full plan run</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Full plan run flow">
+  <text x="450" y="26" class="svg-title" text-anchor="middle">A full plan run, end to end</text>
+
+  <!-- Steps -->
+  <rect x="30" y="60" width="150" height="80" rx="6" class="svg-box-fe"/>
+  <text x="105" y="86" class="svg-title-fe svg-title" text-anchor="middle">1 · Submit</text>
+  <text x="105" y="105" class="svg-label-small" text-anchor="middle">Frontend POSTs</text>
+  <text x="105" y="120" class="svg-label-small" text-anchor="middle">plan to queue</text>
+  <text x="105" y="135" class="svg-label-small" text-anchor="middle">(queueserver)</text>
+
+  <rect x="200" y="60" width="150" height="80" rx="6" class="svg-box-qs"/>
+  <text x="275" y="86" class="svg-title-qs svg-title" text-anchor="middle">2 · Pre-flight</text>
+  <text x="275" y="105" class="svg-label-small" text-anchor="middle">Diff device list,</text>
+  <text x="275" y="120" class="svg-label-small" text-anchor="middle">check epoch,</text>
+  <text x="275" y="135" class="svg-label-small" text-anchor="middle">apply overlay</text>
+
+  <rect x="370" y="60" width="150" height="80" rx="6" class="svg-box-config"/>
+  <text x="445" y="86" class="svg-title-config svg-title" text-anchor="middle">3 · Lock</text>
+  <text x="445" y="105" class="svg-label-small" text-anchor="middle">POST /devices/lock</text>
+  <text x="445" y="120" class="svg-label-small" text-anchor="middle">records item_id and</text>
+  <text x="445" y="135" class="svg-label-small" text-anchor="middle">returns lock_epoch</text>
+
+  <rect x="540" y="60" width="150" height="80" rx="6" class="svg-box-qs"/>
+  <text x="615" y="86" class="svg-title-qs svg-title" text-anchor="middle">4 · Run</text>
+  <text x="615" y="105" class="svg-label-small" text-anchor="middle">RE Worker runs plan;</text>
+  <text x="615" y="120" class="svg-label-small" text-anchor="middle">manager may renew</text>
+  <text x="615" y="135" class="svg-label-small" text-anchor="middle">(if leases enabled)</text>
+
+  <rect x="710" y="60" width="150" height="80" rx="6" class="svg-box-config"/>
+  <text x="785" y="86" class="svg-title-config svg-title" text-anchor="middle">5 · Unlock</text>
+  <text x="785" y="105" class="svg-label-small" text-anchor="middle">POST /unlock on</text>
+  <text x="785" y="120" class="svg-label-small" text-anchor="middle">plan end, or lease</text>
+  <text x="785" y="135" class="svg-label-small" text-anchor="middle">expires (if enabled)</text>
+
+  <path d="M 180 100 L 200 100" class="svg-arrow-hot"/>
+  <path d="M 350 100 L 370 100" class="svg-arrow-hot"/>
+  <path d="M 520 100 L 540 100" class="svg-arrow-hot"/>
+  <path d="M 690 100 L 710 100" class="svg-arrow-hot"/>
+
+  <!-- Below: interactions during "run" -->
+  <text x="450" y="200" class="svg-title" text-anchor="middle">During step 4, direct_control still serves the beamline —</text>
+  <text x="450" y="220" class="svg-label" text-anchor="middle">but every user write is refused with 423 (locked)</text>
+
+  <rect x="200" y="255" width="200" height="70" rx="6" class="svg-box-fe"/>
+  <text x="300" y="278" class="svg-title-fe svg-title" text-anchor="middle">Operator clicks a widget</text>
+  <text x="300" y="297" class="svg-label-small" text-anchor="middle">tries to nudge motor X</text>
+  <text x="300" y="313" class="svg-label-small" text-anchor="middle">during the plan</text>
+
+  <rect x="500" y="255" width="200" height="70" rx="6" class="svg-box-dc"/>
+  <text x="600" y="278" class="svg-title-dc svg-title" text-anchor="middle">direct_control</text>
+  <text x="600" y="297" class="svg-label-small" text-anchor="middle">asks config → locked → refuses</text>
+  <text x="600" y="313" class="svg-label-small" text-anchor="middle">HTTP 423 Locked (by queueserver)</text>
+
+  <path d="M 400 285 L 500 285" class="svg-arrow-hot"/>
+
+  <text x="450" y="355" class="svg-label-small" text-anchor="middle">Read-only monitoring (WebSocket streams) is unaffected — the operator can watch, but not change.</text>
+</svg>
+<figcaption>Figure 4 — During a plan, direct_control still serves reads and
+monitors; only writes are refused.</figcaption>
+</figure>
+
+<h2>The mental model</h2>
+
+<div class="callout">
+  <h4>Two rules</h4>
+  <ol>
+    <li><strong>Queueserver owns the plan; configuration owns the lock.</strong>
+    The plan says "I need devices A, B, C"; configuration decides
+    whether they're free and records who's holding them.</li>
+    <li><strong>Two epochs, two distinct signals.</strong>
+    <code>service_epoch</code> tells you the registry moved;
+    <code>lock_epoch</code> tells you the lock table was wiped.
+    Optional TTL leases add a third safety net — self-releasing locks
+    when the holder crashes — but they're off by default.</li>
+  </ol>
+</div>
+
+<h2>Where to look next</h2>
+
+<div class="card-grid">
+  <div class="card">
+    <h3>queueserver deeper →</h3>
+    <p><a href="queueserver-service.html">Manager and worker internals,
+    the HTTP-only pivot.</a></p>
+  </div>
+  <div class="card">
+    <h3>configuration deeper →</h3>
+    <p><a href="configuration-service.html">Registry, lock manager, PV
+    health, persistence.</a></p>
+  </div>
+  <div class="card">
+    <h3>Key updates →</h3>
+    <p><a href="key-updates.html">The PRs that delivered leases,
+    heartbeats, and the epoch counter.</a></p>
+  </div>
+</div>
+
+<footer class="pagefoot">
+  Side B · configuration ↔ queueserver · <a href="index.html">back to
+  orientation</a>
+</footer>
+
+</main>
+</body>
+</html>
