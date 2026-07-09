@@ -378,10 +378,41 @@ async def lifespan(app: FastAPI):
         coordination_enabled=settings.coordination_check_enabled,
     )
 
+    # Background sweep that evicts idle PV monitors (see Settings docstring).
+    # Disabled when the sweep interval is zero — tests drive eviction by
+    # calling pv_monitor.evict_idle_monitors() directly for determinism.
+    sweep_task: asyncio.Task | None = None
+    if settings.pv_monitor_sweep_interval > 0:
+
+        async def _pv_monitor_sweep() -> None:
+            interval = settings.pv_monitor_sweep_interval
+            ttl = settings.pv_monitor_idle_ttl
+            while True:
+                try:
+                    await asyncio.sleep(interval)
+                    evicted = await asyncio.to_thread(pv_monitor.evict_idle_monitors, ttl)
+                    if evicted:
+                        logger.info("pv_monitor_sweep_evicted", count=len(evicted), pvs=evicted)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    # Never let a sweep error kill the task — a broken sweep
+                    # should degrade to "no eviction" (the leak this fixes is
+                    # slow-drip, not fatal), not "no sweep task at all".
+                    logger.warning("pv_monitor_sweep_error", error=str(exc), exc_info=True)
+
+        sweep_task = asyncio.create_task(_pv_monitor_sweep(), name="pv_monitor_sweep")
+
     try:
         yield
     finally:
         logger.info("Shutting down service")
+        if sweep_task is not None:
+            sweep_task.cancel()
+            try:
+                await sweep_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         # Drain in-flight PV-health reports before closing the httpx
         # client they need. 5s cap so a hung config-service can't block
         # shutdown indefinitely.

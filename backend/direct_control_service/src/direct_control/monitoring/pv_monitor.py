@@ -9,6 +9,7 @@ Implements: PVMonitor protocol
 
 import os
 import threading
+import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 from datetime import datetime
@@ -85,6 +86,12 @@ class PVMonitorManager:
         # around the connect + initial read, NOT ``self._lock`` — so a dead
         # PV's connection timeout can't stall value/meta fan-out for others.
         self._connect_locks: dict[str, threading.Lock] = {}
+        # Per-PV monotonic timestamp of the last subscribe / get_value touch.
+        # Drives the TTL sweep (``evict_idle_monitors``) that cleans up CA
+        # monitors created by callback-less subscribes from the REST
+        # ``get_monitored_pv_value`` endpoint — without it, every REST hit on
+        # an ad-hoc PV name would leak a monitor that nothing ever unsubscribes.
+        self._last_touched: dict[str, float] = {}
 
         logger.info(
             "ophyd_pv_monitor_initialized",
@@ -102,6 +109,7 @@ class PVMonitorManager:
         # taking the per-PV connect lock for the common repeat-subscribe case.
         with self._lock:
             if pv_name in self._signals:
+                self._last_touched[pv_name] = time.monotonic()
                 if callback:
                     self._callbacks[pv_name].append(_Subscriber(callback, on_error))
                 return
@@ -117,6 +125,7 @@ class PVMonitorManager:
         with connect_lock:
             with self._lock:
                 if pv_name in self._signals:
+                    self._last_touched[pv_name] = time.monotonic()
                     if callback:
                         self._callbacks[pv_name].append(_Subscriber(callback, on_error))
                     return
@@ -168,6 +177,7 @@ class PVMonitorManager:
                     self._connection_status[pv_name] = True
                     self._latest_values[pv_name] = initial_value
                     self._buffers[pv_name].append(initial_value)
+                    self._last_touched[pv_name] = time.monotonic()
 
                     # Registering the CA monitors is a local (non-blocking)
                     # operation, so it's fine under the lock — but it can still
@@ -192,6 +202,7 @@ class PVMonitorManager:
                         self._connection_status.pop(pv_name, None)
                         self._latest_values.pop(pv_name, None)
                         self._buffers.pop(pv_name, None)
+                        self._last_touched.pop(pv_name, None)
                         # PV never subscribed — drop its connect lock too (see
                         # the connect-failure path above for the rationale).
                         self._connect_locks.pop(pv_name, None)
@@ -530,6 +541,7 @@ class PVMonitorManager:
                 self._connection_status.pop(pv_name, None)
                 self._buffers.pop(pv_name, None)
                 self._latest_values.pop(pv_name, None)
+                self._last_touched.pop(pv_name, None)
                 # Drop the connect lock too so it doesn't accumulate one entry
                 # per distinct PV ever seen. A concurrent re-subscribe simply
                 # recreates it; correctness there rests on the commit-time
@@ -551,9 +563,11 @@ class PVMonitorManager:
         on-demand read fails."""
         with self._lock:
             if pv_name in self._latest_values:
+                self._last_touched[pv_name] = time.monotonic()
                 return self._latest_values[pv_name]
 
             if pv_name in self._signals:
+                self._last_touched[pv_name] = time.monotonic()
                 signal = self._signals[pv_name]
                 try:
                     pv_value = self._signal_to_pv_value(pv_name, signal)
@@ -564,6 +578,54 @@ class PVMonitorManager:
                 return pv_value
 
             return None
+
+    def evict_idle_monitors(self, idle_ttl: float) -> list[str]:
+        """Tear down CA monitors with no callbacks that have been idle for
+        longer than ``idle_ttl`` seconds. Returns the names of evicted PVs.
+
+        Targets the leak from callback-less subscribes: the REST endpoint
+        ``GET /api/v1/pvs/{pv_name}/value`` calls ``subscribe(pv_name)``
+        without a callback to warm the monitor, then returns the value — no
+        WS client ever unsubscribes it. Without periodic eviction each
+        distinct PV name a REST client asks about accumulates a CA
+        connection that outlives every request.
+
+        Skipped PVs:
+        - Any PV with ``_callbacks.get(pv_name)`` non-empty (a WS
+          subscriber is actively consuming updates; TTL doesn't apply).
+        - Any PV touched (subscribed or read) within ``idle_ttl``.
+
+        Runs the actual ``destroy()`` off ``self._lock`` so a slow CA
+        teardown can't stall in-flight subscribes / value fan-outs.
+        """
+        now = time.monotonic()
+        stale: list[tuple[str, EpicsSignal]] = []
+        with self._lock:
+            for pv_name in list(self._signals):
+                if self._callbacks.get(pv_name):
+                    continue
+                touched = self._last_touched.get(pv_name)
+                if touched is None:
+                    # Unknown-age monitor (shouldn't happen post-fix — every
+                    # commit path sets _last_touched — but be defensive so a
+                    # stray entry from an upgrade doesn't survive forever).
+                    touched = 0.0
+                if now - touched < idle_ttl:
+                    continue
+                signal = self._signals.pop(pv_name, None)
+                self._connection_status.pop(pv_name, None)
+                self._buffers.pop(pv_name, None)
+                self._latest_values.pop(pv_name, None)
+                self._last_touched.pop(pv_name, None)
+                self._callbacks.pop(pv_name, None)
+                self._connect_locks.pop(pv_name, None)
+                if signal is not None:
+                    stale.append((pv_name, signal))
+
+        for pv_name, signal in stale:
+            logger.info("evicting_idle_pv_monitor", pv_name=pv_name, idle_ttl=idle_ttl)
+            self._destroy_signal_quietly(signal, pv_name)
+        return [pv for pv, _ in stale]
 
     def get_buffer(self, pv_name: str) -> list[PVValue]:
         with self._lock:

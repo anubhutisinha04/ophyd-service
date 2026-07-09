@@ -33,6 +33,8 @@ from ._envelopes import (
     send_error,
     send_event,
     send_payload_or_size_error,
+    send_text_or_size_error,
+    serialize_json_frame,
 )
 
 SUB_TYPE_META = "meta"
@@ -328,8 +330,15 @@ class WebSocketManager:
     async def _broadcast_update(self, pv_name: str, update: PVUpdate):
         async with self._lock:
             client_ids = self._pv_clients.get(pv_name, set()).copy()
+        if not client_ids:
+            return
+        # Serialize once, fan out the resulting text to every subscribed
+        # client. Pre-C4 this ran ``model_dump`` + ``json.dumps`` per client;
+        # under a bursty PV with many subscribers that quadratic-in-clients
+        # cost dominated the CA callback thread.
+        text = serialize_json_frame(update.model_dump(mode="json", exclude_none=True))
         for client_id in client_ids:
-            await self._send_to_client(client_id, update)
+            await self._send_text_to_client(client_id, text, update.pv)
 
     async def _broadcast_pv_callback_error(self, pv_name: str, exc: BaseException) -> None:
         async with self._lock:
@@ -343,9 +352,32 @@ class WebSocketManager:
             log_fields={"pv_name": pv_name},
         )
 
+    async def _send_text_to_client(self, client_id: str, text: str, pv: str):
+        """Send a pre-serialized JSON frame to one WS client.
+
+        Broadcast fan-out call site; the caller has already serialized the
+        payload once and passes the same text to every subscriber."""
+        async with self._lock:
+            websocket = self._connections.get(client_id)
+        if not websocket:
+            return
+        await send_text_or_size_error(
+            websocket,
+            text,
+            log_event="websocket_send",
+            log_fields={"client_id": client_id, "pv": pv},
+            oversize_message="payload exceeds size limit; update dropped",
+            error_envelope_fields={"pv": pv},
+        )
+
     async def _send_to_client(
         self, client_id: str, update: PVUpdate, websocket: LockedWS | None = None
     ):
+        """Send a per-client PVUpdate via the JSON path.
+
+        Kept for the initial-value send in the subscribe handshake (one
+        client, one send — no fan-out to amortize). The broadcast path
+        pre-serializes and uses ``_send_text_to_client`` instead."""
         if websocket is None:
             async with self._lock:
                 websocket = self._connections.get(client_id)
