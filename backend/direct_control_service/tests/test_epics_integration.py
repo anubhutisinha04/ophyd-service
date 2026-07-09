@@ -173,13 +173,13 @@ def test_ws_oversize_update_delivers_error_envelope(client):
     from direct_control.config import Settings
 
     app = client.app
-    # Calibrated for the post-finch-alignment payload sizes:
-    #   scalar pv_update (IOC:counter): ~183 bytes
-    #   waveform pv_update (IOC:wf1, 20 elements): ~247 bytes
+    # Calibrated for the payload sizes with alarm fields on every update:
+    #   scalar pv_update (IOC:counter): ~266 bytes
+    #   waveform pv_update (IOC:wf1, 20 elements): ~331 bytes
     #   error envelope: ~130 bytes
-    # 200 sits between scalar and waveform, leaves room for the error.
+    # 300 sits between scalar and waveform, leaves room for the error.
     # Re-tune if PVUpdate fields or the JSON serialization shape changes.
-    app.state.settings.response_bytesize_limit = 200
+    app.state.settings.response_bytesize_limit = 300
 
     try:
         with client.websocket_connect("/api/v1/pv-socket") as ws:

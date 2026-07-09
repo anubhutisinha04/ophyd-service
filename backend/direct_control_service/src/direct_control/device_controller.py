@@ -25,6 +25,7 @@ from .models import (
     DeviceLockedError,
     DeviceLockStatus,
     DeviceNotInstantiableError,
+    DeviceUnavailableError,
     InstantiationSpec,
     PVNotFoundError,
     PVSetRequest,
@@ -110,8 +111,11 @@ class DeviceController:
             configuration_service before commanding).
         LOCKED -> DeviceLockedError (active plan owns it; release the lock
             or wait for the plan to finish).
-        Other non-AVAILABLE statuses -> ControlError (e.g. UNKNOWN — config
-            service returned a state we don't model).
+        Other non-AVAILABLE statuses -> DeviceUnavailableError (e.g. UNKNOWN —
+            config service returned a state we don't model). This is a
+            coordination-policy refusal, NOT a PV-health/EPICS failure, so
+            callers must map it like the other gate errors (not to a 500 with
+            a PV-health report).
         AVAILABLE -> no-op.
         """
         if coord_status.device_available:
@@ -133,7 +137,7 @@ class DeviceController:
             status=coord_status.status.value,
             **{kind: target},
         )
-        raise ControlError(
+        raise DeviceUnavailableError(
             f"{kind.replace('_', ' ').capitalize()} {target} unavailable: "
             f"status={coord_status.status.value}"
         )

@@ -132,12 +132,37 @@ class WebSocketManager:
             self._connections.clear()
         await close_connections(sockets)
 
-    async def subscribe_pvs(self, client_id: str, pv_names: list[str]):
-        """Subscribe a client to PVs; runs blocking EPICS subscribes off-loop."""
+    async def subscribe_pvs(
+        self, client_id: str, pv_names: list[str], read_only: bool = False
+    ) -> list[tuple[str, str]]:
+        """Subscribe a client to PVs; runs blocking EPICS subscribes off-loop.
+
+        ``read_only`` is plumbed through to ``pv_monitor.subscribe`` so a
+        read-only subscription actually builds an ``EpicsSignalRO`` (no
+        writable channel) instead of only being cosmetically flagged.
+
+        Returns the list of ``(pv_name, error)`` for PVs whose EPICS subscribe
+        failed, so the caller can send an error envelope for those and confirm
+        ``subscribed`` only for the PVs that actually stuck.
+
+        Known limitation (pre-existing, see
+        ``test_pv_socket_failed_subscribe_rolls_back_raced_second_client``): a
+        second client that piggybacks on an in-flight first subscribe (the PV
+        is already in ``_pv_clients`` so it isn't in this call's ``new_pvs``)
+        does not observe that first subscribe's failure here — it's still
+        rolled back correctly, but only the initiating caller gets the failure
+        in its return value. Closing that fully needs per-PV in-flight
+        subscribe futures the piggybacking callers await.
+        """
+        failed_pvs: list[tuple[str, str]] = []
         async with self._lock:
             if client_id not in self._connections:
                 logger.warning("subscribe_unknown_client", client_id=client_id)
-                return
+                # The client is gone (e.g. it disconnected during shutdown
+                # between validation and here): report every requested PV as
+                # failed so the caller never confirms `subscribed` for a
+                # connection that no longer exists.
+                return [(pv, "client no longer connected") for pv in pv_names]
 
             new_pvs: list[
                 tuple[str, Callable[[PVUpdate], None], Callable[[BaseException], None]]
@@ -156,7 +181,13 @@ class WebSocketManager:
         # so N new PVs pay connection latency in parallel instead of serially.
         results = await asyncio.gather(
             *(
-                asyncio.to_thread(self.pv_monitor.subscribe, pv_name, callback, on_error=on_error)
+                asyncio.to_thread(
+                    self.pv_monitor.subscribe,
+                    pv_name,
+                    callback,
+                    read_only=read_only,
+                    on_error=on_error,
+                )
                 for pv_name, callback, on_error in new_pvs
             ),
             return_exceptions=True,
@@ -177,6 +208,7 @@ class WebSocketManager:
 
                 if isinstance(result, BaseException):
                     logger.error("pv_subscription_failed", pv_name=pv_name, error=str(result))
+                    failed_pvs.append((pv_name, str(result)))
                     # subscribe() tore down its own signal before raising, so
                     # there is no CA monitor to release here. Only roll back if
                     # this PV's slot is still ours: if a later subscriber took
@@ -220,7 +252,7 @@ class WebSocketManager:
         async with self._lock:
             websocket = self._connections.get(client_id)
         if websocket is None:
-            return
+            return failed_pvs
 
         values = await asyncio.gather(
             *(asyncio.to_thread(self.pv_monitor.get_value, pv_name) for pv_name in pv_names),
@@ -233,6 +265,7 @@ class WebSocketManager:
             await self._send_meta_to_client(client_id, value, websocket=websocket)
 
         logger.info("client_subscribed", client_id=client_id, pv_count=len(pv_names))
+        return failed_pvs
 
     async def unsubscribe_pvs(self, client_id: str, pv_names: list[str]):
         to_teardown: list[tuple[str, Callable | None]] = []
@@ -430,6 +463,33 @@ class WebSocketManager:
             return False
         return True
 
+    async def _confirm_pv_subscribe(
+        self,
+        websocket: WebSocket,
+        requested_pvs: list[str],
+        failed: list[tuple[str, str]],
+        **event_fields: object,
+    ) -> None:
+        """Emit per-PV error envelopes for failed subscribes and confirm
+        ``subscribed`` only for the PVs that actually stuck.
+
+        Without this the client is told ``subscribed`` for a PV whose EPICS
+        subscribe raised and will then be silent forever, with no way to know
+        (the same failure class the device socket fixed via
+        ``_emit_failed_pv_envelopes``).
+        """
+        failed_names = {pv for pv, _ in failed}
+        for pv_name, error in failed:
+            await send_error(
+                websocket,
+                f"PV {pv_name} failed to subscribe: {error}",
+                pv=pv_name,
+                reason="pv_subscribe_failed",
+            )
+        stuck = [pv for pv in requested_pvs if pv not in failed_names]
+        if stuck:
+            await send_event(websocket, "subscribed", pv_names=stuck, **event_fields)
+
     async def _handle_subscribe(self, client_id: str, websocket: WebSocket, data: dict):
         pv_names = [data["pv"]] if data.get("pv") else data.get("pv_names", [])
 
@@ -438,8 +498,8 @@ class WebSocketManager:
             return
         if not await self._within_cap(client_id, websocket, len(valid_pvs)):
             return
-        await send_event(websocket, "subscribed", pv_names=valid_pvs)
-        await self.subscribe_pvs(client_id, valid_pvs)
+        failed = await self.subscribe_pvs(client_id, valid_pvs)
+        await self._confirm_pv_subscribe(websocket, valid_pvs, failed)
 
     async def _handle_unsubscribe(self, client_id: str, websocket: WebSocket, data: dict):
         pv_names = [data["pv"]] if data.get("pv") else data.get("pv_names", [])
@@ -467,7 +527,15 @@ class WebSocketManager:
                 await send_error(websocket, f"PV {pv} not connected", pv=pv, connected=False)
                 return
 
-            await self.subscribe_pvs(client_id, [pv])
+            failed = await self.subscribe_pvs(client_id, [pv])
+            if failed:
+                await send_error(
+                    websocket,
+                    f"PV {pv} failed to subscribe: {failed[0][1]}",
+                    pv=pv,
+                    reason="pv_subscribe_failed",
+                )
+                return
             await send_event(websocket, "subscribed", pv_names=[pv], connected=True)
 
         except Exception as e:  # noqa: BLE001
@@ -481,8 +549,8 @@ class WebSocketManager:
             return
         if not await self._within_cap(client_id, websocket, len(valid_pvs)):
             return
-        await self.subscribe_pvs(client_id, valid_pvs)
-        await send_event(websocket, "subscribed", pv_names=valid_pvs, read_only=True)
+        failed = await self.subscribe_pvs(client_id, valid_pvs, read_only=True)
+        await self._confirm_pv_subscribe(websocket, valid_pvs, failed, read_only=True)
 
     async def _handle_refresh(self, client_id: str, websocket: WebSocket, data: dict):
         pv = data.get("pv")

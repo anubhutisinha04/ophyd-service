@@ -19,7 +19,14 @@ import structlog
 
 from .._array_metadata import describe_array
 from ..config import Settings
-from ..models import PVNotFoundError, PVReadError, PVUpdate, PVValue
+from ..models import (
+    ALARM_SEVERITY_NAMES,
+    ALARM_STATUS_NAMES,
+    PVNotFoundError,
+    PVReadError,
+    PVUpdate,
+    PVValue,
+)
 
 # Set EPICS env vars before importing ophyd/pyepics
 # pyepics reads these at import time
@@ -261,6 +268,23 @@ class PVMonitorManager:
                     exc_info=True,
                 )
 
+    @staticmethod
+    def _alarm_update_fields(status: int, severity: int) -> dict:
+        """PVUpdate alarm fields derived from EPICS status/severity ints.
+
+        Populates both the raw ints (ophyd-websocket ``status``/``severity``)
+        and the friendly ``alarm_*`` fields the UI reads to show
+        MINOR/MAJOR/INVALID. Unknown codes leave the name as ``None`` rather
+        than fabricating a label.
+        """
+        return {
+            "status": status,
+            "severity": severity,
+            "alarm_severity": severity,
+            "alarm_severity_name": ALARM_SEVERITY_NAMES.get(severity),
+            "alarm_status": ALARM_STATUS_NAMES.get(status),
+        }
+
     def _handle_value_update(self, pv_name: str, value, timestamp):
         with self._lock:
             if pv_name not in self._signals:
@@ -270,13 +294,14 @@ class PVMonitorManager:
             converted_value = self._convert_value(value)
             ts = datetime.fromtimestamp(timestamp) if timestamp else datetime.now()
             read_access, write_access = self._extract_access_bits(pv_name)
+            status, severity = self._extract_alarm(pv_name)
 
             pv_value = PVValue(
                 pv_name=pv_name,
                 value=converted_value,
                 timestamp=ts,
-                status=0,
-                severity=0,
+                status=status,
+                severity=severity,
                 connected=True,
                 shape=shape,
                 dtype=dtype,
@@ -292,11 +317,10 @@ class PVMonitorManager:
                 pv=pv_name,
                 value=converted_value,
                 timestamp=ts,
-                status=0,
-                severity=0,
                 connected=True,
                 read_access=read_access,
                 write_access=write_access,
+                **self._alarm_update_fields(status, severity),
             )
             callbacks = list(self._callbacks.get(pv_name, []))
 
@@ -322,6 +346,7 @@ class PVMonitorManager:
             callbacks = list(self._callbacks.get(pv_name, []))
             latest = self._latest_values.get(pv_name)
             read_access, write_access = self._extract_access_bits(pv_name)
+            status, severity = self._extract_alarm(pv_name)
 
         if connected:
             logger.info("pv_reconnected", pv_name=pv_name)
@@ -330,15 +355,16 @@ class PVMonitorManager:
 
         # Broadcast the connection state change so subscribers see it without
         # waiting for the next value update (or forever, if there isn't one).
+        # The `connected` field is the authoritative disconnect signal; alarm
+        # fields carry the last-known CA alarm state.
         update = PVUpdate(
             pv=pv_name,
             value=latest.value if latest else None,
             timestamp=datetime.now(),
-            status=0,
-            severity=0,
             connected=connected,
             read_access=read_access,
             write_access=write_access,
+            **self._alarm_update_fields(status, severity),
         )
         for sub in callbacks:
             self._dispatch_subscriber(pv_name, sub, update, source="meta")
@@ -368,6 +394,34 @@ class PVMonitorManager:
         except Exception as e:  # noqa: BLE001
             logger.debug("access_bits_extraction_error", pv_name=pv_name, error=str(e))
             return False, False
+
+    def _extract_alarm(self, pv_name: str) -> tuple[int, int]:
+        """Read (status, severity) alarm ints from a subscribed signal's CA PV.
+
+        Caller must hold ``self._lock``. pyepics updates the underlying PV's
+        cached ``status``/``severity`` before invoking monitor callbacks, so
+        this is a non-blocking read of the latest CA alarm state (mirrors
+        ``_extract_access_bits``). Returns ``(0, 0)`` (== NO_ALARM) when the
+        signal is missing or extraction fails, rather than guessing an alarm.
+        Pre-fix, both handlers hardcoded ``status=0, severity=0``, so the UI
+        could never see MINOR/MAJOR/INVALID alarms.
+        """
+        signal = self._signals.get(pv_name)
+        if signal is None:
+            return 0, 0
+        try:
+            pv = getattr(signal, "_read_pv", None)
+            if pv is None:
+                return 0, 0
+            status = getattr(pv, "status", 0)
+            severity = getattr(pv, "severity", 0)
+            return (
+                int(status) if status is not None else 0,
+                int(severity) if severity is not None else 0,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("alarm_extraction_error", pv_name=pv_name, error=str(e))
+            return 0, 0
 
     def _convert_value(self, value):
         # No int-array→ASCII heuristic. Pre-M11 we rendered any uint/int
@@ -409,6 +463,10 @@ class PVMonitorManager:
         # Defaulting write_access=True would let a UI render writable controls for a
         # PV we never confirmed write access on.
         read_access = write_access = False
+        # Default to NO_ALARM until EPICS confirms otherwise, so the initial
+        # snapshot carries the real alarm state (not a hardcoded 0/0 that would
+        # mask an already-alarming PV until the next monitor callback).
+        status = severity = 0
 
         try:
             pv = getattr(signal, "_read_pv", None)
@@ -422,6 +480,10 @@ class PVMonitorManager:
                 upper_disp_limit = getattr(pv, "upper_disp_limit", None)
                 read_access = getattr(pv, "read_access", False)
                 write_access = getattr(pv, "write_access", False)
+                pv_status = getattr(pv, "status", 0)
+                pv_severity = getattr(pv, "severity", 0)
+                status = int(pv_status) if pv_status is not None else 0
+                severity = int(pv_severity) if pv_severity is not None else 0
                 if enum_strs and isinstance(enum_strs, tuple):
                     enum_strs = list(enum_strs)
         except Exception as e:
@@ -431,8 +493,8 @@ class PVMonitorManager:
             pv_name=pv_name,
             value=value,
             timestamp=timestamp,
-            status=0,
-            severity=0,
+            status=status,
+            severity=severity,
             connected=signal.connected,
             shape=shape,
             dtype=dtype,

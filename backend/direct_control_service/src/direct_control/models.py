@@ -72,6 +72,34 @@ ALARM_SEVERITY_NAMES = {
     3: "INVALID",
 }
 
+# EPICS alarm status codes (menuAlarmStat) → name. Stable across EPICS Base
+# versions; used to render PVUpdate.alarm_status from the integer STAT the CA
+# monitor carries.
+ALARM_STATUS_NAMES = {
+    0: "NO_ALARM",
+    1: "READ",
+    2: "WRITE",
+    3: "HIHI",
+    4: "HIGH",
+    5: "LOLO",
+    6: "LOW",
+    7: "STATE",
+    8: "COS",
+    9: "COMM",
+    10: "TIMEOUT",
+    11: "HWLIMIT",
+    12: "CALC",
+    13: "SCAN",
+    14: "LINK",
+    15: "SOFT",
+    16: "BAD_SUB",
+    17: "UDF",
+    18: "DISABLE",
+    19: "SIMM",
+    20: "READ_ACCESS",
+    21: "WRITE_ACCESS",
+}
+
 
 # ===== Device Control Request/Response =====
 
@@ -443,6 +471,12 @@ class PVUpdate(BaseModel):
             timestamp=pv_value.timestamp,
             status=pv_value.status,
             severity=pv_value.severity,
+            # Derive the friendly alarm fields from the raw ints so the
+            # initial-subscribe snapshot carries the same alarm info the
+            # streaming updates do (not just status/severity integers).
+            alarm_severity=pv_value.severity,
+            alarm_severity_name=ALARM_SEVERITY_NAMES.get(pv_value.severity),
+            alarm_status=ALARM_STATUS_NAMES.get(pv_value.status),
             connected=pv_value.connected,
             units=pv_value.units,
             precision=pv_value.precision,
@@ -726,6 +760,14 @@ class DeviceLockedError(ControlError):
 
 class DeviceDisabledError(ControlError):
     """Raised when device is administratively disabled in configuration_service."""
+
+
+class DeviceUnavailableError(ControlError):
+    """Raised when a device's coordination status is neither AVAILABLE,
+    LOCKED, nor DISABLED — e.g. UNKNOWN, where configuration_service returned
+    a state we don't model. The command is refused (maps to HTTP 409), but
+    this is an orchestration/coordination policy outcome, NOT a PV-health or
+    EPICS execution failure, so it must never be reported as PV health."""
 
 
 class CoordinationCheckError(ControlError):

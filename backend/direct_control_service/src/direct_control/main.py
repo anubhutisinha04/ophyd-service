@@ -36,6 +36,7 @@ from .models import (
     DeviceDisabledError,
     DeviceLockedError,
     DeviceNotInstantiableError,
+    DeviceUnavailableError,
     EnrichmentRequest,
     EnrichmentResponse,
     EnrichmentResultItem,
@@ -662,7 +663,7 @@ async def _map_registry_errors_to_http():
 
 
 def _raise_http_for_device_unavailable(
-    exc: "DeviceDisabledError | DeviceLockedError",
+    exc: "DeviceDisabledError | DeviceLockedError | DeviceUnavailableError",
     event_prefix: str,
     **log_fields: Any,
 ) -> None:
@@ -670,13 +671,19 @@ def _raise_http_for_device_unavailable(
 
     Disabled and locked are distinct enough that the frontend should branch
     on the status code (re-enable in config-service vs wait/retry), so they
-    map to different codes (409 / 423).
+    map to different codes (409 / 423). An unmodeled/UNKNOWN coordination
+    status (DeviceUnavailableError) is also a refusal-to-command, not a
+    service outage, so it maps to 409 too — and, like the others, it is NOT a
+    PV-health event.
     """
     if isinstance(exc, DeviceDisabledError):
         logger.warning(f"{event_prefix}_disabled", error=str(exc), **log_fields)
         raise HTTPException(status_code=409, detail=str(exc))
-    logger.warning(f"{event_prefix}_locked", error=str(exc), **log_fields)
-    raise HTTPException(status_code=423, detail=str(exc))
+    if isinstance(exc, DeviceLockedError):
+        logger.warning(f"{event_prefix}_locked", error=str(exc), **log_fields)
+        raise HTTPException(status_code=423, detail=str(exc))
+    logger.warning(f"{event_prefix}_unavailable", error=str(exc), **log_fields)
+    raise HTTPException(status_code=409, detail=str(exc))
 
 
 def _raise_http_for_coordination_failure(
@@ -838,8 +845,9 @@ async def set_pv(
 
     try:
         resp = await device_controller.set_pv(request)
-    except (DeviceDisabledError, DeviceLockedError) as e:
-        # Gate refusal — not a PV-health event.
+    except (DeviceDisabledError, DeviceLockedError, DeviceUnavailableError) as e:
+        # Gate refusal (disabled / locked / unmodeled-UNKNOWN status) — an
+        # orchestration-policy outcome, NOT a PV-health event.
         _raise_http_for_device_unavailable(e, "pv", pv_name=request.pv_name)
     except CoordinationCheckError as e:
         # Coordination unavailability — not a PV-health event.
@@ -960,6 +968,16 @@ async def set_pv_batch(
             results.append(_batch_failure_result(item.pv_name, e, 423, coordination_checked=True))
             logger.warning(
                 "pv_set_batch_device_locked",
+                pv_name=item.pv_name,
+                applied_before_halt=applied,
+            )
+            break
+        except DeviceUnavailableError as e:
+            # Unmodeled/UNKNOWN coordination status — a gate refusal, not a
+            # PV-health event, so don't report PV health (matches /pv/set).
+            results.append(_batch_failure_result(item.pv_name, e, 409, coordination_checked=True))
+            logger.warning(
+                "pv_set_batch_device_unavailable",
                 pv_name=item.pv_name,
                 applied_before_halt=applied,
             )
@@ -1310,7 +1328,7 @@ async def execute_device_method(
 
     try:
         return await device_controller.execute_device_method(request)
-    except (DeviceDisabledError, DeviceLockedError) as e:
+    except (DeviceDisabledError, DeviceLockedError, DeviceUnavailableError) as e:
         _raise_http_for_device_unavailable(e, "device", device_name=request.device_name)
     except CoordinationCheckError as e:
         _raise_http_for_coordination_failure(e, device_name=request.device_name)
@@ -1347,7 +1365,7 @@ async def stop_device(
         return await device_controller.execute_device_method(
             DeviceCommandRequest(device_name=device_name, method="stop", args=[], kwargs={})
         )
-    except (DeviceDisabledError, DeviceLockedError) as e:
+    except (DeviceDisabledError, DeviceLockedError, DeviceUnavailableError) as e:
         _raise_http_for_device_unavailable(e, "device_stop", device_name=device_name)
     except CoordinationCheckError as e:
         _raise_http_for_coordination_failure(e, device_name=device_name)
@@ -1400,7 +1418,7 @@ async def access_nested_device(
             timestamp=datetime.now(),
             message=None,
         )
-    except (DeviceDisabledError, DeviceLockedError) as e:
+    except (DeviceDisabledError, DeviceLockedError, DeviceUnavailableError) as e:
         _raise_http_for_device_unavailable(e, "nested_device", device_path=device_path)
     except CoordinationCheckError as e:
         _raise_http_for_coordination_failure(e, device_path=device_path)
