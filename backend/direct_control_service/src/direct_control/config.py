@@ -116,11 +116,13 @@ class Settings(BaseSettings):
     # (HTTP 422). Skipped for records with no limits declared (or the EPICS
     # "unlimited" convention of both bounds equal to 0), non-numeric values,
     # and any write that opts out via ``PVSetRequest.check_limits=False``.
-    # Costs one extra CA metadata round-trip per write on the first call to
-    # a given PV; pyepics caches the PV object so subsequent writes reuse the
-    # channel. Turn off for setups where the IOC advertises misleading LOPR/
-    # HOPR (miscalibrated records, or DAQ PVs where the operator is
-    # authoritative rather than the record).
+    # Costs one CA metadata round-trip per write (``get_ctrlvars`` is
+    # re-issued on every set_pv, not cached — LOPR/HOPR can change on the
+    # IOC, and caching them would let the gate go stale). pyepics does
+    # cache the PV object itself so the CA channel is reused across writes,
+    # only the DBR_CTRL_* fetch is repeated. Turn off for setups where the
+    # IOC advertises misleading LOPR/HOPR (miscalibrated records, or DAQ
+    # PVs where the operator is authoritative rather than the record).
     check_ctrl_limits: bool = True
     # How long ``set_pv`` waits for the ctrl-limit metadata to arrive from the
     # IOC before proceeding with the write (fail-open on timeout so a slow

@@ -157,6 +157,16 @@ async def test_list_value_skips(monkeypatch):
     read.assert_not_called()
 
 
+async def test_complex_value_skips(monkeypatch):
+    """Complex numbers don't compare cleanly against float limits; they fail
+    the ``isinstance(value, (int, float))`` guard and bypass the check."""
+    read = AsyncMock(return_value=(0.0, 10.0))
+    dc = _controller()
+    monkeypatch.setattr(dc, "_read_ctrl_limits", read)
+    await _validate(dc, 1 + 2j)
+    read.assert_not_called()
+
+
 async def test_bool_value_is_checked(monkeypatch):
     """Booleans are meaningful for bo records (limits 0..1); do check them."""
     read = AsyncMock(return_value=(0, 1))

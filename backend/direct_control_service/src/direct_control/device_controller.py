@@ -362,11 +362,11 @@ class DeviceController:
             return
 
         # bool is a subclass of int; a boolean write to a bo record (limits
-        # 0..1) is meaningful, so keep bools in the check.
+        # 0..1) is meaningful, so keep bools in the check. Non-numeric types
+        # (strings, arrays, None, complex) fail this isinstance guard and
+        # bypass the check — complex is caught here because ``isinstance(c,
+        # (int, float))`` is False for complex numbers.
         if not isinstance(value, (int, float)):
-            return
-        # Complex numbers etc. don't compare cleanly against float limits.
-        if isinstance(value, complex):
             return
 
         try:
