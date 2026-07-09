@@ -70,6 +70,8 @@ from ._envelopes import (  # noqa: E402  (defined below dataclasses to avoid a c
     send_error,
     send_event,
     send_payload_or_size_error,
+    send_text_or_size_error,
+    serialize_json_frame,
 )
 from .websocket_manager import SUB_TYPE_META  # noqa: E402  (see import note above)
 
@@ -500,8 +502,31 @@ class DeviceWebSocketManager:
     async def _broadcast_device_update(self, device_name: str, update: DeviceUpdate):
         async with self._lock:
             client_ids = self._device_clients.get(device_name, set()).copy()
+        if not client_ids:
+            return
+        # Serialize once, fan out the resulting text to every subscribed
+        # client. Pre-C4 this ran ``model_dump`` + ``json.dumps`` per client;
+        # a chatty device with many subscribers ran that N times per update.
+        text = serialize_json_frame(update.model_dump(mode="json", exclude_none=True))
         for client_id in client_ids:
-            await self._send_to_client(client_id, update)
+            await self._send_text_to_client(client_id, text, update.device, update.signal)
+
+    async def _send_text_to_client(
+        self, client_id: str, text: str, device: str, signal: str
+    ) -> None:
+        """Fan-out text send: caller has serialized the frame once."""
+        async with self._lock:
+            websocket = self._connections.get(client_id)
+        if not websocket:
+            return
+        await send_text_or_size_error(
+            websocket,
+            text,
+            log_event="device_websocket_send",
+            log_fields={"client_id": client_id, "device": device, "signal": signal},
+            oversize_message="payload exceeds size limit; update dropped",
+            error_envelope_fields={"device": device, "signal": signal},
+        )
 
     async def _send_to_client(
         self,
@@ -509,6 +534,9 @@ class DeviceWebSocketManager:
         update: DeviceUpdate,
         websocket: LockedWS | None = None,
     ):
+        """One-shot per-client send (subscribe-time initial values).
+
+        Broadcast uses ``_send_text_to_client`` with a pre-serialized frame."""
         if websocket is None:
             async with self._lock:
                 websocket = self._connections.get(client_id)

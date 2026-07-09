@@ -152,7 +152,20 @@ class Settings(BaseSettings):
 
     # PV buffering
     pv_buffer_size: int = 100
-    pv_update_rate_limit: float = 0.1
+
+    # TTL eviction for callback-less PV monitors created by the REST
+    # ``GET /api/v1/pvs/{pv_name}/value`` endpoint. That call subscribes a
+    # PV to warm the monitor cache, returns the value, and never calls
+    # unsubscribe — the CA connection would otherwise live until process
+    # shutdown. A background sweep every ``pv_monitor_sweep_interval``
+    # seconds tears down any PV that has zero WS callbacks AND has not been
+    # subscribed / read (touched) within ``pv_monitor_idle_ttl``. WS
+    # subscribers keep their PVs alive regardless of idle time (any
+    # ``_callbacks`` entry pins the monitor). Set the interval to 0 to
+    # disable the sweep entirely (useful in tests where deterministic
+    # eviction is preferred).
+    pv_monitor_idle_ttl: float = 300.0
+    pv_monitor_sweep_interval: float = 60.0
 
     # Maximum response bytesize for PV value endpoints (covers binary + JSON).
     # Oversized arrays return 400 with a "slice or raise the limit" message.
