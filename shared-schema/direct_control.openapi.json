@@ -1146,6 +1146,18 @@
             ],
             "title": "Ftype",
             "description": "Force non-native DBR type (power-user knob; leave null for native)"
+          },
+          "check_limits": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Limits",
+            "description": "Per-request override for the ctrl-limit gate. None (default) uses Settings.check_ctrl_limits. Explicitly False bypasses the check even when the global setting is on \u2014 the escape hatch for values known to be safe but outside the IOC-advertised range (e.g. an operator override, or writing a raw byte to a record whose LOPR/HOPR are miscalibrated). True forces the check on."
           }
         },
         "additionalProperties": false,

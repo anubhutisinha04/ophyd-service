@@ -22,6 +22,13 @@ class DirectControlTestIOC(PVGroup):
     """Small IOC with the PV shapes the test suite exercises."""
 
     m1 = pvproperty(value=0.0, dtype=float, doc="Scalar float setpoint")
+    m1_lim = pvproperty(
+        value=0.0,
+        dtype=float,
+        lower_ctrl_limit=0.0,
+        upper_ctrl_limit=10.0,
+        doc="Scalar float setpoint with explicit ctrl limits [0, 10]",
+    )
     counter = pvproperty(value=0, dtype=int, doc="Scalar int counter")
     wf1 = pvproperty(
         value=[float(i) for i in range(20)],
@@ -55,6 +62,10 @@ class DirectControlTestIOC(PVGroup):
 
     @m1.putter
     async def m1(self, instance, value):
+        return value
+
+    @m1_lim.putter
+    async def m1_lim(self, instance, value):
         return value
 
     @counter.putter

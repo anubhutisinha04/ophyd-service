@@ -51,6 +51,7 @@ from .models import (
     PVSetBatchResponse,
     PVSetRequest,
     PVSetResponse,
+    ValueLimitError,
 )
 from .ophyd_cache import OphydDeviceCache
 from .protocols import CoordinationService, DeviceControl, PVMonitor, RegistryProvider
@@ -853,6 +854,17 @@ async def set_pv(
     except CoordinationCheckError as e:
         # Coordination unavailability — not a PV-health event.
         _raise_http_for_coordination_failure(e, pv_name=request.pv_name)
+    except ValueLimitError as e:
+        # Ctrl-limit rejection — the value never left this service, so it
+        # is neither an IOC health event nor a coordination event. Surface
+        # as 422 (well-formed request, safety gate refused it).
+        logger.info(
+            "set_pv_rejected_by_ctrl_limits",
+            pv_name=request.pv_name,
+            value=request.value,
+            error=str(e),
+        )
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
         # An unexpected error after we got past the gates almost always
         # means a pyepics CA failure (timeout, put-rejected, etc.) —
@@ -988,6 +1000,18 @@ async def set_pv_batch(
             logger.error(
                 "pv_set_batch_coordination_failed",
                 pv_name=item.pv_name,
+                applied_before_halt=applied,
+                error=str(e),
+            )
+            break
+        except ValueLimitError as e:
+            # Ctrl-limit rejection: same policy as the single /pv/set path —
+            # 422, no PV-health report (the value never left this service).
+            results.append(_batch_failure_result(item.pv_name, e, 422, coordination_checked=True))
+            logger.info(
+                "pv_set_batch_rejected_by_ctrl_limits",
+                pv_name=item.pv_name,
+                value=item.value,
                 applied_before_halt=applied,
                 error=str(e),
             )

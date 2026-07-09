@@ -145,6 +145,17 @@ class PVSetRequest(BaseModel):
     ftype: int | None = Field(
         None, description="Force non-native DBR type (power-user knob; leave null for native)"
     )
+    check_limits: bool | None = Field(
+        None,
+        description=(
+            "Per-request override for the ctrl-limit gate. None (default) uses "
+            "Settings.check_ctrl_limits. Explicitly False bypasses the check "
+            "even when the global setting is on — the escape hatch for values "
+            "known to be safe but outside the IOC-advertised range (e.g. an "
+            "operator override, or writing a raw byte to a record whose LOPR/"
+            "HOPR are miscalibrated). True forces the check on."
+        ),
+    )
 
 
 class PVSetResponse(BaseModel):
@@ -791,7 +802,20 @@ class ComponentNotFoundError(ControlError):
 
 
 class ValueLimitError(ControlError):
-    """Raised when value is outside PV limits."""
+    """Raised when a numeric PV write would land outside the IOC-advertised
+    control limits (``lower_ctrl_limit`` / ``upper_ctrl_limit``).
+
+    The write is refused *before* it reaches EPICS — the value never lands
+    on the IOC. Maps to HTTP 422 (well-formed request, rejected by the
+    ctrl-limit safety gate) and is NOT reported as a PV-health failure
+    (limit-guard rejections reflect operator input, not IOC health).
+
+    Skipped when the target PV has no advertised limits (records without
+    LOPR/HOPR, or ``lower_ctrl_limit == upper_ctrl_limit == 0`` which is
+    EPICS's "no limits enforced" convention), for non-numeric values, and
+    when the caller opts out via ``PVSetRequest.check_limits=False`` or the
+    ``check_ctrl_limits=False`` service setting.
+    """
 
 
 class MonitoringError(Exception):

@@ -30,6 +30,7 @@ from .models import (
     PVNotFoundError,
     PVSetRequest,
     PVSetResponse,
+    ValueLimitError,
 )
 
 if TYPE_CHECKING:
@@ -199,6 +200,13 @@ class DeviceController:
         timeout = request.timeout or self.settings.command_timeout
         connection_timeout = request.connection_timeout or 5.0
 
+        await self._validate_ctrl_limits(
+            pv_name=pv_name,
+            value=request.value,
+            check_limits=request.check_limits,
+            connection_timeout=connection_timeout,
+        )
+
         success = await self._execute_put(
             pv_name=pv_name,
             value=request.value,
@@ -320,6 +328,103 @@ class DeviceController:
         """Connect to a PV off-loop; returns the pyepics PV or None on failure."""
         pv = await asyncio.to_thread(get_pv, pv_name, timeout=connection_timeout, connect=True)
         return pv if pv.connected else None
+
+    async def _validate_ctrl_limits(
+        self,
+        *,
+        pv_name: str,
+        value: Any,
+        check_limits: bool | None,
+        connection_timeout: float,
+    ) -> None:
+        """Refuse a numeric write that would land outside the IOC-advertised
+        control limits.
+
+        Fail-open policy: if the check itself can't complete (metadata GET
+        times out, ctrl-limit fields are missing/None, or the PV can't be
+        connected here — the follow-up ``_execute_put`` will fail loudly on
+        that same connection) the write proceeds. The rationale is that a
+        write-time metadata failure should not be a stricter gate than the
+        actual write; the caller sees the real failure at put time.
+
+        Skipped when:
+        - ``check_limits=False`` on the request, OR the ``check_ctrl_limits``
+          setting is off (both are honored — the per-request flag wins).
+        - The value is non-numeric (strings, enums-as-strings, arrays, None).
+          Enum writes as an integer index ARE checked (bo/mbbo records
+          declare 0..N-1 as ctrl limits).
+        - Both limits are None (the record type has no LOPR/HOPR concept).
+        - ``lower_ctrl_limit == upper_ctrl_limit == 0`` (EPICS convention for
+          "no limits enforced" — every unlimited record advertises this).
+        """
+        effective = self.settings.check_ctrl_limits if check_limits is None else check_limits
+        if not effective:
+            return
+
+        # bool is a subclass of int; a boolean write to a bo record (limits
+        # 0..1) is meaningful, so keep bools in the check. Non-numeric types
+        # (strings, arrays, None, complex) fail this isinstance guard and
+        # bypass the check — complex is caught here because ``isinstance(c,
+        # (int, float))`` is False for complex numbers.
+        if not isinstance(value, (int, float)):
+            return
+
+        try:
+            lower, upper = await self._read_ctrl_limits(pv_name, connection_timeout)
+        except Exception as exc:  # noqa: BLE001
+            # Defense in depth: _read_ctrl_limits already catches its own
+            # exceptions and returns (None, None). This guard makes the
+            # fail-open guarantee independent of that implementation detail
+            # — the gate never blocks a write when it can't complete.
+            logger.warning("ctrl_limit_check_failed", pv_name=pv_name, error=str(exc))
+            return
+        if lower is None and upper is None:
+            return
+        if lower == 0 and upper == 0:
+            return
+
+        # A one-sided limit (only lower OR only upper) is honored on the side
+        # that exists; the missing side is treated as unbounded.
+        if lower is not None and value < lower:
+            raise ValueLimitError(
+                f"PV {pv_name!r}: value {value} is below lower_ctrl_limit {lower}"
+            )
+        if upper is not None and value > upper:
+            raise ValueLimitError(
+                f"PV {pv_name!r}: value {value} is above upper_ctrl_limit {upper}"
+            )
+
+    async def _read_ctrl_limits(
+        self, pv_name: str, connection_timeout: float
+    ) -> tuple[float | None, float | None]:
+        """Return ``(lower_ctrl_limit, upper_ctrl_limit)`` from the IOC.
+
+        Fail-open on any exception (returns ``(None, None)``) — the ctrl-limit
+        gate must never be a stricter blocker than the actual put. See
+        ``_validate_ctrl_limits`` for the wider policy.
+        """
+        try:
+            pv = await self._connect(pv_name, connection_timeout)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ctrl_limit_connect_failed", pv_name=pv_name, error=str(exc))
+            return None, None
+        if pv is None:
+            return None, None
+
+        # get_ctrlvars() issues a DBR_CTRL_* request and populates the
+        # limit attributes. It's a blocking pyepics call; run off-loop.
+        try:
+            await asyncio.to_thread(
+                pv.get_ctrlvars, timeout=self.settings.ctrl_limit_read_timeout, warn=False
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ctrl_limit_read_failed", pv_name=pv_name, error=str(exc))
+            return None, None
+
+        return (
+            getattr(pv, "lower_ctrl_limit", None),
+            getattr(pv, "upper_ctrl_limit", None),
+        )
 
     async def _execute_put(
         self,
