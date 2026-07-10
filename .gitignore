@@ -16,3 +16,6 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# pixi environments (never commit the built env)
+.pixi/

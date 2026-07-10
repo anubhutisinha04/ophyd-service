@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IOS queueserver (with simulated IOCs) — frontend quick start</title>
+<style>
+  :root { --get:#0a7d34; --post:#1361c7; --bg:#f6f8fa; --bd:#d0d7de; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  * { box-sizing:border-box; }
+  body { font:15px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:#1f2328; max-width:820px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  h2 { font-size:17px; margin:30px 0 8px; padding-top:14px; border-top:1px solid var(--bd); }
+  h3 { font-size:15px; margin:18px 0 6px; }
+  p.sub { color:#57606a; margin:0 0 18px; }
+  code { font-family:var(--mono); background:var(--bg); padding:1px 5px; border-radius:5px; font-size:13px; }
+  pre { background:var(--bg); border:1px solid var(--bd); border-radius:8px; padding:12px 14px; overflow:auto; font-family:var(--mono); font-size:13px; }
+  ul,ol { padding-left:20px; } li { margin:5px 0; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:8px 0; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--bd); vertical-align:top; }
+  th { color:#57606a; font-weight:600; }
+  .m { font-family:var(--mono); font-size:11px; font-weight:700; color:#fff; padding:2px 6px; border-radius:5px; display:inline-block; min-width:42px; text-align:center; }
+  .get { background:var(--get); } .post { background:var(--post); }
+  .path { font-family:var(--mono); font-size:12.5px; }
+  .note { background:#fff8c5; border:1px solid #d4a72c66; border-radius:8px; padding:8px 12px; font-size:13.5px; }
+  a { color:var(--post); }
+  .grp { font-weight:600; color:#57606a; padding-top:10px; }
+</style>
+</head>
+<body>
+
+<h1>IOS queueserver — frontend quick start</h1>
+<p class="sub">Run the real <b>bluesky-queueserver + bluesky-httpserver</b> against the NSLS-II <b>IOS profile collection</b>, backed by simulated EPICS IOCs, and drive it — including the beamline <b>E_ramp</b> fly scan — over HTTP.</p>
+
+<h2>1. Prerequisites</h2>
+<ul>
+  <li>Docker (runs redis, mongodb, kafka)</li>
+  <li>git, curl, openssl</li>
+  <li><a href="https://pixi.sh">pixi</a> — auto-installed to <code>~/.pixi</code> if missing</li>
+</ul>
+
+<h2>2. Run it</h2>
+<pre>git clone https://github.com/NSLS2/ophyd-service.git
+cd ophyd-service
+git checkout simple-queueserver-ios-iocs
+./integration/queueserver-repro/reproduce.sh up</pre>
+<p>First run is slow (clones the profile and solves its pixi environment — several minutes). When it finishes it prints <b>145 allowed plans / 100 allowed devices</b>, the <b>HTTP API URL</b>, and a generated <b>API key</b>, and leaves everything running.</p>
+<p>Handy commands: <code>reproduce.sh status</code>, <code>reproduce.sh logs</code>, <code>reproduce.sh down</code> (stop), <code>reproduce.sh nuke</code> (stop + delete work dir).</p>
+<div class="note">Unlike a fixed-key demo, the API key is generated per install and saved to <code>$HOME/qs-repro/config/secrets.env</code>. Read it with:
+<pre>KEY=$(sed -n 's/^HTTP_API_KEY=//p' "$HOME/qs-repro/config/secrets.env")</pre></div>
+
+<h2>3. Simulated devices</h2>
+<p>Six purpose-built IOCs give <i>realistic</i> behavior for the mono energy, current amplifiers, EPU, vortex MCA, scaler, and feedback loop; a catch-all "blackhole" IOC answers every other PV so the whole profile connects. That means plans that read the scaler (<code>sclr</code>) or ramp the mono energy (<code>pgm</code>/<code>pgm_energy</code>) produce moving, non-trivial values.</p>
+
+<h2>4. Connect from React</h2>
+<p>Two values are all the UI needs — put them in <code>.env</code> (use the generated key from step 2):</p>
+<pre>VITE_QSERVER_URL=http://localhost:60610
+VITE_QSERVER_API_KEY=&lt;paste HTTP_API_KEY from secrets.env&gt;</pre>
+<div class="note"><b>Dev vs. production URL.</b> This dev stack exposes the httpserver <b>directly</b> on the host at <code>http://localhost:60610</code> (no TLS, no proxy). In a real NSLS-II deployment the httpserver binds <code>localhost:60610</code> and is <b>not</b> reachable off-box; an <b>nginx reverse proxy terminates TLS on 443</b> and forwards to it (port 80 redirects to 443). The only thing the frontend changes between environments is the base URL:
+<table style="margin-top:6px">
+  <tr><th></th><th>Base URL the UI uses</th><th>What serves it</th></tr>
+  <tr><td><b>dev</b> (this stack)</td><td class="path">http://localhost:60610</td><td>httpserver, exposed directly on the host port</td></tr>
+  <tr><td><b>production</b></td><td class="path">https://&lt;qs-host&gt;/</td><td>nginx :443 (TLS) &rarr; proxy_pass &rarr; localhost:60610 httpserver</td></tr>
+</table>
+The API paths, the <code>Authorization: ApiKey …</code> header, and the request/response bodies are <b>identical</b> in both — nginx only adds TLS and the standard <code>Upgrade</code>/<code>Connection</code> headers so the live console stream keeps working. Set <code>VITE_QSERVER_URL</code> to <code>https://&lt;qs-host&gt;/</code> for production; everything else in this guide is unchanged.</div>
+<pre>const QS = import.meta.env.VITE_QSERVER_URL;
+const KEY = import.meta.env.VITE_QSERVER_API_KEY;
+const headers = { Authorization: `ApiKey ${KEY}`, "Content-Type": "application/json" };
+
+// 1. open the environment (loads the IOS profile) — do this once
+await fetch(`${QS}/api/environment/open`, { method: "POST", headers });
+
+// 2. poll until the worker is ready
+async function waitReady() {
+  for (;;) {
+    const s = await fetch(`${QS}/api/status`, { headers }).then(r => r.json());
+    if (s.worker_environment_exists) return;
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+await waitReady();</pre>
+<div class="note"><b>Auth:</b> <code>/api/ping</code> and <code>/api/status</code> work without a key; everything else needs it. Simplest: send it on all requests.</div>
+
+<h2>5. Ready-to-run examples</h2>
+<p>Each plan can be queued (<code>queue/item/add</code> then <code>queue/start</code>) or run immediately (<code>queue/item/execute</code>). The examples below use immediate execute. Poll <code>/api/status</code> until <code>manager_state</code> is <code>idle</code>, then read <code>/api/history/get</code>.</p>
+
+<h3>a. Count the scaler (quick sanity check)</h3>
+<pre># curl — reads the (realistic) scaler 3 times
+curl -s -X POST "$QS/api/queue/item/execute" \
+  -H "Authorization: ApiKey $KEY" -H "Content-Type: application/json" \
+  -d '{"item":{"name":"count","args":[["sclr"]],"kwargs":{"num":3,"delay":0.2},"item_type":"plan"}}'</pre>
+
+<h3>b. E_ramp — the mono-energy fly scan</h3>
+<p>Signature: <code>E_ramp(dets, start_eV, stop_eV, velocity_eV_per_s)</code>. It sets the mono fly start/stop/velocity, starts the fly, and reads <code>dets</code> repeatedly while the energy ramps, finishing when the fly reports <code>Ready</code>.</p>
+<pre># curl — ramp 850 → 852 eV at 0.5 eV/s, reading the scaler (~4 s)
+curl -s -X POST "$QS/api/queue/item/execute" \
+  -H "Authorization: ApiKey $KEY" -H "Content-Type: application/json" \
+  -d '{"item":{"name":"E_ramp","args":[["sclr"],850,852,0.5],"item_type":"plan"}}'
+
+# a longer, slower ramp: 850 → 860 eV at 1.0 eV/s (~10 s)
+curl -s -X POST "$QS/api/queue/item/execute" \
+  -H "Authorization: ApiKey $KEY" -H "Content-Type: application/json" \
+  -d '{"item":{"name":"E_ramp","args":[["sclr"],850,860,1.0],"item_type":"plan"}}'
+
+# ramp back down: 860 → 850 eV at 2.0 eV/s (~5 s)
+curl -s -X POST "$QS/api/queue/item/execute" \
+  -H "Authorization: ApiKey $KEY" -H "Content-Type: application/json" \
+  -d '{"item":{"name":"E_ramp","args":[["sclr"],860,850,2.0],"item_type":"plan"}}'</pre>
+<pre>// JS fetch — queue E_ramp and start it
+async function runERamp(dets, startEV, stopEV, velocity) {
+  await fetch(`${QS}/api/queue/item/add`, { method: "POST", headers,
+    body: JSON.stringify({ item: {
+      name: "E_ramp",
+      args: [dets, startEV, stopEV, velocity],
+      item_type: "plan",
+    }})});
+  await fetch(`${QS}/api/queue/start`, { method: "POST", headers });
+}
+await runERamp(["sclr"], 850, 852, 0.5);</pre>
+<div class="note"><b>Args:</b> <code>dets</code> is a list of device names (any from <code>/api/devices/allowed</code>; <code>sclr</code> is a good default). <code>start_eV</code>/<code>stop_eV</code> are mono energies (valid range ~200–2200 eV), and <code>velocity</code> is the ramp rate in eV/s — the ramp takes roughly <code>|stop − start| / velocity</code> seconds.</div>
+
+<h3>c. Watch it happen</h3>
+<pre># poll status until idle
+curl -s "$QS/api/status" -H "Authorization: ApiKey $KEY"
+# then inspect the completed run
+curl -s "$QS/api/history/get" -H "Authorization: ApiKey $KEY"</pre>
+
+<h2>6. API reference</h2>
+<p>Full interactive docs: <a href="http://localhost:60610/docs">http://localhost:60610/docs</a> &nbsp;·&nbsp; machine spec: <a href="http://localhost:60610/openapi.json">/openapi.json</a>. The endpoints a UI usually needs:</p>
+<table>
+  <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+  <tr><td colspan="3" class="grp">Status &amp; monitoring</td></tr>
+  <tr><td><span class="m get">GET</span></td><td class="path">/api/status</td><td>Manager + worker + queue state (poll this)</td></tr>
+  <tr><td><span class="m get">GET</span></td><td class="path">/api/ping</td><td>Liveness check</td></tr>
+  <tr><td><span class="m get">GET</span></td><td class="path">/api/console_output</td><td>Recent RE Manager console text</td></tr>
+  <tr><td><span class="m get">GET</span></td><td class="path">/api/stream_console_output</td><td>Live console stream (text/event-stream)</td></tr>
+
+  <tr><td colspan="3" class="grp">Environment (RE worker)</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/environment/open</td><td>Import the IOS profile (do this first)</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/environment/close</td><td>Shut the worker down</td></tr>
+
+  <tr><td colspan="3" class="grp">Plans &amp; devices (build UI menus from these)</td></tr>
+  <tr><td><span class="m get">GET</span></td><td class="path">/api/plans/allowed</td><td>Available plans + parameter signatures (incl. E_ramp)</td></tr>
+  <tr><td><span class="m get">GET</span></td><td class="path">/api/devices/allowed</td><td>Available devices (incl. sclr, pgm, vortex)</td></tr>
+
+  <tr><td colspan="3" class="grp">Queue</td></tr>
+  <tr><td><span class="m get">GET</span></td><td class="path">/api/queue/get</td><td>Current queue + running item</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/queue/item/add</td><td>Add a plan</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/queue/item/execute</td><td>Run a plan immediately (bypass the queue)</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/queue/clear</td><td>Empty the queue</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/queue/start</td><td>Run the queue</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/queue/stop</td><td>Stop after current item</td></tr>
+
+  <tr><td colspan="3" class="grp">Run control</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/re/pause</td><td>Pause the running plan</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/re/resume</td><td>Resume</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/re/stop</td><td>Stop cleanly</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/re/abort</td><td>Abort</td></tr>
+
+  <tr><td colspan="3" class="grp">History</td></tr>
+  <tr><td><span class="m get">GET</span></td><td class="path">/api/history/get</td><td>Completed items + results</td></tr>
+  <tr><td><span class="m post">POST</span></td><td class="path">/api/history/clear</td><td>Clear history</td></tr>
+</table>
+
+<p class="sub" style="margin-top:24px">Typical UI flow: <code>environment/open</code> → poll <code>status</code> until <code>worker_environment_exists</code> → load <code>plans/allowed</code> + <code>devices/allowed</code> to build forms → <code>queue/item/add</code> (or <code>execute</code>) → <code>queue/start</code> → poll <code>status</code> / stream <code>console_output</code> → read <code>history/get</code>.</p>
+
+</body>
+</html>
