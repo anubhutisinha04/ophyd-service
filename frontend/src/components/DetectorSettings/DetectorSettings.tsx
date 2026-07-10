@@ -75,9 +75,9 @@ export function DetectorSettings() {
   const cardBody = 'flex flex-col px-3 pt-2 pb-3'
 
   return (
-    <section className="detector-settings flex-[1100_1_0] max-w-[60rem] min-h-[32rem] flex flex-col bg-white border border-panel-border rounded-xl overflow-hidden shadow-[0_1px_3px_rgba(16,92,120,0.08)]">
+    <section className="detector-settings flex-[1.5_1_0] min-w-0 max-xl:w-full min-h-[32rem] flex flex-col bg-white border border-panel-border rounded-xl overflow-hidden shadow-[0_1px_3px_rgba(16,92,120,0.08)]">
       <div className="bg-brand-teal text-white text-center px-4 py-[0.7rem] text-base font-bold tracking-[0.02em]">Detector Settings</div>
-      <div className="grid grid-cols-[2fr_1fr] gap-3 flex-1 px-4 pt-3 pb-4">
+      <div className="grid grid-cols-[2fr_1fr] gap-3 flex-1 px-4 pt-3 pb-4 max-lg:grid-cols-1">
         {/* ── Scalar Settings ─────────────────────────────────── */}
         <div className={card}>
           <div className={cardHeader}>Scalar Settings</div>

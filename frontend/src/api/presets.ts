@@ -130,7 +130,7 @@ type TableSlug = 'scan-presets' | 'detector-presets'
 function useTableMutations<T extends { edge_index: string }>(table: TableSlug) {
   const queryClient = useQueryClient()
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ['presets', table] })
+    queryClient.invalidateQueries({ queryKey: ['presets'] })
 
   const create = useMutation({
     mutationFn: (entry: T) => writeJson<T>(`/${table}`, 'POST', entry),

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { CaretDown, CaretRight, Plus, Trash } from '@phosphor-icons/react'
-import './EditableTable.css'
 
 export interface ColumnDef {
   key: string
@@ -203,22 +202,22 @@ export function EditableTable<T extends { edge_index: string }>({
   }
 
   return (
-    <section className="editable-table">
-      <header className="editable-table__header">
+    <section className="flex flex-col w-full min-w-0 bg-white border border-panel-border rounded-xl shadow-[0_4px_14px_rgba(16,92,120,0.06)] overflow-hidden">
+      <header className="flex items-center justify-between gap-4 px-[1.1rem] py-[0.85rem] bg-brand-teal">
         <button
           type="button"
-          className="editable-table__collapse"
+          className="inline-flex items-center gap-2 p-0 bg-transparent border-none text-white cursor-pointer"
           onClick={() => setCollapsed((c) => !c)}
           aria-expanded={!collapsed}
           aria-label={collapsed ? `Expand ${title}` : `Collapse ${title}`}
         >
           {collapsed ? <CaretRight size={18} weight="bold" /> : <CaretDown size={18} weight="bold" />}
-          <h3 className="editable-table__title">{title}</h3>
+          <h3 className="m-0 text-white text-[1.05rem] font-semibold">{title}</h3>
         </button>
-        <div className="editable-table__actions">
+        <div className="flex gap-2">
           <button
             type="button"
-            className="editable-table__btn editable-table__btn--ghost"
+            className="inline-flex items-center gap-[0.35rem] px-3 py-[0.4rem] rounded-lg text-[0.85rem] font-semibold cursor-pointer border border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-white/[0.12] text-white border-white/40 hover:bg-white/[0.22]"
             onClick={addRow}
             disabled={saving}
           >
@@ -227,7 +226,7 @@ export function EditableTable<T extends { edge_index: string }>({
           </button>
           <button
             type="button"
-            className="editable-table__btn editable-table__btn--primary"
+            className="inline-flex items-center gap-[0.35rem] px-3 py-[0.4rem] rounded-lg text-[0.85rem] font-semibold cursor-pointer border border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-brand-cyan text-white hover:bg-[#0b94bd]"
             onClick={() => {
               setSuccessSummary('')
               setSuccessDetails([])
@@ -243,25 +242,25 @@ export function EditableTable<T extends { edge_index: string }>({
       {confirming && (() => {
         const { created, updated, deleted } = pendingChanges()
         return (
-          <div className="editable-table__confirm" role="dialog" aria-label="Confirm save">
-            <div className="editable-table__confirm-body">
-              <strong>Save changes to {title}?</strong>
-              <ul className="editable-table__confirm-list">
+          <div className="mt-3 mx-[1.1rem] bg-[#fffaeb] border border-[#fec84b] rounded-lg p-3 flex flex-wrap items-center justify-between gap-3" role="dialog" aria-label="Confirm save">
+            <div className="w-full">
+              <strong className="text-[#93370d] text-[0.9rem]">Save changes to {title}?</strong>
+              <ul className="mt-[0.35rem] pl-[1.1rem] text-[#7a4f0a] text-[0.85rem]">
                 {created.length > 0 && <li>{created.length} row(s) added</li>}
                 {deleted.length > 0 && <li>{deleted.length} row(s) deleted</li>}
               </ul>
               {updated.length > 0 && (
-                <div className="editable-table__diff">
+                <div className="mt-2 flex flex-col gap-[0.4rem] w-full">
                   {updated.map((row) => (
-                    <div key={row.localId} className="editable-table__diff-row">
-                      <span className="editable-table__diff-key">{row.localId}</span>
-                      <ul className="editable-table__diff-list">
+                    <div key={row.localId} className="bg-white/55 border border-black/[0.08] rounded-md px-[0.55rem] py-[0.35rem]">
+                      <span className="font-semibold text-[0.82rem] text-[#344054]">{row.localId}</span>
+                      <ul className="mt-[0.2rem] pl-4 text-[0.82rem] text-[#475467]">
                         {fieldChanges(row).map((c) => (
                           <li key={c.label}>
-                            <span className="editable-table__diff-field">{c.label}:</span>{' '}
-                            <span className="editable-table__diff-from">{c.from}</span>
-                            <span className="editable-table__diff-arrow"> → </span>
-                            <span className="editable-table__diff-to">{c.to}</span>
+                            <span className="font-semibold text-[#344054]">{c.label}:</span>{' '}
+                            <span className="text-[#b42318] line-through">{c.from}</span>
+                            <span className="text-[#667085]"> → </span>
+                            <span className="text-[#027a48] font-semibold">{c.to}</span>
                           </li>
                         ))}
                       </ul>
@@ -270,17 +269,17 @@ export function EditableTable<T extends { edge_index: string }>({
                 </div>
               )}
             </div>
-            <div className="editable-table__confirm-actions">
+            <div className="flex gap-2">
               <button
                 type="button"
-                className="editable-table__btn editable-table__btn--ghost"
+                className="inline-flex items-center gap-[0.35rem] px-3 py-[0.4rem] rounded-lg text-[0.85rem] font-semibold cursor-pointer border border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-black/[0.06] text-[#5c4708] border-black/20 hover:bg-black/[0.12]"
                 onClick={() => setConfirming(false)}
               >
                 Cancel
               </button>
               <button
                 type="button"
-                className="editable-table__btn editable-table__btn--primary"
+                className="inline-flex items-center gap-[0.35rem] px-3 py-[0.4rem] rounded-lg text-[0.85rem] font-semibold cursor-pointer border border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-brand-cyan text-white hover:bg-[#0b94bd]"
                 onClick={saveAll}
               >
                 Confirm Save
@@ -293,20 +292,20 @@ export function EditableTable<T extends { edge_index: string }>({
       {!collapsed && (
         <>
           {successSummary && (
-            <div className="editable-table__success">
+            <div className="mt-3 mx-[1.1rem] text-[#027a48] bg-[#ecfdf3] border border-[#6ce9a6] rounded-lg px-3 py-2 text-[0.85rem]">
               <div>{successSummary}</div>
               {successDetails.length > 0 && (
-                <div className="editable-table__diff">
+                <div className="mt-2 flex flex-col gap-[0.4rem] w-full">
                   {successDetails.map((u) => (
-                    <div key={u.key} className="editable-table__diff-row">
-                      <span className="editable-table__diff-key">{u.key}</span>
-                      <ul className="editable-table__diff-list">
+                    <div key={u.key} className="bg-white/55 border border-black/[0.08] rounded-md px-[0.55rem] py-[0.35rem]">
+                      <span className="font-semibold text-[0.82rem] text-[#344054]">{u.key}</span>
+                      <ul className="mt-[0.2rem] pl-4 text-[0.82rem] text-[#475467]">
                         {u.changes.map((c) => (
                           <li key={c.label}>
-                            <span className="editable-table__diff-field">{c.label}:</span>{' '}
-                            <span className="editable-table__diff-from">{c.from}</span>
-                            <span className="editable-table__diff-arrow"> → </span>
-                            <span className="editable-table__diff-to">{c.to}</span>
+                            <span className="font-semibold text-[#344054]">{c.label}:</span>{' '}
+                            <span className="text-[#b42318] line-through">{c.from}</span>
+                            <span className="text-[#667085]"> → </span>
+                            <span className="text-[#027a48] font-semibold">{c.to}</span>
                           </li>
                         ))}
                       </ul>
@@ -316,54 +315,54 @@ export function EditableTable<T extends { edge_index: string }>({
               )}
             </div>
           )}
-          {error && <div className="editable-table__error">{error}</div>}
+          {error && <div className="mt-3 mx-[1.1rem] text-[#b42318] bg-[#fef3f2] border border-[#fda29b] rounded-lg px-3 py-2 text-[0.85rem]">{error}</div>}
           {loadError && (
-            <div className="editable-table__error">
+            <div className="mt-3 mx-[1.1rem] text-[#b42318] bg-[#fef3f2] border border-[#fda29b] rounded-lg px-3 py-2 text-[0.85rem]">
               Failed to load data: {loadError.message}
             </div>
           )}
 
-          <div className="editable-table__scroll">
-        <table className="editable-table__table">
+          <div className="overflow-x-auto bg-white px-2 pt-2 pb-3">
+        <table className="w-full min-w-max border-collapse text-[0.85rem]">
           <thead>
             <tr>
               {columns.map((col) => (
                 <th
                   key={col.key}
-                  className={col.key === PK ? 'editable-table__sticky' : undefined}
+                  className={`text-left py-2 px-[0.6rem] text-brand-teal font-semibold whitespace-nowrap border-b-2 border-[#e3e8ec] ${col.key === PK ? 'sticky left-0 z-[2] bg-white shadow-[1px_0_0_#e3e8ec]' : ''}`}
                 >
                   {col.label}
                 </th>
               ))}
-              <th className="editable-table__th--actions" aria-label="Row actions" />
+              <th className="w-[2.5rem] text-left py-2 px-[0.6rem] text-brand-teal font-semibold whitespace-nowrap border-b-2 border-[#e3e8ec]" aria-label="Row actions" />
             </tr>
           </thead>
           <tbody>
             {isLoading && (
               <tr>
-                <td className="editable-table__empty" colSpan={columns.length + 1}>
+                <td className="py-5 text-center text-[#6b7785]" colSpan={columns.length + 1}>
                   Loading…
                 </td>
               </tr>
             )}
             {!isLoading && draft.length === 0 && (
               <tr>
-                <td className="editable-table__empty" colSpan={columns.length + 1}>
+                <td className="py-5 text-center text-[#6b7785]" colSpan={columns.length + 1}>
                   No rows. Use “Add Row” to create one.
                 </td>
               </tr>
             )}
             {draft.map((row) => (
-              <tr key={row.localId} className={isRowDirty(row) ? 'editable-table__row--dirty' : undefined}>
+              <tr key={row.localId} className={isRowDirty(row) ? '[&>td]:bg-brand-cyan/[0.06] [&>.sticky-cell]:bg-[#eaf7fb]' : ''}>
                 {columns.map((col) => {
                   const readOnly = col.key === PK && !row.isNew
                   return (
                     <td
                       key={col.key}
-                      className={col.key === PK ? 'editable-table__sticky' : undefined}
+                      className={`py-[0.3rem] px-[0.4rem] border-b border-[#eef2f4] ${col.key === PK ? 'sticky-cell sticky left-0 z-[1] bg-white shadow-[1px_0_0_#e3e8ec]' : ''}`}
                     >
                       <input
-                        className="editable-table__input"
+                        className="w-full min-w-[5.5rem] px-2 py-[0.35rem] bg-white border border-[#9fc8d8] rounded-md text-gray-800 text-[0.85rem] outline-none tabular-nums transition-all focus:border-brand-cyan focus:shadow-[0_0_0_2px_rgba(0,173,220,0.25)] read-only:bg-[#f1f5f7] read-only:text-[#6b7785] read-only:border-panel-border [&[type=number]]:[-moz-appearance:textfield] [&[type=number]::-webkit-outer-spin-button]:appearance-none [&[type=number]::-webkit-inner-spin-button]:appearance-none"
                         type={col.type === 'number' ? 'number' : 'text'}
                         value={row.values[col.key]}
                         readOnly={readOnly}
@@ -372,10 +371,10 @@ export function EditableTable<T extends { edge_index: string }>({
                     </td>
                   )
                 })}
-                <td className="editable-table__td--actions">
+                <td className="py-[0.3rem] px-[0.4rem] border-b border-[#eef2f4] text-center">
                   <button
                     type="button"
-                    className="editable-table__delete"
+                    className="inline-flex items-center justify-center p-[0.35rem] bg-transparent border-none rounded-md text-[#b42318] cursor-pointer transition-colors hover:bg-[#fef3f2] disabled:opacity-40 disabled:cursor-not-allowed"
                     onClick={() => deleteRow(row)}
                     disabled={saving}
                     aria-label="Delete row"

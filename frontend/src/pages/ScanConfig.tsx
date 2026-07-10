@@ -5,7 +5,6 @@ import { getEdgesForElement } from '../api/edgeMapping'
 import { ScanParameters } from '../components/ScanParameters'
 import { DetectorSettings } from '../components/DetectorSettings'
 import { ControlsPanel } from '../components/ControlsPanel'
-import './ScanConfig.css'
 
 interface ScanConfigProps {
   element: ElementData
@@ -18,14 +17,15 @@ export default function ScanConfig({ element, onBack }: ScanConfigProps) {
   const { data, isLoading, isError, error } = useFullPreset(selectedEdge)
 
   return (
-    <div className="scan-config">
-      <header className="scan-config__header">
-        <button className="scan-config__back" onClick={onBack}>
+    <div className="w-full min-h-screen bg-white">
+      <div className="flex flex-col gap-5 p-6 lg:p-5 w-full max-w-app mx-auto box-border">
+        <header className="flex flex-col gap-2">
+        <button className="self-start bg-transparent border-none text-brand-teal text-[0.875rem] cursor-pointer p-0 hover:text-brand-cyan" onClick={onBack}>
           ← Back to periodic table
         </button>
-        <h1 className="scan-config__title">
+        <h1 className="flex items-center gap-[0.625rem] text-[1.5rem] font-bold text-gray-800 m-0">
           <span
-            className="scan-config__element-badge"
+            className="inline-flex items-center justify-center w-10 h-10 rounded-md text-xl font-extrabold text-[#1a1a2e]"
             style={{ backgroundColor: `var(--ep-${element.category})` }}
           >
             {element.symbol}
@@ -35,17 +35,17 @@ export default function ScanConfig({ element, onBack }: ScanConfigProps) {
       </header>
 
       {edges.length === 0 && (
-        <div className="scan-config__empty">
+        <div className="text-[0.95rem] text-gray-600 bg-gray-100 border border-dashed border-gray-300 rounded-lg p-8 text-center">
           No presets configured for {element.name}. Contact beamline staff to add edge presets.
         </div>
       )}
 
       {edges.length > 1 && (
-        <div className="scan-config__edge-tabs">
+        <div className="flex gap-2">
           {edges.map((edge) => (
             <button
               key={edge}
-              className={`scan-config__edge-tab ${edge === selectedEdge ? 'scan-config__edge-tab--active' : ''}`}
+              className={`px-4 py-[0.375rem] border rounded-md text-[0.875rem] font-semibold cursor-pointer transition-all ${edge === selectedEdge ? 'bg-brand-teal border-brand-teal text-white' : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'}`}
               onClick={() => setSelectedEdge(edge)}
             >
               {edge}
@@ -55,17 +55,18 @@ export default function ScanConfig({ element, onBack }: ScanConfigProps) {
       )}
 
       {edges.length === 1 && (
-        <div className="scan-config__edge-label">Edge: {selectedEdge}</div>
+        <div className="text-[0.875rem] text-gray-700 font-semibold">Edge: {selectedEdge}</div>
       )}
 
-      {isLoading && <div className="scan-config__status">Loading presets…</div>}
+      {isLoading && <div className="text-[0.875rem] text-gray-600">Loading presets…</div>}
       {isError && (
-        <div className="scan-config__status scan-config__status--error">
+        <div className="text-[0.875rem] text-red-600">
           Failed to load presets: {(error as Error).message}
         </div>
       )}
 
-      {data && <PresetPanels data={data} />}
+        {data && <PresetPanels data={data} />}
+      </div>
     </div>
   )
 }
@@ -74,8 +75,8 @@ function PresetPanels({ data }: { data: EdgeFullPreset }) {
   const [scanData, setScanData] = useState<Omit<ScanPresetEntry, 'edge_index'> | null>(data.scan)
 
   return (
-    <div className="scan-config__layout">
-      <div className="scan-config__panels">
+    <div className="flex flex-col gap-6 lg:gap-[1.1rem] w-full bg-white">
+      <div className="flex gap-6 items-start lg:gap-4 max-xl:flex-col max-xl:w-full">
         {/* Scan Presets — interactive component */}
         {scanData ? (
           <ScanParameters
@@ -83,9 +84,9 @@ function PresetPanels({ data }: { data: EdgeFullPreset }) {
             onChange={(patch) => setScanData((prev) => prev ? { ...prev, ...patch } : prev)}
           />
         ) : (
-          <section className="scan-config__panel">
-            <h2 className="scan-config__panel-title">Scan Parameters</h2>
-            <p className="scan-config__no-data">Not configured</p>
+          <section className="flex-[1_1_0] min-w-0 max-xl:w-full bg-gray-100 border border-gray-300 rounded-lg p-4 px-5">
+            <h2 className="text-base font-bold text-gray-800 m-0 mb-3 pb-2 border-b border-gray-300">Scan Parameters</h2>
+            <p className="text-gray-600 text-[0.85rem] italic m-0">Not configured</p>
           </section>
         )}
 
@@ -93,11 +94,11 @@ function PresetPanels({ data }: { data: EdgeFullPreset }) {
         <DetectorSettings />
       </div>
 
-      <div className="scan-config__bottom-row">
-        <section className="scan-config__spectrum" aria-label="Live Spectrum">
-          <div className="scan-config__spectrum-header">Live Spectrum (Vortex MCA)</div>
-          <div className="scan-config__spectrum-body">
-            <div className="scan-config__spectrum-canvas" />
+      <div className="flex gap-[0.35rem] items-start max-lg:flex-col max-lg:gap-4 max-xl:gap-4">
+        <section className="flex-1 min-w-0 min-h-[20.125rem] max-xl:min-h-0 max-xl:w-full bg-white border border-panel-border rounded-xl overflow-hidden shadow-[0_1px_3px_rgba(16,92,120,0.08)]" aria-label="Live Spectrum">
+          <div className="bg-brand-teal text-white text-center px-4 py-[0.66rem] text-base font-bold tracking-[0.02em]">Live Spectrum (Vortex MCA)</div>
+          <div className="px-4 pt-3 pb-4">
+            <div className="h-[16.25rem] max-xl:h-48 rounded-md border border-[#d9e0e5] bg-[linear-gradient(0deg,#f6f8fa_0,#f6f8fa_1px,transparent_1px,transparent_2rem),linear-gradient(90deg,#f6f8fa_0,#f6f8fa_1px,transparent_1px,transparent_2rem),linear-gradient(180deg,#ffffff,#fbfdff)]" />
           </div>
         </section>
         <ControlsPanel />

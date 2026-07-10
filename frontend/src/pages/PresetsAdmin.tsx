@@ -7,7 +7,6 @@ import {
   useScanPresetMutations,
   useDetectorPresetMutations,
 } from '../api/presets'
-import './PresetsAdmin.css'
 
 const SCAN_COLUMNS: ColumnDef[] = [
   { key: 'edge_index', label: 'Edge Index', type: 'text' },
@@ -49,7 +48,7 @@ function PresetsTables() {
   const detectorMut = useDetectorPresetMutations()
 
   return (
-    <div className="presets-admin__tables">
+    <div className="flex flex-col gap-6 w-full min-w-0 bg-white">
       <EditableTable
         title="Scan Presets"
         columns={SCAN_COLUMNS}
@@ -87,18 +86,22 @@ export default function PresetsAdmin() {
   }
 
   return (
-    <div className="presets-admin">
-      <div className="presets-admin__bar">
-        <h1 className="presets-admin__heading">Presets Admin</h1>
+    <div className="w-full min-h-screen bg-white">
+      <div className="p-6 w-full max-w-app mx-auto box-border">
+        <div className="flex items-center justify-between mb-5">
+        <h1 className="m-0 text-brand-teal text-[1.4rem] font-bold">
+          Presets Admin
+        </h1>
         <button
           type="button"
-          className="presets-admin__signout"
+          className="px-[0.9rem] py-[0.45rem] bg-white text-brand-teal border border-[#9fc8d8] rounded-lg text-[0.85rem] font-semibold cursor-pointer transition-all hover:bg-brand-teal hover:text-white"
           onClick={() => setAuthed(false)}
         >
           Sign Out
         </button>
+        </div>
+        <PresetsTables />
       </div>
-      <PresetsTables />
     </div>
   )
 }

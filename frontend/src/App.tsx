@@ -12,6 +12,7 @@ function App() {
       element: <IosScan />,
       icon: <Atom size={28} />,
       isBackgroundTransparent: false,
+      classNameContainer: 'w-full max-w-none min-h-screen bg-white p-0',
     },
     {
       path: '/settings',
@@ -26,6 +27,7 @@ function App() {
       element: <PresetsAdmin />,
       icon: <Table size={28} />,
       isBackgroundTransparent: false,
+      classNameContainer: 'w-full max-w-none min-h-screen bg-white p-0',
     },
   ]
 
