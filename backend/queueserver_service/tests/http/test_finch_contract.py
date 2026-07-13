@@ -15,6 +15,7 @@ frontend consumes.
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -47,8 +48,11 @@ FINCH_QSERVER_ENDPOINTS = [
 ]
 
 
+@lru_cache(maxsize=1)
 def _contract_paths() -> dict:
-    return json.loads(_SHARED_SCHEMA.read_text(encoding="utf-8"))["paths"]
+    schema = json.loads(_SHARED_SCHEMA.read_text(encoding="utf-8"))
+    assert "paths" in schema, f"OpenAPI schema at {_SHARED_SCHEMA} has no 'paths' key"
+    return schema["paths"]
 
 
 @pytest.mark.parametrize("method,path", FINCH_QSERVER_ENDPOINTS)
