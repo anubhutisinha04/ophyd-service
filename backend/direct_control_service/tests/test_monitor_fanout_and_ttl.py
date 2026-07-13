@@ -370,17 +370,23 @@ def test_lifespan_starts_sweep_task_and_evicts_idle_monitor(monkeypatch):
         # so it inspects the main loop, but TestClient runs the app in a
         # background thread with its own loop — instead, verify via the
         # side effect (the eviction) with a generous deadline.
+        #
+        # Wait on signal.destroyed, not on _signals membership: eviction pops
+        # the PV from _signals under the lock but calls signal.destroy() after
+        # releasing it, so destroyed is the strictly-later observable. Polling
+        # _signals could break between those two steps and see destroyed still
+        # False (a flake under CI load).
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
-            if "BL:SWEEP:ME" not in pv_monitor._signals:
+            if signal.destroyed:
                 break
             time.sleep(0.1)
 
-        assert "BL:SWEEP:ME" not in pv_monitor._signals, (
+        assert signal.destroyed, (
             "sweep task did not evict the idle monitor within 15 s — is the "
             "lifespan spawning the sweep? See lifespan() in main.py."
         )
-        assert signal.destroyed
+        assert "BL:SWEEP:ME" not in pv_monitor._signals
 
 
 def test_lifespan_skips_sweep_task_when_interval_is_zero(monkeypatch):

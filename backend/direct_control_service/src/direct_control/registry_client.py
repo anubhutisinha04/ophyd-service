@@ -66,6 +66,23 @@ class RegistryClient:
             )
         return self._client
 
+    async def _request(
+        self, method: str, path: str, *, timeout: float | None = None
+    ) -> httpx.Response:
+        """Issue a request to configuration_service through the shared client.
+
+        Every call routes through this one helper (mirroring
+        queueserver_service's ``ConfigServiceClient._request``) so the HTTP
+        call surface stays consistent and analyzable rather than a
+        per-call-site local client handle. The only per-call override is
+        ``timeout`` (e.g. a short health-check probe); omit it to use the
+        client's configured timeout.
+        """
+        client = await self._get_client()
+        if timeout is None:
+            return await client.request(method, path)
+        return await client.request(method, path, timeout=timeout)
+
     def _cache_get(self, cache: dict[str, tuple[bool, float]], key: str) -> bool | None:
         """Check cache for a key, return None if expired or missing."""
         entry = cache.get(key)
@@ -94,8 +111,7 @@ class RegistryClient:
             raise RegistryValidationError(pv_name, "PV")
 
         try:
-            client = await self._get_client()
-            response = await client.get(f"/api/v1/pvs/{pv_name}")
+            response = await self._request("GET", f"/api/v1/pvs/{pv_name}")
 
             if response.status_code == 200:
                 now = time.monotonic()
@@ -156,8 +172,7 @@ class RegistryClient:
             raise RegistryValidationError(device_name, "Device")
 
         try:
-            client = await self._get_client()
-            response = await client.get(f"/api/v1/devices/{device_name}")
+            response = await self._request("GET", f"/api/v1/devices/{device_name}")
 
             if response.status_code == 200:
                 self._device_cache[device_name] = (True, time.monotonic())
@@ -193,9 +208,8 @@ class RegistryClient:
         if entry is not None and time.monotonic() - entry[1] <= self._cache_ttl:
             return entry[0]
 
-        client = await self._get_client()
         try:
-            response = await client.get(f"/api/v1/pvs/{pv_name}")
+            response = await self._request("GET", f"/api/v1/pvs/{pv_name}")
         except httpx.RequestError as e:
             logger.error("configuration_service_unavailable", error=str(e))
             raise RuntimeError("Configuration service unavailable") from e
@@ -244,9 +258,8 @@ class RegistryClient:
         if entry is not None and time.monotonic() - entry[1] <= self._cache_ttl:
             return entry[0]
 
-        client = await self._get_client()
         try:
-            response = await client.get(f"/api/v1/devices/{device_name}/instantiation")
+            response = await self._request("GET", f"/api/v1/devices/{device_name}/instantiation")
         except httpx.RequestError as e:
             logger.error("configuration_service_unavailable", error=str(e))
             raise RuntimeError("Configuration service unavailable") from e
@@ -290,9 +303,8 @@ class RegistryClient:
             RuntimeError: configuration_service unreachable or returned an
                 unexpected status.
         """
-        client = await self._get_client()
         try:
-            response = await client.get(f"/api/v1/devices/{device_name}")
+            response = await self._request("GET", f"/api/v1/devices/{device_name}")
         except httpx.RequestError as e:
             logger.error("configuration_service_unavailable", error=str(e))
             raise RuntimeError("Configuration service unavailable") from e

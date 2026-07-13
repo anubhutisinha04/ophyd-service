@@ -72,6 +72,23 @@ class CoordinationClient:
             )
         return self._client
 
+    async def _request(
+        self, method: str, path: str, *, timeout: float | None = None
+    ) -> httpx.Response:
+        """Issue a request to configuration_service through the shared client.
+
+        Every call routes through this one helper (mirroring
+        queueserver_service's ``ConfigServiceClient._request``) so the HTTP
+        call surface stays consistent and analyzable rather than a
+        per-call-site local client handle. The only per-call override is
+        ``timeout`` (e.g. a short health-check probe); omit it to use the
+        client's configured timeout.
+        """
+        client = await self._get_client()
+        if timeout is None:
+            return await client.request(method, path)
+        return await client.request(method, path, timeout=timeout)
+
     def _note_lock_epoch(self, lock_epoch: str | None, device_name: str) -> None:
         """Detect a lock-authority reset from the epoch on /status.
 
@@ -124,15 +141,13 @@ class CoordinationClient:
 
         endpoint = f"/api/v1/devices/{device_name}/status"
         try:
-            client = await self._get_client()
-
             logger.debug(
                 "checking_device_coordination",
                 device_name=device_name,
                 url=f"{self.base_url}{endpoint}",
             )
 
-            response = await client.get(endpoint)
+            response = await self._request("GET", endpoint)
 
             if response.status_code == 404:
                 # The name passed in isn't registered as a device in
@@ -223,8 +238,7 @@ class CoordinationClient:
             return ServiceAvailability(available=True)
 
         try:
-            client = await self._get_client()
-            response = await client.get("/health", timeout=2.0)
+            response = await self._request("GET", "/health", timeout=2.0)
         except httpx.TimeoutException as exc:
             logger.warning("configuration_service_health_timeout", error=str(exc))
             return ServiceAvailability(
