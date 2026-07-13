@@ -72,16 +72,22 @@ class CoordinationClient:
             )
         return self._client
 
-    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+    async def _request(
+        self, method: str, path: str, *, timeout: float | None = None
+    ) -> httpx.Response:
         """Issue a request to configuration_service through the shared client.
 
         Every call routes through this one helper (mirroring
         queueserver_service's ``ConfigServiceClient._request``) so the HTTP
         call surface stays consistent and analyzable rather than a
-        per-call-site local client handle.
+        per-call-site local client handle. The only per-call override is
+        ``timeout`` (e.g. a short health-check probe); omit it to use the
+        client's configured timeout.
         """
         client = await self._get_client()
-        return await client.request(method, path, **kwargs)
+        if timeout is None:
+            return await client.request(method, path)
+        return await client.request(method, path, timeout=timeout)
 
     def _note_lock_epoch(self, lock_epoch: str | None, device_name: str) -> None:
         """Detect a lock-authority reset from the epoch on /status.
