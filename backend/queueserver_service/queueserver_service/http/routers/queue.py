@@ -2,6 +2,7 @@ import io
 import logging
 import pprint
 from typing import Optional
+from uuid import UUID
 
 import pydantic
 from queueserver_service.manager.conversions import spreadsheet_to_plan_list
@@ -627,6 +628,35 @@ async def queue_item_get_handler(
     """
     try:
         msg = await SR.RM.item_get(**payload)
+    except Exception:
+        process_exception()
+    return msg
+
+
+# The `:uuid` path convertor matches only canonical-UUID segments (queue item
+# UIDs are ``str(uuid.uuid4())``), so reserved literal subpaths like
+# ``/queue/item/add`` or ``/queue/item/get`` are never captured here and keep
+# their own routing (a wrong method stays a 405 instead of a bogus item lookup).
+@queue_router.get(
+    "/queue/item/{item_uid:uuid}",
+    response_model=ItemGetResponse,
+    response_model_exclude_unset=True,
+    summary="Get a single queue item by UID",
+    description=(
+        "Returns details for a single queue item identified by its UID in the path. "
+        "Equivalent to `/queue/item/get` with a `uid` body field. "
+        "Required scope: `read:queue`."
+    ),
+    tags=["Queue Items"],
+)
+async def queue_item_get_by_uid_handler(
+    item_uid: UUID, principal=Security(get_current_principal, scopes=["read:queue"])
+):
+    """
+    Get a single queue item by its UID (path parameter).
+    """
+    try:
+        msg = await SR.RM.item_get(uid=str(item_uid))
     except Exception:
         process_exception()
     return msg
