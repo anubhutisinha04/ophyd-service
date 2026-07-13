@@ -75,6 +75,11 @@ def test_enrich_response_results_match_client_result_fields():
     op = _enrich_post(schema)
     resp = _resolve(schema, op["responses"]["200"]["content"]["application/json"]["schema"])
     assert "results" in resp["properties"], "enrich response must carry a 'results' array"
+    # config reads body["results"] unconditionally, so the contract must mark it required.
+    assert "results" in resp.get("required", []), (
+        "'results' must be a required field of the enrich response "
+        "(client reads it unconditionally)"
+    )
 
     item = _resolve(schema, resp["properties"]["results"]["items"])
     client_fields = {f.name for f in dataclasses.fields(EnrichmentResult)}
