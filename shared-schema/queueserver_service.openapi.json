@@ -1390,6 +1390,71 @@
         ]
       }
     },
+    "/api/queue/item/{item_uid}": {
+      "get": {
+        "tags": [
+          "Queue Items"
+        ],
+        "summary": "Get a single queue item by UID",
+        "description": "Returns details for a single queue item identified by its UID in the path. Equivalent to `/queue/item/get` with a `uid` body field. Required scope: `read:queue`.",
+        "operationId": "queue_item_get_by_uid_handler_api_queue_item__item_uid__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": [
+              "read:queue"
+            ]
+          },
+          {
+            "APIKeyQuery": [
+              "read:queue"
+            ]
+          },
+          {
+            "APIKeyAuthorizationHeader": [
+              "read:queue"
+            ]
+          },
+          {
+            "APIKeyCookie": [
+              "read:queue"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "name": "item_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Uid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemGetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/history/get": {
       "get": {
         "tags": [

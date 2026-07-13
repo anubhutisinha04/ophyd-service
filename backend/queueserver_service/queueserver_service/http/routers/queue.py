@@ -632,6 +632,33 @@ async def queue_item_get_handler(
     return msg
 
 
+# Registered after ``/queue/item/get`` so the literal path keeps precedence and
+# is never captured as ``item_uid="get"``.
+@queue_router.get(
+    "/queue/item/{item_uid}",
+    response_model=ItemGetResponse,
+    response_model_exclude_unset=True,
+    summary="Get a single queue item by UID",
+    description=(
+        "Returns details for a single queue item identified by its UID in the path. "
+        "Equivalent to `/queue/item/get` with a `uid` body field. "
+        "Required scope: `read:queue`."
+    ),
+    tags=["Queue Items"],
+)
+async def queue_item_get_by_uid_handler(
+    item_uid: str, principal=Security(get_current_principal, scopes=["read:queue"])
+):
+    """
+    Get a single queue item by its UID (path parameter).
+    """
+    try:
+        msg = await SR.RM.item_get(uid=item_uid)
+    except Exception:
+        process_exception()
+    return msg
+
+
 @queue_router.get(
     "/history/get",
     response_model=HistoryGetResponse,
